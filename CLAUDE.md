@@ -13,7 +13,7 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 | Path | What | Lang |
 |---|---|---|
 | `crates/msi-core` | Pure logic: EC map, fan curve model, safety validation, profiles. No I/O. | Rust |
-| `crates/msi-daemon` | Root system service, D-Bus `org.blazorde.MsiCenter1`, sysfs I/O, GPU power | Rust |
+| `crates/msi-daemon` | Root system service, D-Bus `org.blazorde.MsiCenter1`, sysfs I/O, GPU power; `msictl` CLI (`src/bin/`) | Rust |
 | `crates/clip-core` | Pure logic: clip model, tags, dedup, retention | Rust |
 | `crates/clipd` | User service, D-Bus `org.blazorde.Clipd1`, storage | Rust |
 | `crates/msi-center` | GTK4/libadwaita app | Rust |

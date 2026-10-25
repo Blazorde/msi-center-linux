@@ -101,4 +101,5 @@ actif (CPU palier 1, `0x73`) passée de 36 % à 30 % pendant 20 s, puis restaur�
 
 - [x] En `advanced`, une table écrite est-elle appliquée par l'EC ? → oui (ci-dessus)
 - [ ] Les tables survivent-elles à un changement de shift mode, à la veille, au débranchement secteur ?
-      (sinon le daemon réapplique la courbe sur ces événements)
+      Le daemon ne le suppose pas : il ré-applique après la veille et vérifie toutes les 10 s (ADR-0009).
+- [ ] Température GPU (`0x80`) quand le dGPU est retiré (Éco) : le daemon traite `0` comme « absent ».

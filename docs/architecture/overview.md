@@ -55,7 +55,13 @@ flowchart TB
 L'extension s'y abonne, elle ne fait pas de polling.
 
 **Changement de profil** : frontend → `SetProfile("eco")` → polkit → `msi-core` calcule l'état cible et le valide →
-le daemon applique dans l'ordre : courbe → mode EC → GPU → émet `ProfileChanged`.
+le daemon applique dans l'ordre : courbe (écritures ordonnées) → `fan_mode=advanced` → shift mode → relecture (S7) →
+GPU → émet `PropertiesChanged` (`Profile`, `FanMode`, `GpuState`…). Détails : [dbus-api.md](dbus-api.md).
+
+**Supervision (1 Hz)** : températures EC → superviseur S4 (filtre anti-pics) → Cooler Boost si besoin ; bascule de
+profil au branchement secteur (si activée) ; toutes les 10 s, vérification que l'EC détient toujours nos tables
+(ré-application sinon) ; signal `Telemetry` ; `WATCHDOG=1` à systemd. Sortie de veille : ré-application (logind).
+Arrêt, signal, panic ou kill par le watchdog : EC remis en fan mode `auto` (S5, [ADR-0009](../adr/0009-step-curve-and-daemon-runtime.md)).
 
 **Presse-papiers** : l'extension écoute `St.Clipboard` / Meta selection → envoie le contenu à `clipd` → `clip-core`
 déduplique → stockage. `Super+V` ouvre la popup de l'extension, qui interroge `clipd`.

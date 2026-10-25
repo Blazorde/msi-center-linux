@@ -92,10 +92,10 @@ Justification :
 | S2 | Vitesse du **palier montant** ≥ **30 %** dès 60 °C, ≥ **50 %** dès 75 °C, **100 %** dès 85 °C (planchers, quelle que soit la courbe). Table générée depuis les paramètres : paliers relevés **explicitement et signalés** (`SafetyReport`). Table saisie palier par palier : **rejetée** | `msi-core` |
 | S3 | Toute **entrée** hors bornes (paramètres de courbe, disposition, table brute) est **rejetée**, jamais « corrigée silencieusement » | `msi-core` + noyau |
 | S4 | CPU ou GPU ≥ **95 °C** sur **2 lectures consécutives** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics). Capteur illisible → forcé immédiatement | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
-| S5 | Arrêt du daemon (normal, signal, panic) → EC remis en fan mode `auto` | `msi-daemon` + `ExecStopPost` systemd |
-| S6 | Watchdog systemd (`WatchdogSec`) : daemon figé → redémarré, et S5 s'applique | systemd |
+| S5 | Arrêt du daemon (normal, signal, panic) → EC remis en fan mode `auto` | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost` systemd |
+| S6 | Watchdog systemd (`WatchdogSec=15`) : `WATCHDOG=1` après chaque tick de 1 s réussi ; daemon figé → tué, redémarré, et S5 s'applique (`ExecStopPost`) | systemd + `msi-daemon` (`notify`) |
 | S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → retour `auto` + `SafetyEvent` | `msi-daemon` |
-| S8 | Firmware EC non reconnu → aucune écriture, mode lecture seule | `msi-ec` fork + daemon (liste dans `msi-core`) |
+| S8 | Firmware EC non reconnu, ou attributs de courbe absents (module amont, `firmware=` forcé) → aucune écriture, mode lecture seule | `msi-ec` fork + daemon (liste dans `msi-core`) |
 
 Les seuils S2/S4 sont prudents : le Core Ultra 9 185H a un Tjmax de 110 °C, la RTX 4070 Laptop réduit sa fréquence vers 87 °C.
 
@@ -108,7 +108,7 @@ interdit de corriger). Résolution :
   hystérésis, table brute d'un futur éditeur de paliers) est validé tel quel ; hors bornes → erreur, rien n'est
   modifié.
 - **S2 est une transformation documentée** de la table *générée* : les planchers font partie de la définition de la
-  courbe appliquée (ADR-0006). Chaque palier relevé est retourné dans un `SafetyReport` (palier, seuil d'entrée,
+  courbe appliquée (ADR-0006, modèle par paliers : ADR-0009). Chaque palier relevé est retourné dans un `SafetyReport` (palier, seuil d'entrée,
   vitesse de la courbe, vitesse appliquée, plancher en cause) que le daemon expose (`SetFanCurve`, `FanCurve`) et
   que l'UI affiche. Rien n'est silencieux. Un plancher `(Tf, Sf)` relève le palier montant à `Tf` et tous les
   suivants (S1 conservé) ; si le premier seuil est au-dessus de 60 °C, c'est le palier 0 (`idle`) qui est relevé.
