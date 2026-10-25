@@ -8,8 +8,8 @@
 //! - [`retention`]: ordering and eviction rules.
 //! - [`store`]: the [`ClipStore`] trait implemented by `clipd`'s storage, and an in-memory reference
 //!   implementation ([`MemoryStore`]).
-//! - [`library`]: [`Library`], which applies every rule (dedup, limits, retention, pinning) on top of
-//!   any [`ClipStore`].
+//! - [`library`]: [`Library`], which applies every rule (dedup, limits, retention, pinning, tagged clips
+//!   pinned automatically) on top of any [`ClipStore`].
 //!
 //! Storage split (session tmpfs vs pinned SQLite) is described in `docs/adr/0005-clipboard-storage-split.md`.
 
@@ -25,7 +25,7 @@ pub mod store;
 pub mod tags;
 
 pub use content::{Candidate, ContentHash, ContentKind, Limits, Mime, RejectReason};
-pub use library::{AddKind, AddOutcome, Library, LibraryError};
+pub use library::{AddKind, AddOutcome, Library, LibraryError, SetTagsOutcome};
 pub use model::{ClipId, ClipMeta, Timestamp};
 pub use query::{Page, Query, QueryError, Scope};
 pub use store::{ClipStore, MemoryStore};

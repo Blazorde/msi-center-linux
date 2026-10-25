@@ -258,6 +258,8 @@ impl Clipd {
     }
 
     /// Replaces the tags of a clip; returns them normalised (trimmed, lowercased, deduplicated, sorted).
+    /// A non-empty tag set pins an unpinned clip (clients see it through `Changed` + `List`); an empty
+    /// one never unpins.
     #[zbus(out_args("tags"))]
     async fn set_tags(
         &self,
@@ -265,10 +267,10 @@ impl Clipd {
         tags: Vec<String>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<Vec<String>, ClipdError> {
-        let set = self.run(move |lib| Ok(lib.set_tags(ClipId(id), &tags)?)).await?;
-        tracing::debug!(id, count = set.len(), "set tags");
+        let out = self.run(move |lib| Ok(lib.set_tags(ClipId(id), &tags)?)).await?;
+        tracing::debug!(id, count = out.tags.len(), pinned = out.pinned, "set tags");
         Self::notify(&emitter).await;
-        Ok(set.to_strings())
+        Ok(out.tags.to_strings())
     }
 
     /// Every tag in use with its number of clips, sorted by tag.
