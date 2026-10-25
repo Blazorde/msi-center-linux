@@ -12,3 +12,4 @@ Un ADR accepté n'est pas modifié : on en crée un nouveau qui le remplace (`Su
 | [0005](0005-clipboard-storage-split.md) | Presse-papiers : tmpfs pour la session, SQLite pour les épinglés | Accepté |
 | [0006](0006-exponential-fan-curve.md) | Courbe ventilo exponentielle échantillonnée + planchers | Accepté |
 | [0007](0007-local-ci.md) | CI locale (hooks + `scripts/ci.sh`) au lieu de GitHub Actions | Accepté |
+| [0008](0008-dgpu-power-management.md) | dGPU : retrait PCI sans kill, NVML seulement si le dGPU est actif | Proposé |

@@ -20,7 +20,7 @@
 | RPM ventilos | `msi_wmi_platform` hwmon (`fan1_input`, `fan2_input`) | ✅ lecture seule |
 | Contrôle ventilos | – | ❌ (ni `msi-ec`, ni `ec_sys`) |
 | Profils plateforme | power-profiles-daemon, driver `placeholder` | ⚠️ CPU uniquement |
-| dGPU runtime PM | `power/runtime_status` = `active`, 1,41 W au repos (P8) | ⚠️ à optimiser |
+| dGPU runtime PM | `power/runtime_status` = `active`, 1,41 W au repos (P8) ; RTD3 désactivé par le pilote, voir [gpu-power](gpu-power.md) | ⚠️ à optimiser |
 
 ## Carte EC (d'après `msi-ec` upstream, config `CONF_G2_5`)
 

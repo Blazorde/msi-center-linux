@@ -11,6 +11,11 @@ publish.workspace = true
 
 [dependencies]
 msi-core.workspace = true
+nvml-wrapper.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

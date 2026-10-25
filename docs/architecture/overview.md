@@ -51,7 +51,7 @@ flowchart TB
 ## Flux principaux
 
 **Télémétrie** : `msi-daemon` lit températures et RPM (msi-ec / hwmon), la charge CPU (`/proc/stat`), le GPU
-(NVML), l'iGPU (fdinfo DRM), le NPU (`intel_vpu` busy time) toutes les ~1 s et émet un signal D-Bus `Telemetry`.
+(NVML, **seulement si le dGPU est déjà actif** et en Gaming, pour ne jamais le réveiller), l'iGPU (fdinfo DRM), le NPU (`intel_vpu` busy time) toutes les ~1 s et émet un signal D-Bus `Telemetry`.
 L'extension s'y abonne, elle ne fait pas de polling.
 
 **Changement de profil** : frontend → `SetProfile("eco")` → polkit → `msi-core` calcule l'état cible et le valide →
