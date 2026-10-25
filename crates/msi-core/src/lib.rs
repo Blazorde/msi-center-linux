@@ -3,4 +3,5 @@
 //! Safety rules this crate enforces are specified in `docs/hardware/fan-safety.md`.
 
 pub mod curve;
+pub mod supervisor;
 pub mod table;
