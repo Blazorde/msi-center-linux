@@ -4,6 +4,11 @@
 //! sysfs/procfs trees.
 #![forbid(unsafe_code)]
 
+pub mod controller;
+pub mod ec;
 pub mod fs;
 pub mod gpu;
+pub mod notify;
+pub mod power;
+pub mod state;
 pub mod telemetry;
