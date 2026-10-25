@@ -14,6 +14,8 @@ publish = false
 [workspace.dependencies]
 msi-core = { path = "crates/msi-core" }
 clip-core = { path = "crates/clip-core" }
+thiserror = "2.0.21"
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
