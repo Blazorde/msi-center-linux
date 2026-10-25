@@ -18,6 +18,11 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   le tiennent, runtime PM, retrait PCI avec pré-contrôles et rescan) et télémétrie (CPU, RAM, iGPU, dGPU via NVML
   sans jamais réveiller le GPU, NPU, températures, ventilos). Commande `msi-daemon --probe` en lecture seule.
 - Docs : [alimentation GPU & télémétrie](docs/hardware/gpu-power.md), ADR 0008.
+- Noyau (phase 3) : fork de `msi-ec` vendu dans `kernel/msi-ec/` (upstream `d7fbbd8`), firmware `14K2EMS1.110`
+  accepté, attributs sysfs `cpu/` et `gpu/` `fan_curve_speeds`, `fan_curve_up_temps`, `fan_curve_down_temps`
+  validés dans le noyau (bornes, monotonie, `down < up`, relecture après écriture), paquet DKMS
+  `msi-ec-blazorde`, `scripts/kernel-build.sh`, procédure de test `kernel/TESTING.md`. Docs :
+  [interface sysfs des courbes](docs/hardware/fan-curve-sysfs.md).
 
 ### Changed
 - Presse-papiers : taguer un clip (`SetTags` avec au moins un tag) l'épingle automatiquement, il survit donc au
