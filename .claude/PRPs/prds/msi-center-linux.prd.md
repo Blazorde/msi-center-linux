@@ -164,8 +164,8 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 
 **Phase 1: Foundations**
 - **Goal**: A repo anyone (human or agent) can contribute to safely.
-- **Scope**: Cargo workspace skeleton, docs tree, ADRs, CLAUDE.md, CI, branch model, templates.
-- **Success signal**: CI green on `develop`, branches protected.
+- **Scope**: Cargo workspace skeleton, docs tree, ADRs, CLAUDE.md, local CI (no GitHub Actions, ADR-0007), branch model, templates.
+- **Success signal**: `scripts/ci.sh` green on `develop`, hooks active, branches protected.
 
 **Phase 2: EC spike**
 - **Goal**: Know exactly which EC bytes encode the fan curve on this firmware.
@@ -221,6 +221,7 @@ Frontends (7, 8) only depend on the D-Bus contracts and can be built against moc
 | Packaging | PKGBUILD in repo | AUR, Flatpak | Private repo; Flatpak can't ship a root daemon/DKMS |
 | License | GPL-3.0-or-later | MIT, none | Compatible with msi-ec (GPL-2.0+) & GNOME extension ecosystem |
 | Workflow | main/develop + short-lived branches, Conventional Commits | Trunk-based | Owner request |
+| CI | Local: `scripts/ci.sh` + git hooks | GitHub Actions, self-hosted runner, public repo | Actions quota exhausted; owner refused alternatives (ADR-0007) |
 
 ---
 

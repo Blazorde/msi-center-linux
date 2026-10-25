@@ -26,12 +26,12 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 ## Commands
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+scripts/ci.sh      # fmt --check, clippy -D warnings, test, cargo deny
 ```
 
-Run all three before declaring work done. CI runs the same (`.github/workflows/ci.yml`).
+Run it before declaring work done. There is **no GitHub Actions** (quota unavailable, ADR-0007): `scripts/ci.sh`
+is the CI, enforced by `.githooks/pre-push`; `.githooks/commit-msg` enforces Conventional Commits.
+Hooks need `git config core.hooksPath .githooks` once per clone. Never use `--no-verify`. Releases: `scripts/release.sh`.
 
 ## Hard rules (hardware safety)
 
@@ -55,7 +55,7 @@ Run all three before declaring work done. CI runs the same (`.github/workflows/c
 ## Git workflow
 
 - `main` = released, `develop` = integration. Both protected, PR only.
-- Branch from `develop`: `feat/<scope>-<desc>`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`, `test/…`.
+- Branch from `develop`: `feat/<scope>-<desc>`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`, `test/…`, `perf/…`, `ci/…`.
 - Conventional Commits: `feat(daemon): add fan curve sampling`. Scopes: `core`, `daemon`, `clip`, `clipd`,
   `app`, `ext`, `kernel`, `pkg`, `ci`, `docs`.
 - PR into `develop` (squash). Release: `release/x.y.z` → `main` (merge commit) + tag `vx.y.z` → back-merge to `develop`.

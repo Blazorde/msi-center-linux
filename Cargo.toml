@@ -9,6 +9,7 @@ rust-version = "1.85"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Blazorde/msi-center-linux"
 authors = ["Blazorde"]
+publish = false
 
 [workspace.dependencies]
 msi-core = { path = "crates/msi-core" }
