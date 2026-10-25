@@ -190,6 +190,31 @@ async fn changed_signal_is_emitted() {
 }
 
 #[tokio::test]
+async fn set_tags_pins_and_signals_changed() {
+    let h = harness().await;
+    let p = &h.proxy;
+    let id = p.add("text/plain", b"keep me").await.unwrap();
+    let mut changes = p.receive_changed().await.unwrap();
+    assert_eq!(p.set_tags(id, &["Work"]).await.unwrap(), vec!["work"]);
+    tokio::time::timeout(Duration::from_secs(5), changes.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, pinned) = p.list("", &[], "pinned", 0, 0).await.unwrap();
+    assert_eq!(
+        pinned.iter().map(|c| (c.0, c.6, c.7.clone())).collect::<Vec<_>>(),
+        vec![(id, true, vec!["work".to_owned()])]
+    );
+    // Clearing the tags does not unpin; an explicit Unpin does and keeps the tags.
+    assert_eq!(p.set_tags(id, &[]).await.unwrap(), Vec::<String>::new());
+    assert_eq!(p.list("", &[], "pinned", 0, 0).await.unwrap().0, 1);
+    p.set_tags(id, &["work"]).await.unwrap();
+    p.unpin(id).await.unwrap();
+    let (_, clips) = p.list("", &["work"], "unpinned", 0, 0).await.unwrap();
+    assert_eq!(clips.iter().map(|c| c.0).collect::<Vec<_>>(), vec![id]);
+}
+
+#[tokio::test]
 async fn introspection_matches_documented_signatures() {
     let h = harness().await;
     let intro = zbus::fdo::IntrospectableProxy::builder(h.proxy.inner().connection())
@@ -214,4 +239,15 @@ async fn introspection_matches_documented_signatures() {
     ] {
         assert!(xml.contains(fragment), "missing {fragment}");
     }
+    // SetTags keeps `(t id, as tags) -> as tags` although it now pins tagged clips.
+    let start = xml.find(r#"<method name="SetTags">"#).expect("SetTags");
+    let block = &xml[start..start + xml[start..].find("</method>").unwrap()];
+    for fragment in [
+        r#"<arg name="id" type="t" direction="in"/>"#,
+        r#"<arg name="tags" type="as" direction="in"/>"#,
+        r#"<arg name="tags" type="as" direction="out"/>"#,
+    ] {
+        assert!(block.contains(fragment), "SetTags: missing {fragment}");
+    }
+    assert_eq!(block.matches("<arg ").count(), 3, "SetTags: {block}");
 }

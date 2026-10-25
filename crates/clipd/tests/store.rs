@@ -106,6 +106,68 @@ fn pinned_survives_logout_unpinned_does_not() {
 }
 
 #[test]
+fn tagged_clip_is_pinned_and_survives_logout() {
+    let env = Env::new();
+    let mut lib = env.open();
+    let keep = text(&mut lib, "tagged, never pinned by hand", 1);
+    let lose = text(&mut lib, "untagged", 2);
+    let out = lib.set_tags(keep, &[" Work "]).unwrap();
+    assert!(out.pinned);
+    assert_eq!(ids(&lib, &query("", &[], Scope::Pinned)), vec![keep.0]);
+    drop(lib);
+
+    let disk = std::fs::read(env.paths.pinned_db()).unwrap();
+    let needle = b"tagged, never pinned by hand";
+    assert!(
+        disk.windows(needle.len()).any(|w| w == needle),
+        "moved to the persistent DB"
+    );
+
+    env.logout();
+    let lib = env.open();
+    assert_eq!(ids(&lib, &all()), vec![keep.0]);
+    let meta = lib.store().meta(keep).unwrap().unwrap();
+    assert!(meta.pinned);
+    assert_eq!(meta.tags.to_strings(), vec!["work"]);
+    assert_eq!(lib.get(keep).unwrap().1, needle);
+    assert!(matches!(lib.get(lose), Err(LibraryError::NotFound(_))));
+}
+
+#[test]
+fn unpinned_tagged_clip_keeps_tags_and_is_lost_at_logout() {
+    let env = Env::new();
+    let mut lib = env.open();
+    let id = text(&mut lib, "a", 1);
+    lib.set_tags(id, &["work"]).unwrap();
+    lib.unpin(id).unwrap();
+    let meta = lib.store().meta(id).unwrap().unwrap();
+    assert!(!meta.pinned);
+    assert_eq!(meta.tags.to_strings(), vec!["work"]);
+    assert_eq!(ids(&lib, &query("", &["work"], Scope::Unpinned)), vec![id.0]);
+    drop(lib);
+    env.logout();
+    let lib = env.open();
+    assert_eq!(ids(&lib, &all()), Vec::<u64>::new());
+    assert_eq!(lib.tags().unwrap(), Vec::new());
+}
+
+#[test]
+fn clearing_tags_keeps_the_clip_pinned() {
+    let env = Env::new();
+    let mut lib = env.open();
+    let id = text(&mut lib, "a", 1);
+    lib.set_tags(id, &["work"]).unwrap();
+    let none: [&str; 0] = [];
+    assert!(!lib.set_tags(id, &none).unwrap().pinned);
+    drop(lib);
+    env.logout();
+    let lib = env.open();
+    let meta = lib.store().meta(id).unwrap().unwrap();
+    assert!(meta.pinned);
+    assert!(meta.tags.is_empty());
+}
+
+#[test]
 fn unpinned_survives_a_daemon_restart_within_the_session() {
     let env = Env::new();
     let mut lib = env.open();
@@ -244,7 +306,9 @@ fn search_and_tag_filters() {
     lib.set_tags(a, &["fr", "greeting"]).unwrap();
     lib.set_tags(b, &["EN", "Greeting "]).unwrap();
     lib.set_tags(img, &["greeting"]).unwrap();
-    lib.pin(b).unwrap();
+    // Tagging pinned all three; unpin two so the filters run across both tiers (tags are kept).
+    lib.unpin(a).unwrap();
+    lib.unpin(img).unwrap();
 
     assert_eq!(ids(&lib, &query("MONDE", &[], Scope::All)), vec![a.0]);
     assert_eq!(ids(&lib, &query("o", &[], Scope::All)), vec![b.0, a.0]);

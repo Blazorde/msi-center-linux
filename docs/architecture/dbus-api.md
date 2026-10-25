@@ -40,7 +40,7 @@ Activation D-Bus (`systemd/org.blazorde.Clipd1.service`). Pas de polkit : bus se
 | `Unpin` | `t id` | – | `NotFound` |
 | `Delete` | `at ids` | `u deleted` | – |
 | `ClearUnpinned` | – | `u deleted` | – |
-| `SetTags` | `t id, as tags` | `as tags` (normalisés) | `NotFound`, `InvalidArgument` |
+| `SetTags` | `t id, as tags` | `as tags` (normalisés) ; épingle si tags non vides | `NotFound`, `InvalidArgument` |
 | `Tags` | – | `a(su) tags` (tag, nombre de clips) | – |
 
 Toute méthode peut aussi renvoyer `Internal` (échec de stockage, détail dans le journal du service).
@@ -68,11 +68,18 @@ Toute méthode peut aussi renvoyer `Internal` (échec de stockage, détail dans 
   vide pour une image), `size` (octets), `created_ms`, `last_used_ms` (ms depuis l'epoch Unix), `pinned`,
   `tags` (triés).
 - **`Pin` / `Unpin`** : idempotents. Épingler déplace le clip (et ses tags) vers la base persistante ;
-  désépingler le renvoie dans l'historique de session, effacé au logout. L'id ne change pas.
+  désépingler le renvoie (avec ses tags) dans l'historique de session, effacé au logout. L'id ne change pas.
+  `SetTags` avec des tags épingle aussi (voir ci-dessous).
 - **`Delete`** : épinglés ou non ; ids inconnus ignorés ; renvoie le nombre supprimé.
 - **`SetTags`** : remplace les tags. Normalisation : trim, minuscules, espaces internes réduits à un, ≤ 32
   caractères, pas de caractère de contrôle, dédupliqués, triés, ≤ 16 par clip ; les entrées vides sont
-  ignorées. Les tags d'un clip non épinglé disparaissent avec lui au logout.
+  ignorées. Un tag invalide → `InvalidArgument`, rien n'est modifié.
+  - **Taguer épingle** : si l'ensemble normalisé est non vide et que le clip n'est pas épinglé, il est
+    épinglé (comme `Pin` : déplacé vers la base persistante, il survit au logout). Signature inchangée ;
+    le client apprend l'épinglage via `Changed` puis `List` (champ `pinned`).
+  - **Vider les tags ne désépingle pas** (`SetTags(id, [])` sur un clip épinglé le laisse épinglé).
+  - **`Unpin` d'un clip tagué** reste permis et **conserve ses tags** : le clip retourne dans l'historique de
+    session avec ses tags et disparaît au logout. Le retaguer l'épingle à nouveau.
 
 ### Erreurs
 

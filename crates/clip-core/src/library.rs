@@ -40,6 +40,15 @@ pub struct AddOutcome {
     pub evicted: Vec<ClipId>,
 }
 
+/// What [`Library::set_tags`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetTagsOutcome {
+    /// The tags now on the clip, normalised.
+    pub tags: TagSet,
+    /// `true` if this call pinned the clip (it was unpinned and received a non-empty tag set).
+    pub pinned: bool,
+}
+
 /// Applies validation, dedup, retention and pinning rules over a [`ClipStore`].
 #[derive(Debug)]
 pub struct Library<S> {
@@ -152,7 +161,8 @@ impl<S: ClipStore> Library<S> {
         }
     }
 
-    /// Unpins a clip: it goes back to the session tier (erased at logout). If that exceeds the limit,
+    /// Unpins a clip: it goes back to the session tier (erased at logout). Its tags are kept (an explicit
+    /// unpin wins over the "tagged means pinned" rule of [`Self::set_tags`]). If that exceeds the limit,
     /// the oldest *other* unpinned clips are evicted. Idempotent.
     ///
     /// # Errors
@@ -165,15 +175,29 @@ impl<S: ClipStore> Library<S> {
         self.enforce_retention_protecting(Some(id))
     }
 
-    /// Replaces the tags of a clip with the normalised form of `raw`, which is returned.
+    /// Replaces the tags of a clip with the normalised form of `raw`.
+    ///
+    /// Tagging means "keep this": a non-empty tag set on an unpinned clip **pins** it (as [`Self::pin`]
+    /// does), so it survives logout. An empty tag set never unpins. [`Self::unpin`] stays explicit and
+    /// keeps the tags. The clip is pinned before its tags are written, so a storage failure in between
+    /// can leave it pinned with its old tags, never tagged but still erasable at logout.
     ///
     /// # Errors
     ///
-    /// [`LibraryError::Tag`], [`LibraryError::NotFound`], [`LibraryError::Store`].
-    pub fn set_tags<T: AsRef<str>>(&mut self, id: ClipId, raw: &[T]) -> Result<TagSet, S> {
+    /// [`LibraryError::Tag`] (nothing is changed), [`LibraryError::NotFound`], [`LibraryError::Store`].
+    pub fn set_tags<T: AsRef<str>>(&mut self, id: ClipId, raw: &[T]) -> Result<SetTagsOutcome, S> {
         let tags = TagSet::from_raw(raw)?;
+        let meta = self
+            .store
+            .meta(id)
+            .map_err(LibraryError::Store)?
+            .ok_or(LibraryError::NotFound(id))?;
+        let pin = !tags.is_empty() && !meta.pinned;
+        if pin {
+            self.pin(id)?;
+        }
         if self.store.set_tags(id, &tags).map_err(LibraryError::Store)? {
-            Ok(tags)
+            Ok(SetTagsOutcome { tags, pinned: pin })
         } else {
             Err(LibraryError::NotFound(id))
         }
@@ -341,7 +365,7 @@ mod tests {
         let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
         let b = l.add("text/plain", b"b".to_vec(), Timestamp(1)).unwrap().id;
         assert_eq!(
-            l.set_tags(a, &[" Work", "code"]).unwrap().to_strings(),
+            l.set_tags(a, &[" Work", "code"]).unwrap().tags.to_strings(),
             vec!["code", "work"]
         );
         l.set_tags(b, &["WORK"]).unwrap();
@@ -355,6 +379,93 @@ mod tests {
         let q = Query::new("", &["work", "code"], Scope::All, 0, 0).unwrap();
         assert_eq!(ids(&l.list(&q).unwrap()), vec![a.0]);
         assert!(matches!(l.set_tags(a, &["x\u{1}"]), Err(LibraryError::Tag(_))));
+    }
+
+    #[test]
+    fn tagging_an_unpinned_clip_pins_it() {
+        let mut l = lib(10);
+        let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
+        let out = l.set_tags(a, &["Work"]).unwrap();
+        assert_eq!(out.tags.to_strings(), vec!["work"]);
+        assert!(out.pinned, "the call reports that it pinned the clip");
+        let meta = l.store().meta(a).unwrap().unwrap();
+        assert!(meta.pinned);
+        assert_eq!(meta.tags.to_strings(), vec!["work"]);
+    }
+
+    #[test]
+    fn tagging_an_already_pinned_clip_reports_no_pin() {
+        let mut l = lib(10);
+        let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
+        l.pin(a).unwrap();
+        let out = l.set_tags(a, &["work"]).unwrap();
+        assert!(!out.pinned);
+        assert!(l.store().meta(a).unwrap().unwrap().pinned);
+    }
+
+    #[test]
+    fn tags_that_normalise_to_nothing_do_not_pin() {
+        let mut l = lib(10);
+        let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
+        let none: [&str; 0] = [];
+        for raw in [&none[..], &["", "   "][..]] {
+            let out = l.set_tags(a, raw).unwrap();
+            assert!(out.tags.is_empty());
+            assert!(!out.pinned);
+            assert!(!l.store().meta(a).unwrap().unwrap().pinned);
+        }
+    }
+
+    #[test]
+    fn clearing_tags_does_not_unpin() {
+        let mut l = lib(10);
+        let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
+        l.set_tags(a, &["work"]).unwrap();
+        let none: [&str; 0] = [];
+        let out = l.set_tags(a, &none).unwrap();
+        assert!(!out.pinned);
+        let meta = l.store().meta(a).unwrap().unwrap();
+        assert!(meta.pinned, "still pinned");
+        assert!(meta.tags.is_empty());
+    }
+
+    #[test]
+    fn unpinning_a_tagged_clip_keeps_its_tags() {
+        let mut l = lib(10);
+        let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
+        l.set_tags(a, &["work"]).unwrap();
+        l.unpin(a).unwrap();
+        let meta = l.store().meta(a).unwrap().unwrap();
+        assert!(!meta.pinned, "explicit unpin wins over the tag rule");
+        assert_eq!(meta.tags.to_strings(), vec!["work"]);
+        // Re-tagging is an explicit "keep this" again.
+        assert!(l.set_tags(a, &["work"]).unwrap().pinned);
+    }
+
+    #[test]
+    fn invalid_tags_neither_pin_nor_change_anything() {
+        let mut l = lib(10);
+        let a = l.add("text/plain", b"a".to_vec(), Timestamp(0)).unwrap().id;
+        assert!(matches!(
+            l.set_tags(a, &["ok", "x\u{1}"]),
+            Err(LibraryError::Tag(_))
+        ));
+        let meta = l.store().meta(a).unwrap().unwrap();
+        assert!(!meta.pinned);
+        assert!(meta.tags.is_empty());
+    }
+
+    #[test]
+    fn tagged_clip_survives_logout() {
+        let mut l = lib(10);
+        let keep = l.add("text/plain", b"keep".to_vec(), Timestamp(0)).unwrap().id;
+        let lose = l.add("text/plain", b"lose".to_vec(), Timestamp(1)).unwrap().id;
+        l.set_tags(keep, &["work"]).unwrap();
+        let mut store = l.into_store();
+        store.logout();
+        let l = Library::new(store, Limits::default());
+        assert!(l.get(keep).is_ok());
+        assert!(matches!(l.get(lose), Err(LibraryError::NotFound(_))));
     }
 
     #[test]
@@ -432,7 +543,8 @@ mod tests {
                     Op::Pin(i) => if l.pin(ClipId(i.into())).is_ok() { pinned_alive.insert(i); },
                     Op::Unpin(i) => if l.unpin(ClipId(i.into())).is_ok() { pinned_alive.remove(&i); },
                     Op::Delete(i) => { l.delete(&[ClipId(i.into())]).unwrap(); pinned_alive.remove(&i); }
-                    Op::Tag(i, tag) => { let _ = l.set_tags(ClipId(i.into()), &[format!("t{tag}")]); }
+                    // A non-empty tag set pins the clip.
+                    Op::Tag(i, tag) => if l.set_tags(ClipId(i.into()), &[format!("t{tag}")]).is_ok() { pinned_alive.insert(i); },
                 }
                 prop_assert!(l.store().unpinned_count().unwrap() <= max);
                 let page = l.list(&all()).unwrap();

@@ -18,3 +18,8 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   le tiennent, runtime PM, retrait PCI avec pré-contrôles et rescan) et télémétrie (CPU, RAM, iGPU, dGPU via NVML
   sans jamais réveiller le GPU, NPU, températures, ventilos). Commande `msi-daemon --probe` en lecture seule.
 - Docs : [alimentation GPU & télémétrie](docs/hardware/gpu-power.md), ADR 0008.
+
+### Changed
+- Presse-papiers : taguer un clip (`SetTags` avec au moins un tag) l'épingle automatiquement, il survit donc au
+  logout. Vider les tags ne désépingle pas ; désépingler un clip tagué conserve ses tags. Signature D-Bus
+  inchangée (ADR 0005, mise à jour du 2026-10-25).
