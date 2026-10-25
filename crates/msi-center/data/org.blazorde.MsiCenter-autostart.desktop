@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MSI Center
+Comment=Démarre MSI Center en arrière-plan à l'ouverture de session
+Exec=msi-center --background
+Icon=org.blazorde.MsiCenter
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2

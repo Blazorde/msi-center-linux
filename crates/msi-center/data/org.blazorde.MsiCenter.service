@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.blazorde.MsiCenter
+Exec=@bindir@/msi-center --gapplication-service
