@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- polkit actions of msi-daemon (org.blazorde.MsiCenter1). Installed to /usr/share/polkit-1/actions/.
+     The active local user is allowed without a password; other sessions need an administrator. -->
+<policyconfig>
+  <vendor>msi-center-linux</vendor>
+  <vendor_url>https://github.com/Blazorde/msi-center-linux</vendor_url>
+
+  <action id="org.blazorde.msicenter.set-profile">
+    <description>Change the power profile</description>
+    <description xml:lang="fr">Changer le profil d'alimentation</description>
+    <message>Authentication is required to change the power profile</message>
+    <message xml:lang="fr">Une authentification est requise pour changer le profil d'alimentation</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.blazorde.msicenter.set-fan-curve">
+    <description>Change the fan curves and Cooler Boost</description>
+    <description xml:lang="fr">Modifier les courbes de ventilation et le Cooler Boost</description>
+    <message>Authentication is required to change the fan curves</message>
+    <message xml:lang="fr">Une authentification est requise pour modifier les courbes de ventilation</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.blazorde.msicenter.set-battery">
+    <description>Change the battery charge limit</description>
+    <description xml:lang="fr">Modifier la limite de charge de la batterie</description>
+    <message>Authentication is required to change the battery charge limit</message>
+    <message xml:lang="fr">Une authentification est requise pour modifier la limite de charge</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

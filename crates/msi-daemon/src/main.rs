@@ -1,32 +1,60 @@
-//! `msi-daemon`: system service exposing `org.blazorde.MsiCenter1` (D-Bus wiring comes in phase 4).
+//! `msi-daemon`: system service exposing `org.blazorde.MsiCenter1` on the system bus (run by systemd as root,
+//! `systemd/msi-daemon.service`).
 //!
-//! For now only `--probe` exists: a **read-only** dump of the dGPU power state, its holders and a few telemetry
-//! samples. It never writes to sysfs.
+//! - no argument: run the daemon (`--state PATH` overrides `/var/lib/msi-center/state.toml`);
+//! - `--probe`: **read-only** dump of the dGPU power state, its holders and a few telemetry samples.
+//!
+//! Log level: `MSI_DAEMON_LOG` (`EnvFilter` syntax, default `info`).
 
+#![forbid(unsafe_code)]
+
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::Context as _;
+use futures_util::StreamExt as _;
+use msi_daemon::controller::Controller;
+use msi_daemon::ec::{SysfsEc, restore_auto_at};
 use msi_daemon::fs::FsRoot;
 use msi_daemon::gpu::{Dgpu, GpuManager};
+use msi_daemon::notify::Notifier;
+use msi_daemon::polkit::PolkitAuthorizer;
+use msi_daemon::power::PowerSupply;
+use msi_daemon::service::{BUS_NAME, MsiCenter, OBJECT_PATH};
+use msi_daemon::state::{DEFAULT_STATE_PATH, StateStore};
 use msi_daemon::telemetry::dgpu::{DgpuPolicy, NvmlBackend};
 use msi_daemon::telemetry::{Clock, Sample, Sampler};
+use tokio::signal::unix::{SignalKind, signal};
+use tracing_subscriber::EnvFilter;
 
-const USAGE: &str = "usage: msi-daemon --probe [--samples N] [--interval-ms MS] [--no-nvml]
+const USAGE: &str = "usage: msi-daemon [--state PATH]
+       msi-daemon --probe [--samples N] [--interval-ms MS] [--no-nvml]
+  (no option)      run the daemon (system bus, root, started by systemd)
+  --state PATH     settings file (default /var/lib/msi-center/state.toml)
   --probe          read-only dump of dGPU state, holders and telemetry (never writes)
   --samples N      telemetry samples to print (default 3)
   --interval-ms MS delay between samples (default 1000)
   --no-nvml        never query NVML, even if the dGPU is active";
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
+enum Command {
+    Run { state: PathBuf },
+    Probe(ProbeArgs),
+}
+
+#[derive(Debug, PartialEq)]
 struct ProbeArgs {
     samples: u32,
     interval: Duration,
     nvml: bool,
 }
 
-fn parse_args(args: &[String]) -> Result<ProbeArgs, String> {
+fn parse_args(args: &[String]) -> Result<Command, String> {
     let mut probe = false;
+    let mut state = PathBuf::from(DEFAULT_STATE_PATH);
     let mut parsed = ProbeArgs {
         samples: 3,
         interval: Duration::from_secs(1),
@@ -50,13 +78,22 @@ fn parse_args(args: &[String]) -> Result<ProbeArgs, String> {
                     .ok_or("--interval-ms needs a number")?;
                 parsed.interval = Duration::from_millis(ms);
             }
+            "--state" => state = it.next().ok_or("--state needs a path")?.into(),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
     if probe {
-        Ok(parsed)
+        Ok(Command::Probe(parsed))
+    } else if parsed
+        != (ProbeArgs {
+            samples: 3,
+            interval: Duration::from_secs(1),
+            nvml: true,
+        })
+    {
+        Err("probe options need --probe".into())
     } else {
-        Err("nothing to do".into())
+        Ok(Command::Run { state })
     }
 }
 
@@ -147,12 +184,189 @@ fn probe(args: &ProbeArgs) {
     sampler.release_dgpu();
 }
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_env("MSI_DAEMON_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    // Under systemd, journald already timestamps lines and does not render colours.
+    let journald = std::env::var_os("JOURNAL_STREAM").is_some();
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_ansi(!journald);
+    if journald {
+        builder.without_time().init();
+    } else {
+        builder.init();
+    }
+}
+
+/// S5 on panic: the release profile aborts on panic, so no destructor runs. The hook writes `auto` to
+/// `fan_mode` directly (no lock: the panic may hold one), then runs the default hook.
+fn install_panic_hook(fan_mode: PathBuf) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let restored = restore_auto_at(&fan_mode).is_ok();
+        eprintln!("msi-daemon panicked; EC fan mode auto restored: {restored}");
+        previous(info);
+    }));
+}
+
+/// Waits for SIGTERM (systemd stop) or SIGINT (Ctrl+C).
+async fn shutdown_signal() -> anyhow::Result<&'static str> {
+    let mut term = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
+    let mut int = signal(SignalKind::interrupt()).context("installing SIGINT handler")?;
+    Ok(tokio::select! {
+        _ = term.recv() => "SIGTERM",
+        _ = int.recv() => "SIGINT",
+    })
+}
+
+#[zbus::proxy(
+    interface = "org.freedesktop.login1.Manager",
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1"
+)]
+trait Login1Manager {
+    #[zbus(signal)]
+    fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
+}
+
+/// Re-applies the profile after each resume: the EC may have reset its tables during suspend.
+async fn watch_resume(conn: zbus::Connection, iface: zbus::object_server::InterfaceRef<MsiCenter>) {
+    let proxy = match Login1ManagerProxy::new(&conn).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "logind unavailable: no re-apply after resume (drift check still runs)");
+            return;
+        }
+    };
+    let mut stream = match proxy.receive_prepare_for_sleep().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot watch PrepareForSleep");
+            return;
+        }
+    };
+    while let Some(sig) = stream.next().await {
+        if sig.args().is_ok_and(|a| !a.start) {
+            tracing::info!("resumed from suspend: re-applying the profile");
+            iface.get().await.resume(iface.signal_emitter()).await;
+        }
+    }
+}
+
+/// 1 Hz supervision: S4, AC switch, drift check, telemetry. `WATCHDOG=1` only after a completed tick (S6).
+async fn tick_loop(iface: zbus::object_server::InterfaceRef<MsiCenter>, notifier: Notifier) {
+    let start = Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let now = Clock(u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        match iface.get().await.tick(iface.signal_emitter(), now).await {
+            Ok(()) => {
+                if let Err(e) = notifier.notify("WATCHDOG=1") {
+                    tracing::warn!(error = %e, "watchdog notification failed");
+                }
+            }
+            Err(e) => tracing::error!(error = %e, "supervision tick failed"),
+        }
+    }
+}
+
+async fn run(state: &Path) -> anyhow::Result<()> {
+    init_tracing();
+    let root = FsRoot::real();
+    let ec = SysfsEc::new(&root);
+    let fan_mode = ec.fan_mode_path();
+    let gpu = GpuManager::new(root.clone());
+    let bus_id = gpu
+        .discover()
+        .map_or_else(|| "0000:01:00.0".to_owned(), |d| d.gpu.address);
+    let sampler = Sampler::new(root.clone(), NvmlBackend::new(bus_id), DgpuPolicy::Off);
+    let (mut ctl, warnings) = Controller::new(
+        Box::new(ec),
+        PowerSupply::new(root),
+        gpu,
+        Some(Box::new(sampler)),
+        StateStore::new(state),
+    );
+    for w in warnings {
+        tracing::warn!("settings: {w}");
+    }
+    match ctl.status().read_only {
+        Some(reason) => tracing::warn!(reason = %reason, "read-only mode (S8): the EC will not be written"),
+        None => install_panic_hook(fan_mode),
+    }
+    if let Err(e) = ctl.start() {
+        tracing::warn!(error = %e, "initial profile not fully applied");
+    }
+    let ctl = Arc::new(Mutex::new(ctl));
+
+    let conn = zbus::connection::Builder::system()
+        .build()
+        .await
+        .context("connecting to the system bus")?;
+    let auth = Arc::new(PolkitAuthorizer::new(conn.clone()));
+    conn.object_server()
+        .at(OBJECT_PATH, MsiCenter::new(Arc::clone(&ctl), auth))
+        .await
+        .context("serving the interface")?;
+    conn.request_name(BUS_NAME)
+        .await
+        .context("acquiring the bus name")?;
+    let iface = conn
+        .object_server()
+        .interface::<_, MsiCenter>(OBJECT_PATH)
+        .await
+        .context("interface lookup")?;
+    tracing::info!(name = BUS_NAME, path = OBJECT_PATH, "serving");
+
+    let notifier = Notifier::from_env();
+    if let Err(e) = notifier.notify("READY=1") {
+        tracing::warn!(error = %e, "READY notification failed");
+    }
+    let ticker = tokio::spawn(tick_loop(iface.clone(), notifier.clone()));
+    let resume = tokio::spawn(watch_resume(conn.clone(), iface));
+
+    let sig = shutdown_signal().await?;
+    tracing::info!(signal = sig, "shutting down");
+    if let Err(e) = notifier.notify("STOPPING=1") {
+        tracing::debug!(error = %e, "STOPPING notification failed");
+    }
+    ticker.abort();
+    resume.abort();
+    // S5: back to the firmware curve. ExecStopPost does it again in case this fails.
+    tokio::task::spawn_blocking(move || {
+        ctl.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .shutdown();
+    })
+    .await
+    .context("restoring fan mode auto")?;
+    conn.graceful_shutdown().await;
+    tracing::info!("stopped");
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse_args(&args) {
-        Ok(parsed) => {
+        Ok(Command::Probe(parsed)) => {
             probe(&parsed);
             ExitCode::SUCCESS
+        }
+        Ok(Command::Run { state }) => {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
+            match runtime
+                .map_err(anyhow::Error::from)
+                .and_then(|rt| rt.block_on(run(&state)))
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("msi-daemon: {e:#}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Err(err) => {
             eprintln!("{err}\n{USAGE}");
@@ -172,7 +386,7 @@ mod tests {
 
     #[test]
     fn parses_probe_options() {
-        let p = parse_args(&args(&[
+        let Command::Probe(p) = parse_args(&args(&[
             "--probe",
             "--samples",
             "5",
@@ -180,18 +394,39 @@ mod tests {
             "200",
             "--no-nvml",
         ]))
-        .unwrap();
+        .unwrap() else {
+            panic!("probe expected");
+        };
         assert_eq!(
             (p.samples, p.interval, p.nvml),
             (5, Duration::from_millis(200), false)
         );
-        let d = parse_args(&args(&["--probe"])).unwrap();
+        let Command::Probe(d) = parse_args(&args(&["--probe"])).unwrap() else {
+            panic!("probe expected");
+        };
         assert_eq!((d.samples, d.nvml), (3, true));
     }
 
     #[test]
+    fn no_argument_runs_the_daemon() {
+        assert_eq!(
+            parse_args(&args(&[])).unwrap(),
+            Command::Run {
+                state: PathBuf::from("/var/lib/msi-center/state.toml")
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&["--state", "/tmp/s.toml"])).unwrap(),
+            Command::Run {
+                state: PathBuf::from("/tmp/s.toml")
+            }
+        );
+    }
+
+    #[test]
     fn rejects_bad_arguments() {
-        assert!(parse_args(&args(&[])).is_err());
+        assert!(parse_args(&args(&["--samples", "4"])).is_err());
+        assert!(parse_args(&args(&["--state"])).is_err());
         assert!(parse_args(&args(&["--probe", "--samples"])).is_err());
         assert!(parse_args(&args(&["--probe", "--remove"])).is_err());
     }
