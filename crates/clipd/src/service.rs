@@ -156,6 +156,7 @@ impl Clipd {
 impl Clipd {
     /// Stores clipboard content and returns its id. Identical content (same MIME type and bytes) is not
     /// duplicated: the existing clip is bumped to the top and its id returned.
+    #[zbus(out_args("id"))]
     async fn add(
         &self,
         mime: String,
@@ -227,6 +228,7 @@ impl Clipd {
     }
 
     /// Deletes clips (pinned or not). Unknown ids are ignored. Returns how many were deleted.
+    #[zbus(out_args("deleted"))]
     async fn delete(
         &self,
         ids: Vec<u64>,
@@ -242,6 +244,7 @@ impl Clipd {
     }
 
     /// Deletes every unpinned clip. Returns how many were deleted.
+    #[zbus(out_args("deleted"))]
     async fn clear_unpinned(
         &self,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
@@ -255,6 +258,7 @@ impl Clipd {
     }
 
     /// Replaces the tags of a clip; returns them normalised (trimmed, lowercased, deduplicated, sorted).
+    #[zbus(out_args("tags"))]
     async fn set_tags(
         &self,
         id: u64,
@@ -268,6 +272,7 @@ impl Clipd {
     }
 
     /// Every tag in use with its number of clips, sorted by tag.
+    #[zbus(out_args("tags"))]
     async fn tags(&self) -> Result<Vec<(String, u32)>, ClipdError> {
         let tags = self.run(|lib| Ok(lib.tags()?)).await?;
         Ok(tags

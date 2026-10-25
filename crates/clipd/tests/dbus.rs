@@ -188,3 +188,30 @@ async fn changed_signal_is_emitted() {
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn introspection_matches_documented_signatures() {
+    let h = harness().await;
+    let intro = zbus::fdo::IntrospectableProxy::builder(h.proxy.inner().connection())
+        .destination("org.blazorde.Clipd1")
+        .path(OBJECT_PATH)
+        .build()
+        .await
+        .unwrap();
+    let xml = intro.introspect().await.unwrap();
+    for fragment in [
+        r#"<interface name="org.blazorde.Clipd1">"#,
+        r#"<arg name="clips" type="a(tsstxxbas)" direction="out"/>"#,
+        r#"<arg name="total" type="u" direction="out"/>"#,
+        r#"<arg name="data" type="ay" direction="out"/>"#,
+        r#"<arg name="ids" type="at" direction="in"/>"#,
+        r#"<arg name="id" type="t" direction="out"/>"#,
+        r#"<arg name="deleted" type="u" direction="out"/>"#,
+        r#"<arg name="tags" type="a(su)" direction="out"/>"#,
+        r#"<signal name="Changed">"#,
+        r#"<property name="MaxUnpinned" type="u" access="read"/>"#,
+        r#"<property name="MaxClipBytes" type="t" access="read"/>"#,
+    ] {
+        assert!(xml.contains(fragment), "missing {fragment}");
+    }
+}
