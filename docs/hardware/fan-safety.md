@@ -23,54 +23,111 @@ speed(T) =⎨ min + (max − min) · ((T − T0)/(T1 − T0))^k   si T0 < T < T1
 ```
 
 - `k > 1` : très doux à basse température, accélère fort quand ça chauffe (ce qui a été demandé).
-- `msi-core` échantillonne cette fonction sur les N points de la table EC (arrondi au % le plus proche), puis
-  applique les planchers S2 (voir plus bas).
-- **Disposition provisoire** (`PROVISIONAL_LAYOUT_TEMPS`) : 7 points à 40, 50, 60, 70, 75, 80, 85 °C.
-  TODO : à remplacer par le nombre de points et les seuils réels une fois `docs/hardware/ec-map.md` rédigé (spike).
 - Bornes des paramètres (S3) : `20 ≤ T0 < T1 ≤ 100` °C, `0 ≤ min ≤ max ≤ 100` %, `1,0 ≤ k ≤ 4,0`.
-- Presets (indicatifs, à calibrer après le spike) :
 
-| Preset | T0 | T1 | min | max | k |
-|---|---|---|---|---|---|
-| Silencieuse (Éco) | 50 °C | 90 °C | 20 % | 100 % | 2,5 |
-| Progressive (Balanced) | 45 °C | 87 °C | 25 % | 100 % | 2,0 |
-| Agressive (Gaming) | 40 °C | 82 °C | 35 % | 100 % | 1,5 |
+### Du modèle à la table EC (modèle par paliers mesuré)
 
-Sur la disposition provisoire, la Silencieuse donne ~22,5 % à 60 °C, 45 % à 75 °C et 77 % à 85 °C : les trois
-points sont relevés par S2 (30 / 50 / 100 %) et le relèvement est signalé. La Progressive et l'Agressive
-respectent déjà les planchers.
+La table EC d'un ventilo a **7 vitesses**, **6 seuils de montée** et **6 seuils de descente**
+([ec-map.md](ec-map.md)). Le palier `i ≥ 1` est atteint quand `T ≥ up[i−1]` et quitté quand `T < down[i−1]` ;
+le palier 0 s'applique sous le premier seuil. Une courbe (`FanCurveSpec` dans `msi-core`) se décrit par :
+
+| Champ | Rôle | Bornes (S3) |
+|---|---|---|
+| `T0, T1, min, max, k` | courbe exponentielle ci-dessus | voir ci-dessus |
+| `idle` | vitesse du palier 0 (0 = ventilo arrêté) | `idle ≤ min` |
+| `up[0..6]` | seuils de montée | strictement croissants, 20–100 °C |
+| `hysteresis` | `up[i] − down[i]` | 2–10 °C, et `up[0] − hysteresis ≥ 20` |
+
+Génération (`table::generate`) : `speeds[0] = idle`, `speeds[i] = f(up[i−1])` arrondi au %,
+`down[i] = up[i] − hysteresis`, puis planchers S2 (ci-dessous). La vitesse appliquée par palier est la valeur
+de la courbe **à l'entrée** du palier : la table reste sous la courbe, les planchers garantissent la sécurité.
+
+### Lecture prudente : le palier montant
+
+Comme `down[i] < up[i]`, à une température `T` donnée l'EC peut être sur deux paliers selon qu'il chauffe ou
+refroidit. Le **palier montant** (nombre de seuils `up ≤ T`) est le plus bas des deux : c'est lui que S2 contrôle
+(`StepCurve::min_speed_at`). En redescente, l'EC reste plus longtemps sur un palier plus rapide : plus sûr.
+
+### Presets (calibrés sur la carte EC mesurée, firmware `.110`)
+
+| Preset (profil) | `idle` | `T0` | `T1` | `min` | `max` | `k` | `up` (°C) | hyst. |
+|---|---|---|---|---|---|---|---|---|
+| **Silencieux** (Éco) | 0 % | 50 | 82 | 30 % | 100 % | 2,0 | 50 57 64 70 76 82 | 4 °C |
+| **Progressif** (Balanced) | 0 % | 42 | 79 | 30 % | 100 % | 1,8 | 42 50 58 65 72 79 | 4 °C |
+| **Agressif** (Gaming) | 30 % | 40 | 74 | 40 % | 100 % | 1,4 | 40 47 54 61 68 74 | 3 °C |
+
+Tables générées (testées dans `table::tests::presets_generate_the_documented_tables`), **aucun palier relevé
+par S2** :
+
+| Palier | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| Silencieux vitesse % | 0 | 30 | 33 | 43 | 57 | 76 | 100 |
+| Silencieux monte ≥ / redescend < °C | – | 50 / 46 | 57 / 53 | 64 / 60 | 70 / 66 | 76 / 72 | 82 / 78 |
+| Progressif vitesse % | 0 | 30 | 34 | 45 | 60 | 78 | 100 |
+| Progressif monte ≥ / redescend < °C | – | 42 / 38 | 50 / 46 | 58 / 54 | 65 / 61 | 72 / 68 | 79 / 75 |
+| Agressif vitesse % | 30 | 40 | 47 | 57 | 71 | 86 | 100 |
+| Agressif monte ≥ / redescend < °C | – | 40 / 37 | 47 / 44 | 54 / 51 | 61 / 58 | 68 / 65 | 74 / 71 |
+| *Usine CPU (rappel)* | *0* | *36* | *40* | *50* | *62* | *80* | *96* |
+| *Usine monte ≥ / redescend < °C* | – | *57 / 53* | *62 / 57* | *70 / 65* | *77 / 73* | *83 / 80* | *90 / 87* |
+
+Justification :
+
+- **Vitesse active minimale 30 %** : c'est la plus basse valeur vérifiée sur la machine (≈ 2070 tr/min, le
+  ventilo tourne). En dessous, rien n'est mesuré (risque de calage) ; et les bas régimes sont proches en
+  tr/min (36 % ≈ 2200), donc le silence vient de la **forme** de la courbe, pas de vitesses très basses.
+- **Silencieux** (« je veux un mode silencieux ») : ventilo **arrêté sous 50 °C** (redémarre à 50, s'arrête
+  sous 46), **démarrage doux à 30 % avant 55 °C** au lieu de 0 % jusqu'à 57 °C puis des sauts tardifs.
+  Plus silencieux que l'usine à chaque température jusqu'à 69 °C, sans saut de plus de 24 points entre deux
+  paliers. Hystérésis de 4 °C : pas de « pompage » entre deux paliers, source de bruit.
+- **Progressif** : démarre dès 42 °C, montée exponentielle régulière, 100 % à 79 °C.
+- **Agressif** : jamais arrêté (30 %), réagit tôt, 100 % dès 74 °C ; hystérésis 3 °C pour redescendre vite.
+- Tous atteignent **100 % avant 85 °C** (S2), alors que la table d'usine plafonne à 96 % à 90 °C.
+- Les mêmes presets s'appliquent aux deux ventilos (CPU et GPU).
 
 ## Invariants (non négociables)
 
 | # | Règle | Où |
 |---|---|---|
-| S1 | Les températures de la table sont strictement croissantes, les vitesses croissantes ou égales | `msi-core` |
-| S2 | Vitesse ≥ **30 %** dès 60 °C, ≥ **50 %** dès 75 °C, **100 %** dès 85 °C (planchers, quelle que soit la courbe). Table générée depuis les paramètres : points relevés **explicitement et signalés** (`SafetyReport`). Table saisie point par point : **rejetée** | `msi-core` |
+| S1 | Seuils de montée et de descente strictement croissants, `down[i] < up[i]` avec un écart ≥ 2 °C, vitesses croissantes ou égales | `msi-core` + noyau (sauf l'écart de 2 °C) |
+| S2 | Vitesse du **palier montant** ≥ **30 %** dès 60 °C, ≥ **50 %** dès 75 °C, **100 %** dès 85 °C (planchers, quelle que soit la courbe). Table générée depuis les paramètres : paliers relevés **explicitement et signalés** (`SafetyReport`). Table saisie palier par palier : **rejetée** | `msi-core` |
 | S3 | Toute **entrée** hors bornes (paramètres de courbe, disposition, table brute) est **rejetée**, jamais « corrigée silencieusement » | `msi-core` + noyau |
-| S4 | CPU ou GPU ≥ **95 °C** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C (hystérésis). Capteur illisible → forcé | `msi-core` (machine à états) + `msi-daemon` (application) |
-| S5 | Arrêt du daemon (normal, signal, panic) → EC remis en fan mode `auto` | `msi-daemon` + `ExecStopPost` systemd |
-| S6 | Watchdog systemd (`WatchdogSec`) : daemon figé → redémarré, et S5 s'applique | systemd |
-| S7 | Après écriture, relecture de la table EC ; divergence → retour `auto` + `SafetyEvent` | `msi-daemon` |
-| S8 | Firmware EC non reconnu → aucune écriture, mode lecture seule | `msi-ec` fork + daemon (liste dans `msi-core`) |
+| S4 | CPU ou GPU ≥ **95 °C** sur **2 lectures consécutives** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics). Capteur illisible → forcé immédiatement | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
+| S5 | Arrêt du daemon (normal, signal, panic) → EC remis en fan mode `auto` | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost` systemd |
+| S6 | Watchdog systemd (`WatchdogSec=15`) : `WATCHDOG=1` après chaque tick de 1 s réussi ; daemon figé → tué, redémarré, et S5 s'applique (`ExecStopPost`) | systemd + `msi-daemon` (`notify`) |
+| S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → retour `auto` + `SafetyEvent` | `msi-daemon` |
+| S8 | Firmware EC non reconnu, ou attributs de courbe absents (module amont, `firmware=` forcé) → aucune écriture, mode lecture seule | `msi-ec` fork + daemon (liste dans `msi-core`) |
 
 Les seuils S2/S4 sont prudents : le Core Ultra 9 185H a un Tjmax de 110 °C, la RTX 4070 Laptop réduit sa fréquence vers 87 °C.
 
 ## S2 et S3 : relèvement signalé vs rejet
 
-Les deux règles semblent en conflit (la Silencieuse passe sous le plancher de 60 °C alors que S3 interdit de
-corriger). Résolution :
+Les deux règles semblent en conflit (une courbe très silencieuse peut passer sous un plancher alors que S3
+interdit de corriger). Résolution :
 
-- **S3 porte sur les entrées** : ce que l'utilisateur fournit (paramètres `T0/T1/min/max/k`, table brute de l'éditeur
-  de points, disposition) est validé tel quel ; hors bornes → erreur, rien n'est modifié.
+- **S3 porte sur les entrées** : ce que l'utilisateur fournit (paramètres `T0/T1/min/max/k`, `idle`, seuils,
+  hystérésis, table brute d'un futur éditeur de paliers) est validé tel quel ; hors bornes → erreur, rien n'est
+  modifié.
 - **S2 est une transformation documentée** de la table *générée* : les planchers font partie de la définition de la
-  courbe appliquée (ADR-0006 : « échantillonne … puis applique les planchers »). Chaque point relevé est retourné
-  dans un `SafetyReport` (point, vitesse de la courbe, vitesse appliquée, plancher en cause) que le daemon expose
-  et que l'UI affiche. Rien n'est silencieux.
-- Une table brute saisie point par point n'est **pas** relevée : si elle viole S1 ou S2, elle est rejetée.
+  courbe appliquée (ADR-0006, modèle par paliers : ADR-0009). Chaque palier relevé est retourné dans un `SafetyReport` (palier, seuil d'entrée,
+  vitesse de la courbe, vitesse appliquée, plancher en cause) que le daemon expose (`SetFanCurve`, `FanCurve`) et
+  que l'UI affiche. Rien n'est silencieux. Un plancher `(Tf, Sf)` relève le palier montant à `Tf` et tous les
+  suivants (S1 conservé) ; si le premier seuil est au-dessus de 60 °C, c'est le palier 0 (`idle`) qui est relevé.
+- Une table brute saisie palier par palier n'est **pas** relevée : si elle viole S1 ou S2, elle est rejetée.
 
-## Lecture des tables
+## Filtre anti-pics de S4
 
-Le comportement de l'EC entre deux points (paliers ou interpolation) n'est pas encore connu. Les contrôles S2
-utilisent la lecture **en paliers** : la vitesse en vigueur à `T` est celle du dernier point `≤ T`. C'est la borne
-basse des deux comportements, donc la plus prudente. La vitesse sous le premier point étant inconnue elle aussi,
-le premier point doit être `≤ 60 °C` (plancher le plus bas), sinon la disposition ou la table est rejetée.
+La température instantanée de l'EC (`0x68`) a des pics isolés jusqu'à ~90 °C au repos. Chaque capteur est filtré
+sur ses **deux dernières lectures** (`supervisor::ThermalSupervisor`) : Cooler Boost n'est forcé que si les deux
+sont ≥ 95 °C (minimum glissant) et n'est relâché que si les deux sont < 85 °C (maximum glissant). Un pic isolé
+est ignoré, une vraie surchauffe est prise en compte une lecture (~1 s) plus tard. Une lecture en échec force
+immédiatement, sans filtre. Après le démarrage ou le retour d'un capteur, une seule lecture ne suffit ni à forcer
+ni à relâcher.
+
+## Écriture ordonnée des tables
+
+Le noyau vérifie `down[i] < up[i]` à **chaque** écriture (`EINVAL` sinon). `table::write_plan` ordonne les
+écritures : vitesses ← max(actuelles, cibles), descente ← min(actuelle, cible), montée ← cible, descente ← cible,
+vitesses ← cible (les écritures sans effet sont sautées). Chaque état intermédiaire est accepté par le noyau et au
+moins aussi sûr que l'ancienne ou la nouvelle table (test de propriété). Le noyau refuse aussi une table de
+vitesses dont le dernier palier est < 80 % (`RawTables::kernel_check` reproduit toutes ses règles) ; une table
+`StepCurve` a toujours 100 % au dernier palier (plancher S2 de 85 °C).

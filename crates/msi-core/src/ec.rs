@@ -1,8 +1,8 @@
 //! EC register map, as typed data. No I/O: the daemon talks to the EC only through the msi-ec sysfs interface,
 //! these constants document what msi-ec writes and let the daemon check read-backs (S7) and firmware (S8).
 //!
-//! Source: upstream msi-ec `CONF_G2_5` (see `docs/hardware/stealth-14-a1vgg.md`). Fan curve tables are not
-//! here yet: TODO(ec-spike) add them from `docs/hardware/ec-map.md`.
+//! Source: upstream msi-ec `CONF_G2_5` (see `docs/hardware/stealth-14-a1vgg.md`); fan curve tables and
+//! firmware `14K2EMS1.110` from the spike (`docs/hardware/ec-map.md`).
 
 /// A single bit of an EC register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -151,6 +151,17 @@ pub struct SensorMap {
     pub fan_speed: u8,
 }
 
+/// Fan curve tables of one fan: first address of each table (7 speeds, 6 up, 6 down thresholds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FanTableMap {
+    /// First speed register (7 consecutive bytes).
+    pub speeds: u8,
+    /// First up-threshold register (6 consecutive bytes).
+    pub up: u8,
+    /// First down-threshold register (6 consecutive bytes).
+    pub down: u8,
+}
+
 /// Webcam switch registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WebcamMap {
@@ -181,6 +192,10 @@ pub struct EcConfig {
     pub cpu: SensorMap,
     /// GPU sensors.
     pub gpu: SensorMap,
+    /// CPU fan curve tables.
+    pub cpu_table: FanTableMap,
+    /// GPU fan curve tables.
+    pub gpu_table: FanTableMap,
     /// Webcam.
     pub webcam: WebcamMap,
     /// Fn ↔ Win key swap.
@@ -200,7 +215,13 @@ impl EcConfig {
 /// msi-ec `CONF_G2_5`: MSI Stealth 14 AI Studio A1VGG / A1VFG.
 pub const CONF_G2_5: EcConfig = EcConfig {
     name: "CONF_G2_5",
-    allowed_firmware: &["14K2EMS1.104", "14K2EMS1.107", "14K2EMS1.108", "14K2EMS1.109"],
+    allowed_firmware: &[
+        "14K2EMS1.104",
+        "14K2EMS1.107",
+        "14K2EMS1.108",
+        "14K2EMS1.109",
+        "14K2EMS1.110",
+    ],
     shift_mode: ShiftModeMap {
         address: 0xd2,
         eco: 0xc2,
@@ -229,6 +250,16 @@ pub const CONF_G2_5: EcConfig = EcConfig {
     gpu: SensorMap {
         temp: 0x80,
         fan_speed: 0x89,
+    },
+    cpu_table: FanTableMap {
+        speeds: 0x72,
+        up: 0x6a,
+        down: 0x7a,
+    },
+    gpu_table: FanTableMap {
+        speeds: 0x8a,
+        up: 0x82,
+        down: 0x92,
     },
     webcam: WebcamMap {
         enable: EcBit {
@@ -285,6 +316,22 @@ mod tests {
                 fan_speed: 0x89
             }
         );
+        assert_eq!(
+            c.cpu_table,
+            FanTableMap {
+                speeds: 0x72,
+                up: 0x6a,
+                down: 0x7a
+            }
+        );
+        assert_eq!(
+            c.gpu_table,
+            FanTableMap {
+                speeds: 0x8a,
+                up: 0x82,
+                down: 0x92
+            }
+        );
         assert_eq!(c.webcam.enable.mask(), 0x02);
         assert_eq!(c.fn_win_swap.mask(), 0x10);
     }
@@ -305,7 +352,8 @@ mod tests {
     fn s8_only_known_firmware_is_supported() {
         assert!(CONF_G2_5.supports_firmware("14K2EMS1.109"));
         assert!(CONF_G2_5.supports_firmware("14K2EMS1.104\n"));
-        assert!(!CONF_G2_5.supports_firmware("14K2EMS1.110"));
+        assert!(CONF_G2_5.supports_firmware("14K2EMS1.110"));
+        assert!(!CONF_G2_5.supports_firmware("14K2EMS1.111"));
         assert!(!CONF_G2_5.supports_firmware("14K2EMS1.10"));
         assert!(!CONF_G2_5.supports_firmware(""));
     }

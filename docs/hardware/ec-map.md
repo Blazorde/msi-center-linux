@@ -58,9 +58,9 @@ Règle déduite : palier `i` (i ≥ 1) atteint quand T ≥ `up[i-1]`, quitté qu
 
 | Sujet | Décision |
 |---|---|
-| `CurveLayout` (`msi-core`) | 7 vitesses + 6 seuils montée + 6 seuils descente, au lieu de 7 points provisoires |
-| Planchers S2 | S'appliquent au **palier effectif** ; le seuil de descente fixe la vitesse minimale pendant la redescente |
-| Premier palier | Ne plus laisser 0 % : palier 0 ≥ 20–25 % (ventilo jamais arrêté) |
+| `StepCurve` (`msi-core`) | ✅ 7 vitesses + 6 seuils montée + 6 seuils descente (remplace la disposition provisoire de 7 points) |
+| Planchers S2 | ✅ Contrôlés sur le **palier montant** (le plus bas possible à une température) ; la redescente ne peut qu'être plus rapide |
+| Premier palier | Silencieux/Progressif : 0 % sous un seuil bas (50 / 42 °C) puis démarrage doux à 30 % ; Agressif : 30 % permanent (voir [fan-safety.md](fan-safety.md)) |
 | Fork `msi-ec` | Ajouter `.110` ; attributs sysfs pour les 3 tables × 2 ventilos, avec validation noyau |
 
 ## Bascule des modes ventilo (autorisée par le propriétaire)
@@ -101,4 +101,5 @@ actif (CPU palier 1, `0x73`) passée de 36 % à 30 % pendant 20 s, puis restaur�
 
 - [x] En `advanced`, une table écrite est-elle appliquée par l'EC ? → oui (ci-dessus)
 - [ ] Les tables survivent-elles à un changement de shift mode, à la veille, au débranchement secteur ?
-      (sinon le daemon réapplique la courbe sur ces événements)
+      Le daemon ne le suppose pas : il ré-applique après la veille et vérifie toutes les 10 s (ADR-0009).
+- [ ] Température GPU (`0x80`) quand le dGPU est retiré (Éco) : le daemon traite `0` comme « absent ».

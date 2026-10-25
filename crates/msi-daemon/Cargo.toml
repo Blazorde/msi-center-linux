@@ -10,12 +10,22 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+futures-util.workspace = true
 msi-core.workspace = true
 nvml-wrapper.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "signal", "sync", "time"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus = { workspace = true, features = ["proxy"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "net", "time"] }
+zbus = { workspace = true, features = ["proxy", "p2p"] }
 
 [lints]
 workspace = true

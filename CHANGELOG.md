@@ -23,8 +23,22 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   validés dans le noyau (bornes, monotonie, `down < up`, relecture après écriture), paquet DKMS
   `msi-ec-blazorde`, `scripts/kernel-build.sh`, procédure de test `kernel/TESTING.md`. Docs :
   [interface sysfs des courbes](docs/hardware/fan-curve-sysfs.md).
+- `msi-daemon` (phase 4) : service système exposant `org.blazorde.MsiCenter1` (API figée,
+  [dbus-api.md](docs/architecture/dbus-api.md)) : profils `eco` / `balanced` / `gaming` appliqués à l'EC
+  (courbes ordonnées, `fan_mode=advanced`, shift mode, relecture S7 avec repli `auto`), courbes personnalisées
+  par profil et ventilo avec rapport des planchers S2, Cooler Boost forcé par S4, limite de charge 50–100 %,
+  profil automatique au branchement secteur, réglages dans `/var/lib/msi-center/state.toml` ré-appliqués au
+  démarrage et après la veille, watchdog systemd, retour en `auto` à l'arrêt et en cas de panic. Autorisations
+  polkit `org.blazorde.msicenter.*`. Mode lecture seule si le firmware EC est inconnu (S8).
+- `msictl` : `status`, `profile`, `curve show`, `charge-limit`, `telemetry --watch`.
+- `systemd/` : `msi-daemon.service` (`Type=notify`, `WatchdogSec`, `ExecStopPost`), politique et activation
+  D-Bus système, politique polkit. ADR 0009.
 
 ### Changed
+- `msi-core` : la table EC suit le modèle mesuré par paliers (7 vitesses, 6 seuils de montée, 6 de descente)
+  au lieu de la disposition provisoire de 7 points ; nouveaux presets **Silencieux** (ventilo arrêté sous 50 °C,
+  démarrage doux à 30 %), **Progressif** et **Agressif** ; filtre anti-pics pour S4 (2 lectures consécutives) ;
+  firmware `14K2EMS1.110` reconnu.
 - Presse-papiers : taguer un clip (`SetTags` avec au moins un tag) l'épingle automatiquement, il survit donc au
   logout. Vider les tags ne désépingle pas ; désépingler un clip tagué conserve ses tags. Signature D-Bus
   inchangée (ADR 0005, mise à jour du 2026-10-25).

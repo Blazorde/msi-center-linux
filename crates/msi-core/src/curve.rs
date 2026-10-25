@@ -149,14 +149,144 @@ impl FanCurveParams {
     }
 }
 
-/// Curve presets from `docs/hardware/fan-safety.md` (indicative, to be calibrated after the EC spike).
+/// Number of speed steps in an EC fan table (`docs/hardware/ec-map.md`).
+pub const STEP_COUNT: usize = 7;
+/// Number of up (and down) thresholds in an EC fan table: one per step above step 0.
+pub const THRESHOLD_COUNT: usize = STEP_COUNT - 1;
+/// Accepted range for table thresholds, in °C (same bounds as the kernel interface).
+pub const THRESHOLD_RANGE: RangeInclusive<u8> = 20..=100;
+/// Accepted hysteresis (`up[i] − down[i]`), in °C. At least 2 °C so a sensor jittering by ±1 °C cannot make
+/// the fan hunt between two steps.
+pub const HYSTERESIS_RANGE: RangeInclusive<u8> = 2..=10;
+
+/// Why a curve specification was rejected (rule S3: rejected, never corrected).
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum SpecError {
+    /// The idle speed (step 0) must not exceed the speed of the first active step.
+    #[error("idle speed ({idle} %) must not exceed the start speed ({min} %)")]
+    IdleAboveMin {
+        /// Speed below the first threshold.
+        idle: u8,
+        /// Start speed of the curve.
+        min: u8,
+    },
+    /// An up threshold is outside [`THRESHOLD_RANGE`].
+    #[error("threshold {index}: {value} °C is outside 20..=100 °C")]
+    ThresholdOutOfRange {
+        /// Threshold index (0 = entry of step 1).
+        index: usize,
+        /// Offending value.
+        value: u8,
+    },
+    /// Up thresholds must be strictly increasing.
+    #[error("threshold {index}: thresholds must be strictly increasing")]
+    ThresholdsNotIncreasing {
+        /// Index of the first threshold not above its predecessor.
+        index: usize,
+    },
+    /// Hysteresis outside [`HYSTERESIS_RANGE`].
+    #[error("hysteresis {value} °C is outside 2..=10 °C")]
+    HysteresisOutOfRange {
+        /// Offending value.
+        value: u8,
+    },
+    /// `up[0] − hysteresis` would be below 20 °C, the lowest down threshold the EC interface accepts.
+    #[error("first threshold {up} °C minus hysteresis {hysteresis} °C is below 20 °C")]
+    DownOutOfRange {
+        /// First up threshold.
+        up: u8,
+        /// Hysteresis.
+        hysteresis: u8,
+    },
+}
+
+/// A complete, validated description of one fan's curve: the exponential [`FanCurveParams`], the speed below
+/// the first threshold (`idle`), the six up thresholds and the hysteresis. [`crate::table::generate`] turns it
+/// into an EC step table.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FanCurveSpec {
+    params: FanCurveParams,
+    idle: u8,
+    up: [u8; THRESHOLD_COUNT],
+    hysteresis: u8,
+}
+
+impl FanCurveSpec {
+    /// Validates and builds a specification.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SpecError`] if any value is out of bounds (rule S3).
+    pub fn new(
+        params: FanCurveParams,
+        idle: u8,
+        up: [u8; THRESHOLD_COUNT],
+        hysteresis: u8,
+    ) -> Result<Self, SpecError> {
+        if idle > params.min {
+            return Err(SpecError::IdleAboveMin {
+                idle,
+                min: params.min,
+            });
+        }
+        for (index, &value) in up.iter().enumerate() {
+            if !THRESHOLD_RANGE.contains(&value) {
+                return Err(SpecError::ThresholdOutOfRange { index, value });
+            }
+        }
+        if let Some(index) = (1..THRESHOLD_COUNT).find(|&i| up[i] <= up[i - 1]) {
+            return Err(SpecError::ThresholdsNotIncreasing { index });
+        }
+        if !HYSTERESIS_RANGE.contains(&hysteresis) {
+            return Err(SpecError::HysteresisOutOfRange { value: hysteresis });
+        }
+        if up[0] < THRESHOLD_RANGE.start() + hysteresis {
+            return Err(SpecError::DownOutOfRange {
+                up: up[0],
+                hysteresis,
+            });
+        }
+        Ok(Self {
+            params,
+            idle,
+            up,
+            hysteresis,
+        })
+    }
+
+    /// Exponential curve sampled at each threshold.
+    #[must_use]
+    pub const fn params(&self) -> FanCurveParams {
+        self.params
+    }
+
+    /// Speed (%) of step 0, below the first threshold. 0 = fan stopped.
+    #[must_use]
+    pub const fn idle(&self) -> u8 {
+        self.idle
+    }
+
+    /// Up thresholds (°C): step `i ≥ 1` is entered at `T ≥ up[i − 1]`.
+    #[must_use]
+    pub const fn up(&self) -> [u8; THRESHOLD_COUNT] {
+        self.up
+    }
+
+    /// `up[i] − down[i]` (°C).
+    #[must_use]
+    pub const fn hysteresis(&self) -> u8 {
+        self.hysteresis
+    }
+}
+
+/// Curve presets, documented with their rationale in `docs/hardware/fan-safety.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CurvePreset {
-    /// Silencieuse (Éco): T0 50, T1 90, 20–100 %, k 2.5.
+    /// Silencieux (Éco): off below 50 °C, gentle start at 30 %, 100 % from 82 °C.
     Silent,
-    /// Progressive (Balanced): T0 45, T1 87, 25–100 %, k 2.0.
+    /// Progressif (Balanced): starts at 42 °C, 100 % from 79 °C.
     Progressive,
-    /// Agressive (Gaming): T0 40, T1 82, 35–100 %, k 1.5.
+    /// Agressif (Gaming): never off (30 %), 100 % from 74 °C.
     Aggressive,
 }
 
@@ -164,15 +294,36 @@ impl CurvePreset {
     /// All presets.
     pub const ALL: [Self; 3] = [Self::Silent, Self::Progressive, Self::Aggressive];
 
-    /// Parameters of the preset. Every preset is checked against [`FanCurveParams::new`] in the tests.
+    /// Stable name (D-Bus, state file).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Silent => "silent",
+            Self::Progressive => "progressive",
+            Self::Aggressive => "aggressive",
+        }
+    }
+
+    /// Specification of the preset. Every preset is checked against [`FanCurveSpec::new`] in the tests.
+    #[must_use]
+    pub const fn spec(self) -> FanCurveSpec {
+        let (t0, t1, min, max, k, idle, up, hysteresis) = match self {
+            Self::Silent => (50, 82, 30, 100, 2.0, 0, [50, 57, 64, 70, 76, 82], 4),
+            Self::Progressive => (42, 79, 30, 100, 1.8, 0, [42, 50, 58, 65, 72, 79], 4),
+            Self::Aggressive => (40, 74, 40, 100, 1.4, 30, [40, 47, 54, 61, 68, 74], 3),
+        };
+        FanCurveSpec {
+            params: FanCurveParams { t0, t1, min, max, k },
+            idle,
+            up,
+            hysteresis,
+        }
+    }
+
+    /// Exponential parameters of the preset.
     #[must_use]
     pub const fn params(self) -> FanCurveParams {
-        let (t0, t1, min, max, k) = match self {
-            Self::Silent => (50, 90, 20, 100, 2.5),
-            Self::Progressive => (45, 87, 25, 100, 2.0),
-            Self::Aggressive => (40, 82, 35, 100, 1.5),
-        };
-        FanCurveParams { t0, t1, min, max, k }
+        self.spec().params
     }
 }
 
@@ -258,7 +409,7 @@ mod tests {
 
     #[test]
     fn speed_follows_the_exponential_formula() {
-        let p = CurvePreset::Silent.params();
+        let p = FanCurveParams::new(50, 90, 20, 100, 2.5).unwrap();
         // 20 + 80 · (10/40)^2.5 = 20 + 80 · 0.03125 = 22.5
         assert!((p.speed_at(60) - 22.5).abs() < 1e-9);
         // 20 + 80 · (20/40)^2.5 ≈ 34.142
@@ -282,5 +433,77 @@ mod tests {
                 "{preset:?}"
             );
         }
+    }
+
+    fn spec(idle: u8, up: [u8; 6], h: u8) -> Result<FanCurveSpec, SpecError> {
+        FanCurveSpec::new(FanCurveParams::new(50, 82, 30, 100, 2.0).unwrap(), idle, up, h)
+    }
+
+    #[test]
+    fn presets_are_valid_specs() {
+        for preset in CurvePreset::ALL {
+            let s = preset.spec();
+            assert_eq!(
+                FanCurveSpec::new(s.params(), s.idle(), s.up(), s.hysteresis()),
+                Ok(s),
+                "{preset:?}"
+            );
+            assert_eq!(preset.params(), s.params());
+        }
+    }
+
+    #[test]
+    fn s3_spec_rejects_idle_above_start_speed() {
+        assert_eq!(
+            spec(31, [50, 57, 64, 70, 76, 82], 4),
+            Err(SpecError::IdleAboveMin { idle: 31, min: 30 })
+        );
+        assert!(spec(30, [50, 57, 64, 70, 76, 82], 4).is_ok());
+    }
+
+    #[test]
+    fn s3_spec_rejects_thresholds_out_of_range_or_unordered() {
+        assert_eq!(
+            spec(0, [50, 57, 64, 70, 76, 101], 4),
+            Err(SpecError::ThresholdOutOfRange { index: 5, value: 101 })
+        );
+        assert_eq!(
+            spec(0, [19, 57, 64, 70, 76, 82], 2),
+            Err(SpecError::ThresholdOutOfRange { index: 0, value: 19 })
+        );
+        assert_eq!(
+            spec(0, [50, 57, 57, 70, 76, 82], 4),
+            Err(SpecError::ThresholdsNotIncreasing { index: 2 })
+        );
+        assert_eq!(
+            spec(0, [50, 57, 64, 60, 76, 82], 4),
+            Err(SpecError::ThresholdsNotIncreasing { index: 3 })
+        );
+    }
+
+    #[test]
+    fn s3_spec_rejects_bad_hysteresis() {
+        for h in [0, 1, 11, 255] {
+            assert_eq!(
+                spec(0, [50, 57, 64, 70, 76, 82], h),
+                Err(SpecError::HysteresisOutOfRange { value: h })
+            );
+        }
+        assert!(spec(0, [50, 57, 64, 70, 76, 82], 2).is_ok());
+        assert!(spec(0, [50, 57, 64, 70, 76, 82], 10).is_ok());
+        assert_eq!(
+            spec(0, [23, 57, 64, 70, 76, 82], 4),
+            Err(SpecError::DownOutOfRange {
+                up: 23,
+                hysteresis: 4
+            })
+        );
+        assert!(spec(0, [24, 57, 64, 70, 76, 82], 4).is_ok());
+    }
+
+    #[test]
+    fn preset_names_are_stable() {
+        let names: Vec<&str> = CurvePreset::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(names, ["silent", "progressive", "aggressive"]);
     }
 }

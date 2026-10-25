@@ -1,25 +1,113 @@
 # API D-Bus
 
-> Brouillon. Les signatures seront figées en phase 4 (daemon) et 6 (clipd), avant les frontends.
-> Règle : changement incompatible = nouvelle interface (`…2`).
+> Les deux interfaces sont figées. Règle : changement incompatible = nouvelle interface (`…2`).
 
 ## `org.blazorde.MsiCenter1` — bus système, `msi-daemon`
 
-Objet : `/org/blazorde/MsiCenter`
+> **Figée (phase 4).** Implémentation : `crates/msi-daemon/src/service.rs`, testée de bout en bout sur une
+> connexion pair-à-pair avec un EC en mémoire (`crates/msi-daemon/tests/dbus.rs`, dont un test d'introspection).
+> Client : `msictl` et le proxy `msi_daemon::client::MsiCenter1Proxy`.
 
-| Membre | Type | Signature (prévue) | Polkit |
-|---|---|---|---|
-| `Profile` | propriété | `s` (`eco` · `balanced` · `gaming`) | lecture libre |
-| `SetProfile` | méthode | `(s) → ()` | `org.blazorde.msicenter.set-profile` |
-| `AutoProfileOnPower` | propriété rw | `b` | idem |
-| `FanCurve` | propriété | `a{s(ddd)}` par ventilo : `min, max, exposant` | lecture libre |
-| `SetFanCurve` | méthode | `(s fan, d t0, d t1, d min, d max, d k) → ()` | `…set-fan-curve` |
-| `CoolerBoost` | propriété rw | `b` | `…set-fan-curve` |
-| `ChargeLimit` | propriété rw | `y` (50–100) | `…set-battery` |
-| `GpuState` | propriété | `s` (`active` · `suspended` · `removed`) | lecture libre |
-| `GpuHolders` | méthode | `() → a(us)` (pid, nom) | lecture libre |
-| `Telemetry` | signal | `a{sv}` (cpu_pct, dgpu_pct, igpu_pct, ram_pct, npu_pct, cpu_temp, gpu_temp, fan1_rpm, fan2_rpm, power_w) | – |
-| `SafetyEvent` | signal | `(s kind, d value)` | – |
+Nom de bus : `org.blazorde.MsiCenter1` · Objet : `/org/blazorde/MsiCenter` · Interface : `org.blazorde.MsiCenter1`.
+Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Politique du bus :
+`systemd/org.blazorde.MsiCenter1.conf` (seul root possède le nom, tout le monde peut appeler).
+
+### Méthodes
+
+| Méthode | Entrée | Sortie | polkit | Erreurs |
+|---|---|---|---|---|
+| `SetProfile` | `s profile` (`eco` · `balanced` · `gaming`) | – | `set-profile` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
+| `SetAutoProfileOnPower` | `b enabled` | – | `set-profile` | idem |
+| `FanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised, b custom` | – | `InvalidArgument` |
+| `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` |
+| `ResetFanCurve` | `s fan` | – | `set-fan-curve` | idem |
+| `PreviewFanCurve` | `(yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
+| `SetCoolerBoost` | `b enabled` | – | `set-fan-curve` | `InvalidArgument` (forcé par S4), `ReadOnly`, `SafetyFallback` |
+| `SetChargeLimit` | `y limit` (50–100) | – | `set-battery` | `InvalidArgument`, `ReadOnly`, `Hardware` |
+| `GpuHolders` | – | `a(us) holders` (pid, nom) | – | – |
+
+Les actions polkit sont `org.blazorde.msicenter.<action>` (`systemd/org.blazorde.msicenter.policy`) : utilisateur
+local actif autorisé sans mot de passe, sinon `auth_admin`. Refus → `NotAuthorized`. Toute méthode peut aussi
+renvoyer `Internal`.
+
+### Types
+
+| Type | Signature | Champs |
+|---|---|---|
+| spec | `(yyyyydayy)` | `idle` %, `t0` °C, `t1` °C, `min` %, `max` %, `k`, `up` (6 seuils °C), `hysteresis` °C |
+| table | `(ayayay)` | `speeds` (7 %), `up` (6 °C), `down` (6 °C) : la table écrite dans l'EC |
+| raised | `a(yyyyyy)` | par palier relevé par S2 : `step`, `entry_temp` (°C, 0 pour le palier 0), `curve_speed`, `applied_speed`, `floor_temp`, `floor_speed` |
+
+Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/fan-safety.md#du-modèle-à-la-table-ec-modèle-par-paliers-mesuré).
+
+### Signaux
+
+| Signal | Signature | Sens |
+|---|---|---|
+| `Telemetry` | `a{sv} data` | ~1 Hz. Clés (absentes si inconnues) : `cpu_pct`, `ram_pct`, `igpu_pct`, `dgpu_pct`, `npu_pct`, `cpu_temp`, `gpu_temp`, `power_w` (`d`) ; `fan1_rpm`, `fan2_rpm` (`u`) ; `fan1_pct`, `fan2_pct` (`y`) ; `dgpu_state` (`s`) ; `cooler_boost` (`b`). Températures de l'EC (celles que suivent les ventilos), sinon hwmon/NVML. |
+| `SafetyEvent` | `s kind, d value, s detail` | `kind` : `boost_forced` / `boost_released` (`value` = °C le plus chaud, 0 si capteur illisible), `readback_mismatch` / `write_failed` (EC remis en `auto`), `ec_reset` (tables perdues par l'EC, ré-appliquées). `detail` : texte anglais. |
+
+`PropertiesChanged` (`org.freedesktop.DBus.Properties`) est émis pour `Profile`, `AutoProfileOnPower`,
+`OnAcPower`, `FanMode`, `CoolerBoost`, `BoostForced`, `ChargeLimit`, `GpuState` quand ils changent (après un
+appel ou à la boucle de 1 s).
+
+### Propriétés (lecture seule)
+
+| Propriété | Type | Sens |
+|---|---|---|
+| `Profile` | `s` | Profil choisi |
+| `AutoProfileOnPower` | `b` | Profil automatique au branchement/débranchement secteur (secteur : `balanced`, batterie : `eco` par défaut) |
+| `OnAcPower` | `b` | Sur secteur (`false` aussi si inconnu) |
+| `FanMode` | `s` | Fan mode lu dans l'EC : `advanced` = nos courbes s'appliquent ; `auto` = courbe usine (démarrage, repli, lecture seule) ; `unknown` |
+| `CoolerBoost` | `b` | Cooler Boost lu dans l'EC |
+| `BoostForced` | `b` | Cooler Boost forcé par le superviseur thermique (S4) |
+| `ChargeLimit` | `y` | Limite de charge (%), 0 si non supportée |
+| `GpuState` | `s` | `active` · `suspended` · `removed` |
+| `ReadOnly` | `b` | S8 : EC non supporté, aucune écriture |
+| `ReadOnlyReason` | `s` | Pourquoi (vide sinon) |
+| `FirmwareVersion` | `s` | Version firmware EC (vide si msi-ec absent) |
+
+Les réglages modifiables passent par des **méthodes** (et non des propriétés en écriture) pour que chacun ait
+son contrôle polkit et ses erreurs typées.
+
+### Sémantique
+
+- **`SetProfile`** : ordre d'application courbes (écritures ordonnées, une table complète par écriture) →
+  `fan_mode=advanced` → `shift_mode` → relecture de tout (S7) → dGPU. Une divergence ou une écriture en échec
+  remet l'EC en `auto`, émet `SafetyEvent` et renvoie `SafetyFallback`. Si l'étape dGPU est refusée (Éco : dGPU
+  tenu par des processus, écran branché, scan incomplet) la partie EC reste appliquée, le profil reste choisi, et
+  l'appel renvoie `GpuBusy` (liste avec `GpuHolders`). Aucun processus n'est jamais tué. Idempotent.
+- **Courbes** : chaque profil a une courbe par ventilo, le preset du profil par défaut. `SetFanCurve` remplace
+  celle du **profil choisi** pour ce ventilo (persistée), `ResetFanCurve` revient au preset. Les paliers relevés
+  par les planchers S2 sont renvoyés dans `raised`, jamais cachés. `PreviewFanCurve` calcule sans rien écrire.
+- **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
+  au choix du propriétaire.
+- **Persistance** : profil, `AutoProfileOnPower`, limite de charge et courbes personnalisées dans
+  `/var/lib/msi-center/state.toml`, ré-appliqués au démarrage, après la sortie de veille et quand l'EC a perdu
+  les tables (vérifié toutes les 10 s).
+- **Lecture seule (S8)** : firmware absent de la liste ou attributs de courbe absents → toutes les méthodes qui
+  écrivent renvoient `ReadOnly`, l'EC reste en courbe usine.
+
+### Erreurs
+
+Nom `org.blazorde.MsiCenter1.Error.<X>`, message lisible en anglais :
+
+| Nom | Cas |
+|---|---|
+| `NotAuthorized` | polkit a refusé (ou est injoignable). |
+| `InvalidArgument` | Profil/ventilo inconnu, valeur hors bornes (S3), Cooler Boost forcé par S4. |
+| `ReadOnly` | EC non supporté (S8). |
+| `Hardware` | Écriture matérielle hors EC en échec (batterie, PCI). |
+| `SafetyFallback` | Écriture ou relecture EC en échec : EC remis en fan mode `auto` (S7). |
+| `GpuBusy` | Retrait du dGPU refusé ; la partie EC du profil est appliquée. |
+| `Internal` | Échec interne (détail dans le journal). |
+
+### Choix d'implémentation
+
+`zbus` 6 sur **tokio** (`current_thread`). Le travail sysfs (bloquant) tourne sur le pool bloquant sous un mutex
+unique partagé avec la boucle de supervision de 1 s ; les propriétés sont servies depuis un instantané
+rafraîchi après chaque appel et chaque tick. polkit est interrogé via l'API D-Bus
+`org.freedesktop.PolicyKit1.Authority.CheckAuthorization` (sujet `system-bus-name`), sans bibliothèque C.
 
 ## `org.blazorde.Clipd1` — bus session, `clipd`
 
