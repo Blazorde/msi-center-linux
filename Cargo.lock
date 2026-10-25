@@ -334,6 +334,10 @@ version = "0.0.1"
 [[package]]
 name = "msi-core"
 version = "0.0.1"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
 
 [[package]]
 name = "msi-daemon"
