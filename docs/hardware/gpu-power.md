@@ -164,7 +164,7 @@ mesurer après la modification (`power/runtime_status` doit passer à `suspended
 | iGPU % | `/proc/<pid>/fdinfo/<fd>` des fd DRM, `drm-pdev: 0000:00:02.0` | clés i915 : `drm-driver`, `drm-client-id`, `drm-engine-{render,copy,video,video-enhance,compute}` (ns), `drm-engine-capacity-video: 2` | scan complet des fd coûteux → mis en cache, re-scan toutes les 5 s |
 | iGPU (xe) | idem, clés `drm-cycles-<engine>` / `drm-total-cycles-<engine>` | (non lié ici) | géré aussi |
 | dGPU % | NVML (`libnvidia-ml.so.1` présent) | – | le fdinfo de `nvidia-drm` **n'a pas** de clés `drm-engine-*` |
-| NPU % | `/sys/class/accel/accel0/device/npu_busy_time_us` (`0000:00:0b.0`, `intel_vpu`) | `0` ; `npu_max_frequency_mhz=1400`, `runtime_status=suspended` | lecture d'un compteur logiciel, ne réveille pas le NPU |
+| NPU % | `/sys/class/accel/accel0/device/npu_busy_time_us` (`0000:00:0b.0`, `intel_vpu`) | `0` ; `npu_max_frequency_mhz=1400`, `runtime_status=suspended` | compteur logiciel : vérifié, `runtime_active_time` inchangé (3153 ms) après 5 lectures, NPU resté `suspended` |
 | Temp CPU | hwmon `coretemp` (`/sys/class/hwmon/hwmon7`), `temp1_label = Package id 0` | 56 °C | |
 | Temp GPU | NVML uniquement (le pilote NVIDIA n'expose pas de hwmon) | – | `None` si le dGPU n'est pas actif |
 | Ventilos | hwmon `msi_wmi_platform` (`hwmon4`), `fan1_input`, `fan2_input` | 2232 / 2211 RPM (`fan3/4 = 0`) | plus tard : `msi-ec` |
@@ -184,6 +184,36 @@ rendormir. Garanties du daemon :
 3. politique par profil : en Balanced le sondage NVML est désactivé (`DgpuPolicy::Off`) car il empêcherait le
    RTD3 ; seul l'état (`active` / `suspended` / `removed`) est remonté. En Gaming : `WhenActive` ;
 4. aucun accès à `/proc/driver/nvidia/…` ni à `/dev/nvidia*` dans la boucle de télémétrie.
+
+## Implémentation (`crates/msi-daemon`)
+
+| Module | Rôle |
+|---|---|
+| `fs` | `FsRoot` : racine injectable (`/` en vrai, dossier temporaire en test) ; écritures uniquement sur fichiers existants |
+| `gpu` | `GpuManager::{discover, state, holders, check_removable, set_runtime_pm, remove, rescan}`, `GpuState`, `GpuError` |
+| `telemetry` | `Sampler::sample` → `Sample` ; `cpu`, `drm` (iGPU), `npu`, `hwmon` (`ThermalSource`), `dgpu` (`DgpuMonitor` + NVML) |
+
+Pré-conditions de `remove` (dans l'ordre) : pas `boot_vga`, aucun connecteur `connected`, tous les processus
+inspectables (sinon `IncompleteScan`), aucun holder (sinon `Busy(holders)`). Puis `unbind` de chaque fonction
+(audio d'abord), puis `remove`. `remove` est idempotent (dGPU déjà absent → `Ok`).
+
+`msi-daemon --probe [--samples N] [--interval-ms MS] [--no-nvml]` : **lecture seule**, affiche l'état du dGPU,
+ses holders, le verdict `check_removable` et N échantillons. Relevé du 2026-10-25 (en utilisateur) :
+
+```
+dgpu.state        active
+dgpu.power        control=auto runtime_status=active power_state=D0
+dgpu.holder       3876 gnome-shell
+dgpu.holder       4255 Xwayland
+dgpu.removable    no: cannot inspect 385 process(es) (not root?): refusing to remove the dGPU
+sample 1: cpu=100.0% ram=12.3% igpu=15.5% dgpu=0.0% npu=0.0% cpu_temp=97.0C gpu_temp=61.0C fan1=3870 fan2=3779 dgpu_power=1.8W dgpu_state=active
+```
+
+(CPU à 100 % : d'autres compilations tournaient pendant la mesure.)
+
+**Coût** : 60 échantillons à 1 s = 0,173 s de CPU (user 0,019 + sys 0,154) sur 60,2 s, démarrage et
+initialisation NVML compris, soit **≈ 0,29 % d'un cœur**. Le re-scan complet des fd DRM n'a lieu que tous les
+10 échantillons.
 
 ## Actions propriétaire (root, non appliquées)
 
