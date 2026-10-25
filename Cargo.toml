@@ -14,6 +14,7 @@ publish = false
 [workspace.dependencies]
 msi-core = { path = "crates/msi-core" }
 clip-core = { path = "crates/clip-core" }
+nvml-wrapper = "0.13.0"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 
