@@ -97,6 +97,24 @@ actif (CPU palier 1, `0x73`) passée de 36 % à 30 % pendant 20 s, puis restaur�
 - La température instantanée `0x68` a des pics brefs (jusqu'à 90 °C au repos) : le daemon doit filtrer
   (S4 sur moyenne glissante ou 2 lectures consécutives) pour ne pas déclencher Cooler Boost à tort.
 
+## Seuils CPU ignorés par l'EC (2026-10-25, premier essai du daemon + 2 spikes)
+
+Premier essai réel de `msi-daemon` : en `advanced`, ventilo GPU conforme à la nouvelle table, ventilo **CPU à 0 %**
+à 57–60 °C (lu). Spikes [`cpu-fan-follow-test.sh`](../../scripts/spike/cpu-fan-follow-test.sh) et
+[`cpu-threshold-reload-test.sh`](../../scripts/spike/cpu-threshold-reload-test.sh) (seuils CPU abaissés à
+`42 47 52 57 62 67`, vitesses d'usine) :
+
+| Constat | Preuve |
+|---|---|
+| L'EC **ignore les seuils CPU écrits** (`0x6a`/`0x7a`), en `auto`, en `advanced`, après bascule auto→advanced | à ~60 °C lu, ventilo resté au palier 1 (36 %) au lieu de ≥ 50 % |
+| Les **vitesses CPU** sont appliquées en direct | PR #8 (36 → 30 % en < 2 s) ; ventilo revenu dès la restauration des vitesses |
+| Les **seuils GPU** sont appliqués | GPU à 34 % à 50 °C = palier 2 de la table Balanced, impossible avec les seuils d'usine |
+| L'EC pilote le CPU sur une **température lissée**, nettement sous `cpu/realtime_temperature` | tables d'usine : 61–68 °C lus, ventilo toujours au palier 1 ; seul un palier tenu (pic à 90 °C) le fait monter |
+
+Conséquence : le ventilo CPU à 0 % du premier essai était le palier 0 normal (température lissée < 53 °C), pas une
+panne. Le pilotage CPU passe en mode hybride : [ADR-0010](../adr/0010-hybrid-cpu-fan-control.md).
+Non testé (arrêt de sécurité sur pic avant l'étape) : rechargement des seuils au changement de shift mode.
+
 ## Reste à vérifier
 
 - [x] En `advanced`, une table écrite est-elle appliquée par l'EC ? → oui (ci-dessus)
