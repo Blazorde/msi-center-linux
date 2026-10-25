@@ -4,6 +4,13 @@
 > Contrat testé : [`docs/hardware/fan-curve-sysfs.md`](../docs/hardware/fan-curve-sysfs.md).
 > Durée : ~5 min. Fenêtre de risque : la courbe de test ne diffère de l'usine que d'un palier (36 → 30 %).
 
+**Version automatisée** : `scripts/kernel-build.sh && sudo kernel/test-fan-curve.sh` (étapes ci-dessous, restauration
+garantie).
+
+**Résultat 2026-10-25 (A1VGG, fw `14K2EMS1.110`, noyau 7.3.0-4-cachyos)** : module `0.13-blazorde.1` chargé sans
+forçage, 6 tables lues = valeurs d'usine, 6 écritures invalides refusées sans effet, écriture + relecture OK,
+restauration OK. ✅
+
 Toutes les commandes partent de la racine du dépôt. `D=/sys/devices/platform/msi-ec`.
 
 ## 1. Construire
