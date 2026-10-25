@@ -55,7 +55,7 @@ Run all three before declaring work done. CI runs the same (`.github/workflows/c
 ## Git workflow
 
 - `main` = released, `develop` = integration. Both protected, PR only.
-- Branch from `develop`: `feat/<scope>-<desc>`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`, `test/…`.
+- Branch from `develop`: `feat/<scope>-<desc>`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`, `test/…`, `perf/…`, `ci/…`.
 - Conventional Commits: `feat(daemon): add fan curve sampling`. Scopes: `core`, `daemon`, `clip`, `clipd`,
   `app`, `ext`, `kernel`, `pkg`, `ci`, `docs`.
 - PR into `develop` (squash). Release: `release/x.y.z` → `main` (merge commit) + tag `vx.y.z` → back-merge to `develop`.

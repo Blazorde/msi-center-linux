@@ -23,7 +23,7 @@ gitGraph
 |---|---|---|---|
 | `main` | Versions publiées uniquement, chaque commit = un tag | ✅ | merge commit depuis `release/*` ou `hotfix/*` |
 | `develop` | Intégration, toujours verte | ✅ | squash depuis les branches de travail |
-| `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`, `test/*` | Travail, vie courte | – | → `develop` |
+| `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`, `test/*`, `perf/*`, `ci/*` | Travail, vie courte | – | → `develop` |
 | `release/x.y.z` | Gel, bump version, changelog | – | → `main`, puis `main` → `develop` |
 | `hotfix/x.y.z` | Correctif urgent depuis `main` | – | → `main`, puis `main` → `develop` |
 
