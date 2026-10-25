@@ -150,12 +150,12 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | Foundations | Repo, workspace, docs, CI, git workflow | in-progress | - | - | - |
-| 2 | EC spike | Install msi-ec, read fw version, dump & map fan curve registers (read-only) | pending | with 5, 6 | 1 | - |
+| 1 | Foundations | Repo, workspace, docs, CI, git workflow | complete | - | - | - |
+| 2 | EC spike | Install msi-ec, read fw version, dump & map fan curve registers (read-only) | complete | with 5, 6 | 1 | #5 |
 | 3 | msi-ec fork | Fan curve sysfs attributes + DKMS package | pending | - | 2 | - |
-| 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | pending | - | 3 | - |
-| 5 | GPU manager | RTD3 config, holder detection, PCI remove/rescan | pending | with 2, 6 | 1 | - |
-| 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | pending | with 2, 5 | 1 | - |
+| 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | in-progress | - | 3 | #2 (msi-core) |
+| 5 | GPU manager | RTD3 config, holder detection, PCI remove/rescan | in-progress | with 2, 6 | 1 | #4 (code + probe; real remove untested) |
+| 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | complete | with 2, 5 | 1 | #3 |
 | 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | pending | with 8 | 4, 5, 6 | - |
 | 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | pending | with 7 | 4, 5, 6 | - |
 | 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | pending | - | 7, 8 | - |
