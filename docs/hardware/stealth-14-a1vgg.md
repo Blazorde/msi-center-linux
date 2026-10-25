@@ -6,7 +6,7 @@
 |---|---|
 | Produit / carte | Stealth 14 AI Studio A1VGG / MS-14K2 |
 | BIOS | `E14K2IMS.10F` |
-| Firmware EC | **à confirmer** (attendu `14K2EMS1.1xx`) — phase 2 |
+| Firmware EC | `14K2EMS1.110` (04/24/2026) — non listé par msi-ec, voir [ec-map.md](ec-map.md) |
 | CPU | Intel Core Ultra 9 185H (Meteor Lake), `intel_pstate` |
 | iGPU | Intel Arc (Meteor Lake-P) `8086:7d55` — `i915` / `xe` |
 | dGPU | NVIDIA RTX 4070 Laptop (AD106M) `10de:2820`, PCI `0000:01:00.0`, pilote 615.78 |
