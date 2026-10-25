@@ -6,12 +6,15 @@ Voir [docs/development/setup.md](docs/development/setup.md).
 
 ## Workflow en 6 étapes
 
+0. Une seule fois par clone : `git config core.hooksPath .githooks`
 1. Partir de `develop` à jour : `git switch develop && git pull`
 2. Créer une branche : `git switch -c feat/daemon-fan-curve`
-3. Commits au format [Conventional Commits](https://www.conventionalcommits.org/fr/) : `feat(daemon): …`
-4. Vérifier en local : `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
-5. Ouvrir une PR vers `develop` (le template s'affiche), CI verte obligatoire
+3. Commits au format [Conventional Commits](https://www.conventionalcommits.org/fr/) : `feat(daemon): …` (vérifié par le hook `commit-msg`)
+4. Vérifier : `scripts/ci.sh` (lancé automatiquement par le hook `pre-push`)
+5. Ouvrir une PR vers `develop` (le template s'affiche)
 6. Squash merge, la branche est supprimée
+
+Il n'y a pas de GitHub Actions : la CI est locale ([ADR-0007](docs/adr/0007-local-ci.md)).
 
 Détails (releases, hotfix, protection des branches) : [docs/development/git-workflow.md](docs/development/git-workflow.md).
 

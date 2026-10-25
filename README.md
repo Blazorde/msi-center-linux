@@ -41,9 +41,9 @@ Tout est dans [`docs/`](docs/README.md), organisé pour devenir le wiki GitHub.
 ## Développement
 
 ```bash
+git config core.hooksPath .githooks   # une fois : CI locale au push, Conventional Commits au commit
 cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+scripts/ci.sh                         # fmt, clippy, tests, cargo deny
 ```
 
 Workflow git, conventions et CI : [CONTRIBUTING.md](CONTRIBUTING.md).

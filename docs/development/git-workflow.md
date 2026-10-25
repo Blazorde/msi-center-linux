@@ -41,22 +41,28 @@ Nommage : `feat/<scope>-<description-courte>`, ex. `feat/clipd-tags`, `fix/daemo
 
 Types : `feat` `fix` `docs` `refactor` `test` `perf` `chore` `ci` `build`.
 Scopes : `core` `daemon` `clip` `clipd` `app` `ext` `kernel` `pkg` `ci` `docs`.
-Le titre de PR doit aussi respecter ce format (vérifié en CI), car il devient le message du squash.
+Le hook `commit-msg` refuse tout message non conforme. Le titre de PR doit aussi respecter ce format, car il
+devient le message du squash.
 
 ## Pull requests
 
 - Template obligatoire (`.github/pull_request_template.md`).
-- CI verte requise : fmt, clippy `-D warnings`, tests, audit des dépendances.
+- `scripts/ci.sh` vert avant d'ouvrir la PR (le hook `pre-push` le garantit).
 - Branche à jour avec `develop` avant merge.
 
-## CI (GitHub Actions)
+## CI — locale (pas de GitHub Actions)
 
-| Workflow | Déclencheur | Jobs |
+Le quota GitHub Actions n'est pas disponible : la CI tourne sur la machine de dev ([ADR-0007](../adr/0007-local-ci.md)).
+
+| Quoi | Quand | Fait |
 |---|---|---|
-| `ci.yml` | PR + push sur `main`/`develop` | `fmt`, `clippy`, `test`, `deny` (licences/vulnérabilités) |
-| `pr-title.yml` | PR | Vérifie le format Conventional Commits du titre |
-| `release.yml` | Tag `v*.*.*` | Build release, archive, release GitHub avec notes du CHANGELOG |
-| Dependabot | Hebdo | MAJ cargo + actions → PR sur `develop` |
+| `scripts/ci.sh` | à la main, et via le hook `pre-push` | `fmt`, `clippy -D warnings`, `test`, `cargo deny` (licences/vulnérabilités) |
+| `.githooks/commit-msg` | à chaque commit | Conventional Commits, ≤ 72 caractères |
+| `scripts/release.sh x.y.z` | release depuis `main` | CI, build release, tag, release GitHub avec notes du CHANGELOG |
+| Dependabot | hebdo | MAJ cargo → PR sur `develop` |
+
+Activer les hooks (une fois par clone) : `git config core.hooksPath .githooks`.
+`git push --no-verify` : urgences uniquement.
 
 ## Versionnage
 
@@ -71,12 +77,14 @@ git switch -c release/0.1.0
 # bump version dans Cargo.toml, déplacer [Unreleased] → [0.1.0] dans CHANGELOG.md
 git commit -am "chore(release): 0.1.0"
 gh pr create --base main --title "chore(release): 0.1.0"
-# après merge :
-git switch main && git pull && git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
-git switch develop && git merge main && git push
+# après merge (merge commit) :
+git switch main && git pull
+scripts/release.sh 0.1.0          # CI, build, tag v0.1.0, release GitHub
+git switch develop && git merge main && git push   # via PR si develop refuse le push direct
 ```
 
-## Protection des branches (à appliquer une fois le dépôt créé)
+## Protection des branches (en place)
 
-`main` et `develop` : PR obligatoire, checks `fmt`, `clippy`, `test`, `deny` requis, pas de force-push, pas de suppression.
-Commande `gh api` fournie dans le README de mise en place lors de la création du dépôt distant.
+`main` et `develop` : PR obligatoire (0 approbation, revues obsolètes rejetées), discussions résolues avant merge,
+pas de force-push, pas de suppression. Pas de checks requis côté serveur (CI locale).
+Squash et merge commit autorisés, rebase désactivé, branche supprimée après merge.

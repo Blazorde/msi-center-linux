@@ -8,9 +8,7 @@
 
 ## Comment tester
 
-- [ ] `cargo fmt --all --check`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] `cargo test --workspace`
+- [ ] `scripts/ci.sh` vert (fmt, clippy, tests, cargo deny)
 - [ ] Test manuel (décrire) :
 
 ## Checklist

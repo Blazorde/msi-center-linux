@@ -14,15 +14,17 @@ rustup component add rustfmt clippy
 gh auth login        # choisir GitHub.com, HTTPS, navigateur
 ```
 
-## Vérifier
+## Activer les hooks et vérifier
 
 ```bash
-cargo test --workspace
+cargo install cargo-deny --locked     # requis par scripts/ci.sh
+git config core.hooksPath .githooks
+scripts/ci.sh
 ```
 
 ## Outils conseillés
 
-- `cargo install cargo-nextest cargo-deny` — tests plus rapides, audit des dépendances
+- `cargo install cargo-nextest` — tests plus rapides
 - `d-spy` (Flathub) — inspecter les bus D-Bus
 - Extension GNOME : `journalctl -f -o cat /usr/bin/gnome-shell` pour les logs ;
   sous Wayland, tester dans une session imbriquée : `dbus-run-session gnome-shell --devkit`
