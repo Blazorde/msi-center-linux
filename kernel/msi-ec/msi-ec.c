@@ -2590,6 +2590,8 @@ static struct attribute *msi_root_attrs[] = {
 // ============================================================ //
 
 #define FAN_CURVE_SPEED_MAX 100
+/* Defence in depth for S2: the hottest step can never be a quiet one (factory: 96). */
+#define FAN_CURVE_TOP_SPEED_MIN 80
 #define FAN_CURVE_TEMP_MIN  20
 #define FAN_CURVE_TEMP_MAX  100
 
@@ -2715,6 +2717,10 @@ static int fan_curve_validate(enum fan_curve_table table, const u8 *values)
 				return -EINVAL;
 		}
 	}
+
+	if (table == FAN_CURVE_TABLE_SPEEDS &&
+	    values[len - 1] < FAN_CURVE_TOP_SPEED_MIN)
+		return -EINVAL;
 
 	return 0;
 }

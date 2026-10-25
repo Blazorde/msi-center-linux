@@ -12,6 +12,7 @@ In the code, every change is tagged
 | 2 | `ec_memory_configuration.h` | `struct msi_ec_fan_curve_conf` (`speeds_address`, `up_temps_address`, `down_temps_address`) + `MSI_EC_FAN_CURVE_SPEEDS` (7) / `MSI_EC_FAN_CURVE_TEMPS` (6); new `fan_curve` member in `msi_ec_cpu_conf` and `msi_ec_gpu_conf` | Per-config table addresses. `0` (implicit in every other config) = unsupported |
 | 3 | `msi-ec.c` | `CONF_G2_5`: CPU tables `0x72` / `0x6a` / `0x7a`, GPU tables `0x8a` / `0x82` / `0x92` | Measured layout |
 | 4 | `msi-ec.c` | New block "fan curve tables": `cpu/` and `gpu/` attributes `fan_curve_speeds`, `fan_curve_up_temps`, `fan_curve_down_temps` (0644), strict parser, validation, cross-table rule, write + read-back (`-EIO` + `pr_warn`), `fan_curve_mutex` | Contract: `docs/hardware/fan-curve-sysfs.md` |
+| 4b | `msi-ec.c` | `FAN_CURVE_TOP_SPEED_MIN` (80): `fan_curve_speeds` rejected if the hottest step is below 80 % | Defence in depth for S2 (factory top step = 96) |
 | 5 | `msi-ec.c` | Attributes added to `msi_cpu_attrs` / `msi_gpu_attrs`; `msi_ec_is_visible()` hides them unless the table is supported and the config was matched from the EC's own firmware version | S8 |
 | 6 | `msi-ec.c` | `load_configuration()`: sets `fan_curve_fw_verified` (false when the `firmware=` parameter forced the config) | S8 |
 | 7 | `msi-ec.c` | `#include <linux/ctype.h>` | `isdigit()` in the parser |

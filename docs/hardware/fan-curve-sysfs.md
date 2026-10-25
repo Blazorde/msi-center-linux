@@ -32,7 +32,7 @@ Une écriture invalide est rejetée avec `EINVAL` et **rien n'est écrit** dans 
 
 | Fichier | Règle |
 |---|---|
-| `fan_curve_speeds` | chaque valeur dans `0..100`, suite croissante ou égale |
+| `fan_curve_speeds` | chaque valeur dans `0..100`, suite croissante ou égale, dernier palier ≥ 80 (garde-fou S2 dans le noyau) |
 | `fan_curve_up_temps` | chaque valeur dans `20..100`, suite strictement croissante |
 | `fan_curve_down_temps` | chaque valeur dans `20..100`, suite strictement croissante |
 | `up_temps` / `down_temps` | pour tout `i` : `down[i] < up[i]`, vérifié contre la valeur **actuelle** de l'autre table dans l'EC |
