@@ -15,6 +15,7 @@
 ## 🔧 Matériel
 - [MSI Stealth 14 AI Studio A1VGG](hardware/stealth-14-a1vgg.md)
 - [Sécurité ventilateurs & thermique](hardware/fan-safety.md)
+- [Alimentation GPU & sources de télémétrie](hardware/gpu-power.md)
 
 ## 👩‍💻 Développement
 - [Installer l'environnement](development/setup.md)
