@@ -55,14 +55,37 @@ struct msi_ec_fan_mode_conf {
 	struct msi_ec_mode modes[5]; // fixed size for easier hard coding
 };
 
+/* ==== BEGIN msi-center-linux: fan curve tables ==== */
+/*
+ * Fan curve tables of one fan (step curve, see docs/hardware/ec-map.md):
+ *   speeds:     MSI_EC_FAN_CURVE_SPEEDS bytes, fan speed (%) of steps 0..6
+ *   up_temps:   MSI_EC_FAN_CURVE_TEMPS bytes, step i (i >= 1) entered at T >= up_temps[i - 1]
+ *   down_temps: MSI_EC_FAN_CURVE_TEMPS bytes, step i left at T < down_temps[i - 1]
+ *
+ * Each field is the address of the first byte of a contiguous table.
+ * 0 (the value of every configuration that does not set it) means
+ * unsupported, as does MSI_EC_ADDR_UNSUPP.
+ */
+#define MSI_EC_FAN_CURVE_SPEEDS 7
+#define MSI_EC_FAN_CURVE_TEMPS  6
+
+struct msi_ec_fan_curve_conf {
+	int speeds_address;
+	int up_temps_address;
+	int down_temps_address;
+};
+/* ==== END msi-center-linux: fan curve tables ==== */
+
 struct msi_ec_cpu_conf {
 	int rt_temp_address;
 	int rt_fan_speed_address; // realtime % RPM
+	struct msi_ec_fan_curve_conf fan_curve; // msi-center-linux
 };
 
 struct msi_ec_gpu_conf {
 	int rt_temp_address;
 	int rt_fan_speed_address; // realtime % RPM
+	struct msi_ec_fan_curve_conf fan_curve; // msi-center-linux
 };
 
 struct msi_ec_led_conf {

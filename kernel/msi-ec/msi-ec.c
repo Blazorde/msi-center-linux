@@ -39,6 +39,7 @@
 #include <linux/version.h>
 #include <linux/rtc.h>
 #include <linux/string_choices.h>
+#include <linux/ctype.h> // msi-center-linux: isdigit()
 
 static DEFINE_MUTEX(ec_set_by_mask_mutex);
 static DEFINE_MUTEX(ec_unset_by_mask_mutex);
@@ -1510,6 +1511,7 @@ static const char *ALLOWED_FW_G2_5[] __initconst = {
 	"14K2EMS1.107",
 	"14K2EMS1.108",
 	"14K2EMS1.109",
+	"14K2EMS1.110", // msi-center-linux: verified on A1VGG, docs/hardware/ec-map.md
 	"15Q3EMS1.106", // Cyborg 15 B13WFKG / B2RWFKG / B2RWEKG
 	"15Q3EMS1.107",
 	"15Q3EMS1.108",
@@ -1558,10 +1560,24 @@ static struct msi_ec_conf CONF_G2_5 __initdata = {
 	.cpu = {
 		.rt_temp_address      = 0x68,
 		.rt_fan_speed_address = 0x71,
+		/* ==== BEGIN msi-center-linux: fan curve tables ==== */
+		.fan_curve = {
+			.speeds_address     = 0x72, // 0x72-0x78
+			.up_temps_address   = 0x6a, // 0x6a-0x6f
+			.down_temps_address = 0x7a, // 0x7a-0x7f
+		},
+		/* ==== END msi-center-linux ==== */
 	},
 	.gpu = {
 		.rt_temp_address      = 0x80,
 		.rt_fan_speed_address = 0x89,
+		/* ==== BEGIN msi-center-linux: fan curve tables ==== */
+		.fan_curve = {
+			.speeds_address     = 0x8a, // 0x8a-0x90
+			.up_temps_address   = 0x82, // 0x82-0x87
+			.down_temps_address = 0x92, // 0x92-0x97
+		},
+		/* ==== END msi-center-linux ==== */
 	},
 	.leds = {
 		.micmute_led_address = 0x2c,
@@ -2557,6 +2573,323 @@ static struct attribute *msi_root_attrs[] = {
 };
 
 // ============================================================ //
+// ==== BEGIN msi-center-linux: fan curve tables ====
+// Sysfs platform device attributes (cpu/ and gpu/ fan curves)
+//
+// Contract: docs/hardware/fan-curve-sysfs.md in msi-center-linux.
+//   fan_curve_speeds      7 values, each 0..100 %, non-decreasing
+//   fan_curve_up_temps    6 values, 20..100 °C, strictly increasing
+//   fan_curve_down_temps  6 values, 20..100 °C, strictly increasing
+//   for every i: down_temps[i] < up_temps[i] (checked against the
+//   other table's current EC value)
+// Format: decimal integers separated by single spaces, trailing
+// newline on read, optional on write. A write must provide the full
+// table; an invalid one is rejected with -EINVAL and nothing is
+// written. Every byte is read back after writing; a mismatch fails
+// with -EIO.
+// ============================================================ //
+
+#define FAN_CURVE_SPEED_MAX 100
+#define FAN_CURVE_TEMP_MIN  20
+#define FAN_CURVE_TEMP_MAX  100
+
+static DEFINE_MUTEX(fan_curve_mutex);
+
+/*
+ * True only when the configuration was matched against the firmware
+ * version read from the EC. A configuration forced with the "firmware"
+ * module parameter never exposes the fan curve attributes (S8).
+ */
+static bool fan_curve_fw_verified = false;
+
+enum fan_curve_fan {
+	FAN_CURVE_CPU,
+	FAN_CURVE_GPU,
+};
+
+enum fan_curve_table {
+	FAN_CURVE_TABLE_SPEEDS,
+	FAN_CURVE_TABLE_UP,
+	FAN_CURVE_TABLE_DOWN,
+};
+
+struct fan_curve_attribute {
+	struct device_attribute dev_attr;
+	enum fan_curve_fan fan;
+	enum fan_curve_table table;
+};
+
+#define to_fan_curve_attr(_attr) \
+	container_of(_attr, struct fan_curve_attribute, dev_attr)
+
+static const struct msi_ec_fan_curve_conf *fan_curve_conf(enum fan_curve_fan fan)
+{
+	return fan == FAN_CURVE_CPU ? &conf.cpu.fan_curve : &conf.gpu.fan_curve;
+}
+
+static u8 fan_curve_table_len(enum fan_curve_table table)
+{
+	return table == FAN_CURVE_TABLE_SPEEDS ? MSI_EC_FAN_CURVE_SPEEDS
+					       : MSI_EC_FAN_CURVE_TEMPS;
+}
+
+static int fan_curve_table_address(enum fan_curve_fan fan,
+				   enum fan_curve_table table)
+{
+	const struct msi_ec_fan_curve_conf *c = fan_curve_conf(fan);
+
+	switch (table) {
+	case FAN_CURVE_TABLE_SPEEDS:
+		return c->speeds_address;
+	case FAN_CURVE_TABLE_UP:
+		return c->up_temps_address;
+	case FAN_CURVE_TABLE_DOWN:
+		return c->down_temps_address;
+	}
+
+	return MSI_EC_ADDR_UNSUPP;
+}
+
+static bool fan_curve_table_supported(enum fan_curve_fan fan,
+				      enum fan_curve_table table)
+{
+	int address = fan_curve_table_address(fan, table);
+
+	/* 0 = not set by the configuration; the table must fit in the EC RAM */
+	return address > 0 &&
+	       address + fan_curve_table_len(table) - 1 <= 0xff;
+}
+
+/*
+ * Parses exactly @len decimal integers separated by single spaces,
+ * optionally followed by one newline. Anything else is -EINVAL.
+ */
+static int fan_curve_parse(const char *buf, size_t count, u8 *out, u8 len)
+{
+	size_t pos = 0;
+
+	if (count > 0 && buf[count - 1] == '\n')
+		count--;
+
+	for (u8 i = 0; i < len; i++) {
+		unsigned int value = 0;
+		unsigned int digits = 0;
+
+		if (i > 0) {
+			if (pos >= count || buf[pos] != ' ')
+				return -EINVAL;
+			pos++;
+		}
+
+		while (pos < count && isdigit(buf[pos])) {
+			if (++digits > 3)
+				return -EINVAL;
+			value = value * 10 + (buf[pos] - '0');
+			pos++;
+		}
+
+		if (digits == 0 || value > 0xff)
+			return -EINVAL;
+
+		out[i] = value;
+	}
+
+	return pos == count ? 0 : -EINVAL;
+}
+
+static int fan_curve_validate(enum fan_curve_table table, const u8 *values)
+{
+	u8 len = fan_curve_table_len(table);
+
+	for (u8 i = 0; i < len; i++) {
+		if (table == FAN_CURVE_TABLE_SPEEDS) {
+			if (values[i] > FAN_CURVE_SPEED_MAX)
+				return -EINVAL;
+			if (i > 0 && values[i] < values[i - 1])
+				return -EINVAL;
+		} else {
+			if (values[i] < FAN_CURVE_TEMP_MIN ||
+			    values[i] > FAN_CURVE_TEMP_MAX)
+				return -EINVAL;
+			if (i > 0 && values[i] <= values[i - 1])
+				return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+static ssize_t fan_curve_show(struct device *device,
+			      struct device_attribute *attr, char *buf)
+{
+	struct fan_curve_attribute *fattr = to_fan_curve_attr(attr);
+	u8 len = fan_curve_table_len(fattr->table);
+	u8 values[MSI_EC_FAN_CURVE_SPEEDS];
+	int count = 0;
+	int result;
+
+	if (!fan_curve_table_supported(fattr->fan, fattr->table))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&fan_curve_mutex);
+	result = ec_read_seq(fan_curve_table_address(fattr->fan, fattr->table),
+			     values, len);
+	mutex_unlock(&fan_curve_mutex);
+	if (result < 0)
+		return result;
+
+	for (u8 i = 0; i < len; i++)
+		count += sysfs_emit_at(buf, count, "%s%u", i ? " " : "",
+				       values[i]);
+	count += sysfs_emit_at(buf, count, "\n");
+
+	return count;
+}
+
+static ssize_t fan_curve_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct fan_curve_attribute *fattr = to_fan_curve_attr(attr);
+	enum fan_curve_fan fan = fattr->fan;
+	enum fan_curve_table table = fattr->table;
+	u8 len = fan_curve_table_len(table);
+	u8 values[MSI_EC_FAN_CURVE_SPEEDS];
+	u8 readback[MSI_EC_FAN_CURVE_SPEEDS];
+	int address;
+	int result;
+
+	if (!conf_loaded || !fan_curve_fw_verified ||
+	    !fan_curve_table_supported(fan, table))
+		return -EOPNOTSUPP;
+
+	address = fan_curve_table_address(fan, table);
+
+	result = fan_curve_parse(buf, count, values, len);
+	if (result < 0)
+		return result;
+
+	result = fan_curve_validate(table, values);
+	if (result < 0)
+		return result;
+
+	mutex_lock(&fan_curve_mutex);
+
+	/* cross-table rule against the other table's current EC value */
+	if (table != FAN_CURVE_TABLE_SPEEDS) {
+		enum fan_curve_table other = table == FAN_CURVE_TABLE_UP ?
+						     FAN_CURVE_TABLE_DOWN :
+						     FAN_CURVE_TABLE_UP;
+		u8 current_other[MSI_EC_FAN_CURVE_TEMPS];
+		const u8 *up, *down;
+
+		if (!fan_curve_table_supported(fan, other)) {
+			result = -EOPNOTSUPP;
+			goto unlock;
+		}
+
+		result = ec_read_seq(fan_curve_table_address(fan, other),
+				     current_other, MSI_EC_FAN_CURVE_TEMPS);
+		if (result < 0)
+			goto unlock;
+
+		up = table == FAN_CURVE_TABLE_UP ? values : current_other;
+		down = table == FAN_CURVE_TABLE_UP ? current_other : values;
+
+		for (u8 i = 0; i < MSI_EC_FAN_CURVE_TEMPS; i++) {
+			if (down[i] >= up[i]) {
+				result = -EINVAL;
+				goto unlock;
+			}
+		}
+	}
+
+	for (u8 i = 0; i < len; i++) {
+		result = ec_write(address + i, values[i]);
+		if (result < 0) {
+			pr_warn("fan curve: write of %#x failed (%d)\n",
+				address + i, result);
+			goto unlock;
+		}
+	}
+
+	result = ec_read_seq(address, readback, len);
+	if (result < 0) {
+		pr_warn("fan curve: read back of %#x failed (%d)\n",
+			address, result);
+		goto unlock;
+	}
+
+	for (u8 i = 0; i < len; i++) {
+		if (readback[i] != values[i]) {
+			pr_warn("fan curve: read back mismatch at %#x: wrote %u, read %u\n",
+				address + i, values[i], readback[i]);
+			result = -EIO;
+		}
+	}
+
+unlock:
+	mutex_unlock(&fan_curve_mutex);
+	if (result < 0)
+		return result;
+
+	return count;
+}
+
+#define FAN_CURVE_ATTR(_var, _name, _fan, _table)		\
+	static struct fan_curve_attribute _var = {		\
+		.dev_attr = {					\
+			.attr = { .name = _name, .mode = 0644 },\
+			.show = fan_curve_show,			\
+			.store = fan_curve_store,		\
+		},						\
+		.fan = _fan,					\
+		.table = _table,				\
+	}
+
+FAN_CURVE_ATTR(cpu_fan_curve_speeds, "fan_curve_speeds",
+	       FAN_CURVE_CPU, FAN_CURVE_TABLE_SPEEDS);
+FAN_CURVE_ATTR(cpu_fan_curve_up_temps, "fan_curve_up_temps",
+	       FAN_CURVE_CPU, FAN_CURVE_TABLE_UP);
+FAN_CURVE_ATTR(cpu_fan_curve_down_temps, "fan_curve_down_temps",
+	       FAN_CURVE_CPU, FAN_CURVE_TABLE_DOWN);
+FAN_CURVE_ATTR(gpu_fan_curve_speeds, "fan_curve_speeds",
+	       FAN_CURVE_GPU, FAN_CURVE_TABLE_SPEEDS);
+FAN_CURVE_ATTR(gpu_fan_curve_up_temps, "fan_curve_up_temps",
+	       FAN_CURVE_GPU, FAN_CURVE_TABLE_UP);
+FAN_CURVE_ATTR(gpu_fan_curve_down_temps, "fan_curve_down_temps",
+	       FAN_CURVE_GPU, FAN_CURVE_TABLE_DOWN);
+
+static struct fan_curve_attribute *const fan_curve_attrs[] = {
+	&cpu_fan_curve_speeds,
+	&cpu_fan_curve_up_temps,
+	&cpu_fan_curve_down_temps,
+	&gpu_fan_curve_speeds,
+	&gpu_fan_curve_up_temps,
+	&gpu_fan_curve_down_temps,
+};
+
+/* returns true and sets *mode if @attr is a fan curve attribute */
+static bool fan_curve_is_visible(struct attribute *attr, umode_t *mode)
+{
+	for (size_t i = 0; i < ARRAY_SIZE(fan_curve_attrs); i++) {
+		struct fan_curve_attribute *fattr = fan_curve_attrs[i];
+
+		if (attr != &fattr->dev_attr.attr)
+			continue;
+
+		*mode = fan_curve_fw_verified &&
+				fan_curve_table_supported(fattr->fan, fattr->table) ?
+			attr->mode : 0;
+		return true;
+	}
+
+	return false;
+}
+
+// ==== END msi-center-linux: fan curve tables ====
+
+// ============================================================ //
 // Sysfs platform device attributes (cpu)
 // ============================================================ //
 
@@ -2607,6 +2940,9 @@ static struct device_attribute dev_attr_cpu_realtime_fan_speed = {
 static struct attribute *msi_cpu_attrs[] = {
 	&dev_attr_cpu_realtime_temperature.attr,
 	&dev_attr_cpu_realtime_fan_speed.attr,
+	&cpu_fan_curve_speeds.dev_attr.attr,     // msi-center-linux
+	&cpu_fan_curve_up_temps.dev_attr.attr,   // msi-center-linux
+	&cpu_fan_curve_down_temps.dev_attr.attr, // msi-center-linux
 	NULL
 };
 
@@ -2661,6 +2997,9 @@ static struct device_attribute dev_attr_gpu_realtime_fan_speed = {
 static struct attribute *msi_gpu_attrs[] = {
 	&dev_attr_gpu_realtime_temperature.attr,
 	&dev_attr_gpu_realtime_fan_speed.attr,
+	&gpu_fan_curve_speeds.dev_attr.attr,     // msi-center-linux
+	&gpu_fan_curve_up_temps.dev_attr.attr,   // msi-center-linux
+	&gpu_fan_curve_down_temps.dev_attr.attr, // msi-center-linux
 	NULL
 };
 
@@ -2875,9 +3214,14 @@ static umode_t msi_ec_is_visible(struct kobject *kobj,
 				 int idx)
 {
 	int address;
+	umode_t fan_curve_mode; // msi-center-linux
 
 	if (!conf_loaded)
 		return 0;
+
+	/* msi-center-linux: fan curve attributes */
+	if (fan_curve_is_visible(attr, &fan_curve_mode))
+		return fan_curve_mode;
 
 	/* root group */
 	if (attr == &dev_attr_webcam.attr)
@@ -3022,6 +3366,10 @@ static int __init load_configuration(void)
 			       sizeof(struct msi_ec_conf));
 			conf.allowed_fw = NULL;
 			conf_loaded = true;
+			/* msi-center-linux: fan curves need the EC's own version (S8) */
+			fan_curve_fw_verified = !firmware;
+			if (firmware)
+				pr_info("firmware parameter set: fan curve attributes disabled\n");
 			return 0;
 		}
 	}
@@ -3110,7 +3458,7 @@ MODULE_AUTHOR("Jose Angel Pastrana <japp0005@red.ujaen.es>");
 MODULE_AUTHOR("Aakash Singh <mail@singhaakash.dev>");
 MODULE_AUTHOR("Nikita Kravets <teackot@gmail.com>");
 MODULE_DESCRIPTION("MSI Embedded Controller");
-MODULE_VERSION("0.13");
+MODULE_VERSION("0.13-blazorde.1"); // msi-center-linux
 
 module_init(msi_ec_init);
 module_exit(msi_ec_exit);
