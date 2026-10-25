@@ -1,0 +1,26 @@
+/target/
+**/*.rs.bk
+
+# Arch packaging artefacts
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.pkg.tar.*
+
+# Kernel build artefacts
+/kernel/**/*.o
+/kernel/**/*.ko
+/kernel/**/*.mod*
+/kernel/**/.*.cmd
+/kernel/**/Module.symvers
+/kernel/**/modules.order
+
+# Spike dumps may contain machine-specific data
+/scripts/spike/out/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local state (PRPs are tracked)
+.claude/settings.local.json

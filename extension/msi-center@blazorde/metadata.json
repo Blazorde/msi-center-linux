@@ -1,0 +1,8 @@
+{
+  "uuid": "msi-center@blazorde",
+  "name": "MSI Center",
+  "description": "Top bar stats, performance profiles and clipboard history for MSI Stealth 14 AI Studio.",
+  "shell-version": ["51"],
+  "url": "https://github.com/Blazorde/msi-center-linux",
+  "version-name": "0.0.1"
+}

@@ -1,0 +1,27 @@
+name: Bug
+description: Quelque chose ne marche pas
+labels: [bug]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Composant
+      options: [msi-daemon, clipd, msi-center (app), extension GNOME, msi-ec (noyau), packaging]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Ce qui se passe / ce qui était attendu
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Étapes pour reproduire
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`journalctl -u msi-daemon -b`, `journalctl --user -u clipd -b`, version noyau"
+      render: text

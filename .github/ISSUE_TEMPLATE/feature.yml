@@ -1,0 +1,20 @@
+name: Fonctionnalité
+description: Proposer une amélioration
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problème à résoudre
+      description: Le besoin, pas la solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idée de solution
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priorité (MoSCoW)
+      options: [Must, Should, Could]
