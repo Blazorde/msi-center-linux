@@ -16,6 +16,7 @@
 - [MSI Stealth 14 AI Studio A1VGG](hardware/stealth-14-a1vgg.md)
 - [Carte EC (firmware 14K2EMS1.110)](hardware/ec-map.md)
 - [Sécurité ventilateurs & thermique](hardware/fan-safety.md)
+- [Interface sysfs des courbes ventilo (fork msi-ec)](hardware/fan-curve-sysfs.md)
 - [Alimentation GPU & sources de télémétrie](hardware/gpu-power.md)
 
 ## 👩‍💻 Développement
