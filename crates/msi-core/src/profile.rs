@@ -156,13 +156,10 @@ mod tests {
     }
 
     #[test]
-    fn every_profile_curve_samples_to_a_safe_table() {
-        let layout = crate::table::CurveLayout::default();
+    fn every_profile_curve_generates_a_clean_safe_table() {
         for p in Profile::ALL {
-            assert!(
-                crate::table::sample(&p.target().curve.params(), &layout).is_ok(),
-                "{p}"
-            );
+            let generated = crate::table::generate(&p.target().curve.spec()).unwrap();
+            assert!(generated.report.is_clean(), "{p}");
         }
     }
 }
