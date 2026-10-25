@@ -15,15 +15,16 @@ publish = false
 msi-core = { path = "crates/msi-core" }
 clip-core = { path = "crates/clip-core" }
 anyhow = "1.0.104"
+futures-util = { version = "0.3.34", default-features = false }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
-rusqlite = "0.41.0"
+rusqlite = { version = "0.41.0", default-features = false, features = ["cache"] }
 sha2 = { version = "0.11.1", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false }
-tracing = "0.1.44"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
-zbus = { version = "6.1.0", default-features = false, features = ["tokio"] }
+zbus = { version = "6.1.0", default-features = false, features = ["tokio", "service"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
