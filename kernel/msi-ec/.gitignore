@@ -1,0 +1,28 @@
+*.o
+*.o.d
+*.cmd
+/msi-ec.ko
+/msi-ec.mod
+/msi-ec.mod.c
+/Module.symvers
+/modules.order
+.vscode
+.cache
+compile_commands.json
+
+# NixOS outputs
+/result
+
+# RPM build dir
+**/rpmbuild
+
+# Build packages
+*.rpm
+*.deb
+*.apk
+*.txz
+
+# Scripts for package building generated from templates
+packaging/nfpm-alpine-debian-slackware/scripts/postinstall_slackware.sh 
+packaging/nfpm-alpine-debian-slackware/scripts/postinstall.sh 
+packaging/nfpm-alpine-debian-slackware/scripts/preremove.sh
