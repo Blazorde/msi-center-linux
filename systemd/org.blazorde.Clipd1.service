@@ -1,0 +1,6 @@
+# D-Bus activation for clipd. Installed to /usr/share/dbus-1/services/.
+# The bus delegates to systemd (SystemdService); Exec is only used without a systemd user manager.
+[D-BUS Service]
+Name=org.blazorde.Clipd1
+Exec=/usr/bin/clipd
+SystemdService=clipd.service

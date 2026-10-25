@@ -1,0 +1,3 @@
+# CLAUDE.md: no unwrap()/expect() outside tests (the workspace lints deny them elsewhere).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
