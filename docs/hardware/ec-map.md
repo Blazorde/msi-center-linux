@@ -79,9 +79,26 @@ Règle déduite : palier `i` (i ≥ 1) atteint quand T ≥ `up[i-1]`, quitté qu
 - Changer de mode **ne réécrit pas** les tables : l'EC conserve une seule copie en RAM. Comme MSI Center, la courbe
   personnalisée = écrire les tables puis passer en `advanced`.
 
-## Reste à vérifier (phase 3, écritures → accord explicite du propriétaire requis)
+## Première écriture de table (2026-10-25, accord du propriétaire)
 
-- [ ] En `advanced`, une table écrite est-elle appliquée par l'EC ? (premier test : relever seulement le palier 0
-      de 0 % à 25 %, ventilo audible au repos = preuve)
+[`scripts/spike/curve-write-test.sh`](../../scripts/spike/curve-write-test.sh) : en `advanced`, vitesse du palier
+actif (CPU palier 1, `0x73`) passée de 36 % à 30 % pendant 20 s, puis restaurée.
+
+| | `0x73` | Ventilo (`0x71`) | RPM (`fan1_input`) |
+|---|---|---|---|
+| Table usine | 36 | 36 % | ~2200–2430 |
+| Après écriture | **30** | **30 %** en < 2 s | **~2070** |
+| Restauré, `auto` | 36 | palier 0 (CPU 53 °C) | 0 → arrêt progressif |
+
+- ✅ **En `advanced`, l'EC applique la table en direct**, et relit la valeur écrite à l'identique.
+- `fan1_input` est bien en tr/min (0 quand le palier 0 = 0 % est actif).
+- Les bas régimes sont proches les uns des autres (36 % → 30 % = −130 tr/min) : le gain acoustique viendra de la
+  forme de la courbe (démarrage précoce et doux), pas de vitesses très basses.
+- La température instantanée `0x68` a des pics brefs (jusqu'à 90 °C au repos) : le daemon doit filtrer
+  (S4 sur moyenne glissante ou 2 lectures consécutives) pour ne pas déclencher Cooler Boost à tort.
+
+## Reste à vérifier
+
+- [x] En `advanced`, une table écrite est-elle appliquée par l'EC ? → oui (ci-dessus)
 - [ ] Les tables survivent-elles à un changement de shift mode, à la veille, au débranchement secteur ?
       (sinon le daemon réapplique la courbe sur ces événements)
