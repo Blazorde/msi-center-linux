@@ -80,6 +80,16 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
 
 ### Changed
+- Extension : changement de profil sans commande et nouvelle disposition de la barre. L'indicateur principal
+  est **à gauche** (juste après Activités) et affiche le profil courant (glyphe + nom court, une teinte par
+  profil) avant les métriques ; un clic ouvre le menu dont le premier élément est un sélecteur à trois grandes
+  pastilles « verre » Éco / Équilibré / Gaming (surbrillance immédiate + indicateur d'activité, retour arrière
+  sur erreur, navigation clavier). Option molette sur l'indicateur et raccourci « profil suivant » (OSD GNOME),
+  désactivés par défaut. Le presse-papiers a son **propre bouton à droite** (icône + pastille du nombre de clips
+  de la session, masquable) qui ouvre la popup `Super+V` sous lui ; l'entrée du menu ne revient que si ce bouton
+  est masqué. Zone et position des deux boutons réglables dans les préférences. Style affiné (rayons
+  concentriques, animations ease-out courtes, plus d'animation de taille pour la popup ouverte au clavier,
+  barre de défilement parasite sous les tags supprimée). Docs : [extension](docs/user/extension.md).
 - Arrêt du daemon (signal, sortie, panic, `ExecStopPost`) et replis S7 : les **tables d'usine** sont réécrites
   avant `fan_mode=auto` (l'EC n'a qu'une copie des tables : avant, « auto » gardait nos courbes). Tables d'usine
   du firmware `14K2EMS1.110` dans `msi-core`.
