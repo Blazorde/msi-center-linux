@@ -4,6 +4,8 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-26
+
 ### Added
 - **Profils de ventilation** (« silencieux, auto, courbes que tu fais toi et turbo ») : Silencieux, **Auto**
   (courbe d'usine MSI gérée par le contrôleur, mode choisi et persisté, ré-appliqué au démarrage et après la
