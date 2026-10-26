@@ -179,6 +179,9 @@ async fn invalid_arguments_are_rejected_before_anything_is_written() {
     let p = &h.proxy;
     for e in [
         p.set_profile("turbo").await.unwrap_err(),
+        p.set_fan_profile("max").await.unwrap_err(),
+        p.set_fan_profile("Turbo").await.unwrap_err(),
+        p.custom_fan_curve("fan3").await.unwrap_err(),
         p.fan_curve("fan3").await.unwrap_err(),
         p.set_charge_limit(49).await.unwrap_err(),
         p.set_fan_curve("cpu", &(0, 50, 40, 30, 100, 2.0, vec![50, 57, 64, 70, 76, 82], 4))
@@ -210,6 +213,7 @@ async fn mutating_calls_need_authorization() {
         p.set_auto_profile_on_power(true).await.unwrap_err(),
         p.set_cooler_boost(true).await.unwrap_err(),
         p.reset_fan_curve("cpu").await.unwrap_err(),
+        p.set_fan_profile("auto").await.unwrap_err(),
         p.restore_factory().await.unwrap_err(),
     ] {
         assert_eq!(
@@ -322,6 +326,11 @@ async fn introspection_matches_documented_signatures() {
         r#"<method name="SetChargeLimit">"#,
         r#"<arg name="limit" type="y" direction="in"/>"#,
         r#"<method name="GpuHolders">"#,
+        r#"<method name="SetFanProfile">"#,
+        r#"<arg name="fan_profile" type="s" direction="in"/>"#,
+        r#"<method name="CustomFanCurve">"#,
+        r#"<property name="FanProfile" type="s" access="read"/>"#,
+        r#"<property name="DefaultFanProfile" type="s" access="read"/>"#,
         r#"<arg name="holders" type="a(us)" direction="out"/>"#,
         r#"<signal name="Telemetry">"#,
         r#"<arg name="data" type="a{sv}"/>"#,
@@ -345,9 +354,9 @@ async fn introspection_matches_documented_signatures() {
     }
     let start = xml.find(r#"<interface name="org.blazorde.MsiCenter1">"#).unwrap();
     let iface = &xml[start..start + xml[start..].find("</interface>").unwrap()];
-    assert_eq!(iface.matches("<method ").count(), 10, "{iface}");
+    assert_eq!(iface.matches("<method ").count(), 12, "{iface}");
     assert_eq!(iface.matches("<signal ").count(), 2, "{iface}");
-    assert_eq!(iface.matches("<property ").count(), 11, "{iface}");
+    assert_eq!(iface.matches("<property ").count(), 13, "{iface}");
 }
 
 #[tokio::test]
@@ -388,4 +397,91 @@ async fn s9_fan_stall_sets_read_only_and_emits_fan_stalled() {
     assert_eq!(p.fan_mode().await.unwrap(), "auto");
     let e = p.set_profile("gaming").await.unwrap_err();
     assert_eq!(error_name(&e), "org.blazorde.MsiCenter1.Error.ReadOnly");
+}
+
+#[tokio::test]
+async fn fan_profiles_switch_persist_per_profile_and_signal_changes() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_profile("gaming").await.unwrap();
+    assert_eq!(p.fan_profile().await.unwrap(), "turbo");
+    assert_eq!(p.default_fan_profile().await.unwrap(), "turbo");
+    let props = zbus::fdo::PropertiesProxy::builder(p.inner().connection())
+        .destination("org.blazorde.MsiCenter1")
+        .path(OBJECT_PATH)
+        .build()
+        .await
+        .unwrap();
+    let mut stream = props.receive_properties_changed().await.unwrap();
+    p.set_fan_profile("auto").await.unwrap();
+    let changed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let c = stream.next().await.unwrap();
+            let args = c.args().unwrap();
+            if let Some(v) = args.changed_properties().get("FanProfile") {
+                return <&str>::try_from(v).unwrap().to_owned();
+            }
+        }
+    })
+    .await;
+    assert_eq!(
+        changed.as_deref(),
+        Ok("auto"),
+        "no PropertiesChanged for FanProfile"
+    );
+    assert_eq!(p.fan_profile().await.unwrap(), "auto");
+    assert_eq!(p.fan_mode().await.unwrap(), "auto");
+    let (_, table, raised, custom) = p.fan_curve("cpu").await.unwrap();
+    assert_eq!(table.0, FACTORY_CPU.speeds.to_vec());
+    assert!(raised.is_empty() && !custom);
+    // Another profile has its own choice; coming back restores Auto.
+    p.set_profile("eco").await.unwrap();
+    assert_eq!(p.fan_profile().await.unwrap(), "silent");
+    assert_eq!(p.default_fan_profile().await.unwrap(), "silent");
+    assert_eq!(p.fan_mode().await.unwrap(), "advanced");
+    p.set_profile("gaming").await.unwrap();
+    assert_eq!(p.fan_profile().await.unwrap(), "auto");
+    assert_eq!(p.fan_mode().await.unwrap(), "auto");
+}
+
+#[tokio::test]
+async fn custom_fan_curve_is_the_editor_of_the_custom_fan_profile() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_profile("eco").await.unwrap();
+    // Not edited yet: the preset of the default fan profile, with its step table.
+    let (spec, table, raised) = p.custom_fan_curve("gpu").await.unwrap();
+    assert_eq!(spec, spec_to_wire(&CurvePreset::Silent.spec()));
+    let silent = generate(&CurvePreset::Silent.spec()).unwrap();
+    assert_eq!(table.0, silent.curve.speeds().to_vec());
+    assert_eq!(raised.len(), 1, "Silent: step 6 raised by S2");
+    // SetFanCurve stores it and switches to Custom.
+    let quiet = (0, 45, 80, 30, 100, 2.5, vec![45, 52, 60, 67, 73, 80], 3);
+    p.set_fan_curve("gpu", &quiet).await.unwrap();
+    assert_eq!(p.fan_profile().await.unwrap(), "custom");
+    assert_eq!(p.custom_fan_curve("gpu").await.unwrap().0, quiet);
+    // Picking a preset keeps the custom curve for later.
+    p.set_fan_profile("turbo").await.unwrap();
+    assert_eq!(p.custom_fan_curve("gpu").await.unwrap().0, quiet);
+    assert!(!p.fan_curve("gpu").await.unwrap().3);
+    p.set_fan_profile("custom").await.unwrap();
+    assert_eq!(p.fan_curve("gpu").await.unwrap().0, quiet);
+}
+
+#[tokio::test]
+async fn invalid_custom_curve_under_auto_changes_nothing() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_fan_profile("auto").await.unwrap();
+    let writes = h.ec.state().writes.len();
+    let modes = h.ec.state().fan_mode_writes.len();
+    let e = p
+        .set_fan_curve("gpu", &(0, 50, 40, 30, 100, 2.0, vec![50, 57, 64, 70, 76, 82], 4))
+        .await
+        .unwrap_err();
+    assert_eq!(error_name(&e), "org.blazorde.MsiCenter1.Error.InvalidArgument");
+    assert_eq!(h.ec.state().writes.len(), writes);
+    assert_eq!(h.ec.state().fan_mode_writes.len(), modes);
+    assert_eq!(p.fan_profile().await.unwrap(), "auto");
+    assert_eq!(h.ec.state().fan_mode, FanMode::Auto);
 }

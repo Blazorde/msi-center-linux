@@ -2,6 +2,10 @@
 //!
 //! Every value is validated through `msi-core` on load (S3): an invalid entry is dropped with a warning, never
 //! "fixed". A missing or unreadable file gives the defaults. Writes are atomic (temporary file + rename).
+//!
+//! Fan profiles (`[fan_profiles]`, version 2): the owner's choice per performance profile; absent = the
+//! profile's default ([`Profile::default_fan_profile`]). A version 1 file has no `[fan_profiles]` table: every
+//! profile with a custom curve then gets the `custom` fan profile, so it behaves exactly as before.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -10,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use msi_core::battery::ChargeLimit;
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
+use msi_core::fan_profile::{FanCurveSource, FanProfile};
 use msi_core::profile::Profile;
 use serde::{Deserialize, Serialize};
 
@@ -31,8 +36,10 @@ pub struct Settings {
     pub battery_profile: Profile,
     /// Charge limit to apply at start (`None` = leave the firmware value).
     pub charge_limit: Option<ChargeLimit>,
-    /// Custom curves overriding a profile's preset for one fan.
+    /// Custom curves (fan profile `custom`) of one fan in one performance profile.
     pub curves: HashMap<(Profile, Fan), FanCurveSpec>,
+    /// Fan profile chosen per performance profile, when it differs from its default.
+    pub fan_profiles: HashMap<Profile, FanProfile>,
 }
 
 impl Default for Settings {
@@ -44,24 +51,55 @@ impl Default for Settings {
             battery_profile: Profile::Eco,
             charge_limit: None,
             curves: HashMap::new(),
+            fan_profiles: HashMap::new(),
         }
     }
 }
 
 impl Settings {
-    /// Curve of `fan` in `profile`: the custom one if any, else the profile's preset.
+    /// Fan profile of `profile`: the owner's choice, else its default.
+    #[must_use]
+    pub fn fan_profile(&self, profile: Profile) -> FanProfile {
+        self.fan_profiles
+            .get(&profile)
+            .copied()
+            .unwrap_or_else(|| profile.default_fan_profile())
+    }
+
+    /// Remembers `fan_profile` for `profile` (choosing the default forgets the override).
+    pub fn set_fan_profile(&mut self, profile: Profile, fan_profile: FanProfile) {
+        if fan_profile == profile.default_fan_profile() {
+            self.fan_profiles.remove(&profile);
+        } else {
+            self.fan_profiles.insert(profile, fan_profile);
+        }
+    }
+
+    /// Curve of `fan` in `profile` for its fan profile: the preset, or the custom curve. Under `auto` (the EC
+    /// factory curve, nothing of ours applied) this is the preset of the default fan profile, unused.
     #[must_use]
     pub fn curve(&self, profile: Profile, fan: Fan) -> FanCurveSpec {
+        match self.fan_profile(profile).source() {
+            FanCurveSource::Preset(p) => p.spec(),
+            FanCurveSource::Custom => self.custom_curve(profile, fan),
+            FanCurveSource::Factory => profile.target().curve.spec(),
+        }
+    }
+
+    /// Custom curve of `fan` in `profile` (fan profile `custom`): the saved one, else the preset of the
+    /// profile's default fan profile (the editor's starting point).
+    #[must_use]
+    pub fn custom_curve(&self, profile: Profile, fan: Fan) -> FanCurveSpec {
         self.curves
             .get(&(profile, fan))
             .copied()
             .unwrap_or_else(|| profile.target().curve.spec())
     }
 
-    /// `true` if `fan` has a custom curve in `profile`.
+    /// `true` if `profile` uses the `custom` fan profile (so `fan` follows the owner's curve).
     #[must_use]
-    pub fn is_custom(&self, profile: Profile, fan: Fan) -> bool {
-        self.curves.contains_key(&(profile, fan))
+    pub fn is_custom(&self, profile: Profile, _fan: Fan) -> bool {
+        self.fan_profile(profile) == FanProfile::Custom
     }
 
     /// Profile for the given power source when the AC switch is on.
@@ -125,9 +163,11 @@ struct StateFile {
     charge_limit: Option<u8>,
     #[serde(default)]
     curves: BTreeMap<String, BTreeMap<String, CurveRecord>>,
+    /// Absent in version 1 files (migrated, see the module documentation).
+    fan_profiles: Option<BTreeMap<String, String>>,
 }
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 fn parse_profile(value: Option<&String>, key: &str, default: Profile, warnings: &mut Vec<String>) -> Profile {
     match value.map(|v| v.parse::<Profile>()) {
@@ -169,6 +209,7 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
         ),
         charge_limit: None,
         curves: HashMap::new(),
+        fan_profiles: HashMap::new(),
     };
     if let Some(v) = file.charge_limit {
         match ChargeLimit::new(v) {
@@ -194,6 +235,24 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
             }
         }
     }
+    if let Some(map) = &file.fan_profiles {
+        for (profile_name, value) in map {
+            let Ok(profile) = profile_name.parse::<Profile>() else {
+                warnings.push(format!("fan_profiles.{profile_name}: unknown profile"));
+                continue;
+            };
+            match value.parse::<FanProfile>() {
+                Ok(fp) => s.set_fan_profile(profile, fp),
+                Err(e) => warnings.push(format!("fan_profiles.{profile_name}: {e}")),
+            }
+        }
+    } else {
+        // Version 1: a custom curve overrode the profile's preset → keep it in force as `custom`.
+        let migrated: Vec<Profile> = s.curves.keys().map(|&(p, _)| p).collect();
+        for p in migrated {
+            s.set_fan_profile(p, FanProfile::Custom);
+        }
+    }
     (s, warnings)
 }
 
@@ -209,6 +268,11 @@ pub fn render(s: &Settings) -> Result<String, toml::ser::Error> {
             .or_default()
             .insert(fan.as_str().to_owned(), CurveRecord::from_spec(spec));
     }
+    let fan_profiles = s
+        .fan_profiles
+        .iter()
+        .map(|(p, fp)| (p.as_str().to_owned(), fp.as_str().to_owned()))
+        .collect();
     let file = StateFile {
         version: VERSION,
         profile: Some(s.profile.as_str().to_owned()),
@@ -217,6 +281,7 @@ pub fn render(s: &Settings) -> Result<String, toml::ser::Error> {
         battery_profile: Some(s.battery_profile.as_str().to_owned()),
         charge_limit: s.charge_limit.map(ChargeLimit::get),
         curves,
+        fan_profiles: Some(fan_profiles),
     };
     toml::to_string(&file)
 }
@@ -308,15 +373,20 @@ mod tests {
             battery_profile: Profile::Balanced,
             charge_limit: Some(ChargeLimit::new(80).unwrap()),
             curves: HashMap::new(),
+            fan_profiles: HashMap::new(),
         };
         s.curves.insert((Profile::Eco, Fan::Gpu), custom());
+        s.set_fan_profile(Profile::Eco, FanProfile::Custom);
+        s.set_fan_profile(Profile::Gaming, FanProfile::Auto);
         store.save(&s).unwrap();
         let (loaded, w) = store.load();
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(loaded, s);
         assert!(loaded.is_custom(Profile::Eco, Fan::Gpu));
-        assert!(!loaded.is_custom(Profile::Eco, Fan::Cpu));
+        assert!(!loaded.is_custom(Profile::Balanced, Fan::Gpu));
+        assert_eq!(loaded.fan_profile(Profile::Gaming), FanProfile::Auto);
         assert_eq!(loaded.curve(Profile::Eco, Fan::Gpu), custom());
+        assert_eq!(loaded.curve(Profile::Eco, Fan::Cpu), CurvePreset::Silent.spec());
         assert!(!dir.path().join("sub/state.toml.tmp").exists());
     }
 
@@ -352,6 +422,92 @@ mod tests {
         assert!(s.auto_profile_on_power);
         assert_eq!(s.curves.len(), 0);
         assert_eq!(w.len(), 4, "{w:?}");
+    }
+
+    #[test]
+    fn fan_profiles_default_per_profile_and_overrides_are_remembered() {
+        let mut s = Settings::default();
+        assert_eq!(s.fan_profile(Profile::Eco), FanProfile::Silent);
+        assert_eq!(s.fan_profile(Profile::Balanced), FanProfile::Balanced);
+        assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Turbo);
+        s.set_fan_profile(Profile::Eco, FanProfile::Turbo);
+        assert_eq!(s.fan_profile(Profile::Eco), FanProfile::Turbo);
+        assert_eq!(s.curve(Profile::Eco, Fan::Cpu), CurvePreset::Aggressive.spec());
+        // The other profiles keep their own choice.
+        assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Turbo);
+        // Choosing the default forgets the override.
+        s.set_fan_profile(Profile::Eco, FanProfile::Silent);
+        assert!(s.fan_profiles.is_empty());
+    }
+
+    #[test]
+    fn custom_fan_profile_uses_the_saved_curve_or_the_default_preset() {
+        let mut s = Settings::default();
+        s.curves.insert((Profile::Gaming, Fan::Gpu), custom());
+        // Saved but not selected: Turbo stays in force.
+        assert_eq!(s.curve(Profile::Gaming, Fan::Gpu), CurvePreset::Aggressive.spec());
+        assert!(!s.is_custom(Profile::Gaming, Fan::Gpu));
+        s.set_fan_profile(Profile::Gaming, FanProfile::Custom);
+        assert_eq!(s.curve(Profile::Gaming, Fan::Gpu), custom());
+        assert_eq!(s.curve(Profile::Gaming, Fan::Cpu), CurvePreset::Aggressive.spec());
+        assert!(s.is_custom(Profile::Gaming, Fan::Cpu));
+        assert_eq!(s.custom_curve(Profile::Eco, Fan::Cpu), CurvePreset::Silent.spec());
+    }
+
+    #[test]
+    fn version_1_custom_curves_migrate_to_the_custom_fan_profile() {
+        let (s, w) = parse(
+            r#"
+            version = 1
+            profile = "eco"
+            [curves.eco.gpu]
+            idle = 0
+            t0 = 45
+            t1 = 80
+            min = 30
+            max = 100
+            k = 2.5
+            up = [45, 52, 60, 67, 73, 80]
+            hysteresis = 3
+            "#,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(s.fan_profile(Profile::Eco), FanProfile::Custom);
+        assert_eq!(s.curve(Profile::Eco, Fan::Gpu), custom());
+        // The CPU of Éco had no custom curve: still its preset, as before.
+        assert_eq!(s.curve(Profile::Eco, Fan::Cpu), CurvePreset::Silent.spec());
+        assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Turbo);
+        // Saved again as version 2, the choice is explicit and survives.
+        let (again, w) = parse(&render(&s).unwrap());
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(again, s);
+    }
+
+    #[test]
+    fn version_2_without_overrides_does_not_migrate_saved_curves() {
+        let mut s = Settings::default();
+        s.curves.insert((Profile::Eco, Fan::Cpu), custom());
+        let text = render(&s).unwrap();
+        assert!(text.contains("fan_profiles"), "{text}");
+        let (loaded, w) = parse(&text);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(loaded.fan_profile(Profile::Eco), FanProfile::Silent);
+        assert_eq!(loaded, s);
+    }
+
+    #[test]
+    fn invalid_fan_profiles_are_dropped_with_a_warning() {
+        let (s, w) = parse(
+            r#"
+            [fan_profiles]
+            eco = "max"
+            turbo = "auto"
+            gaming = "auto"
+            "#,
+        );
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert_eq!(s.fan_profile(Profile::Eco), FanProfile::Silent);
+        assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Auto);
     }
 
     #[test]

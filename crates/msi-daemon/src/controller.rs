@@ -23,17 +23,26 @@
 //! and only when the vector changes, then read back (S7: mismatch → factory + `auto` + event). The drift
 //! check compares the EC with the last vector written. Firmware without known factory tables: the CPU table
 //! is generated like the GPU one (previous behaviour).
+//!
+//! # Fan profiles
+//!
+//! Each performance profile applies its fan profile ([`Settings::fan_profile`]): Silencieux, Équilibré, Turbo
+//! and Personnalisé write our curves as above; **Auto** writes the factory tables of both fans (when known)
+//! and fan mode `auto`, verifies them (S7) and stops the hybrid CPU loop. Unlike [`Controller::restore_factory`]
+//! it is a chosen, persisted mode: re-applied at start, after resume and by the drift check. S4 keeps
+//! supervising; S9 only watches our own tables (the firmware drives the fans under Auto).
 
 use std::fmt;
 
 use msi_core::battery::ChargeLimit;
 use msi_core::curve::FanCurveSpec;
 use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
+use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::{CpuFanPilot, TempFilter, hybrid_cpu_table};
 use msi_core::profile::{GpuMode, Profile};
 use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
 use msi_core::supervisor::{BoostDecision, SensorReading, ThermalSupervisor};
-use msi_core::table::{GeneratedCurve, RawTables, StepCurve, TableWrite, generate, write_plan};
+use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, StepCurve, TableWrite, generate, write_plan};
 
 use crate::ec::{EcBackend, Fan, restore_factory};
 use crate::gpu::{GpuError, GpuManager, GpuState, Holder, PowerControl};
@@ -140,6 +149,10 @@ pub enum ControlError {
 pub struct Status {
     /// Selected profile.
     pub profile: Profile,
+    /// Fan profile of the selected profile.
+    pub fan_profile: FanProfile,
+    /// Default fan profile of the selected profile.
+    pub default_fan_profile: FanProfile,
     /// AC auto-switch enabled.
     pub auto_profile_on_power: bool,
     /// AC state (`None` = unknown).
@@ -180,11 +193,24 @@ pub struct Readings {
     pub cpu_fan_target: Option<u8>,
 }
 
+/// Curve of one fan as `FanCurve` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FanCurveView {
+    /// Curve of the fan profile in force (under Auto: the default fan profile's preset, not applied).
+    pub spec: FanCurveSpec,
+    /// Table in force: generated table, live CPU vector (ADR-0010), or factory table under Auto.
+    pub table: RawTables,
+    /// Steps raised by the safety floors (empty under Auto).
+    pub raised: Vec<RaisedPoint>,
+    /// `true` when the fan profile is `custom`.
+    pub custom: bool,
+}
+
 /// The daemon state. See the module documentation.
 #[derive(Debug)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent flags: curve applied, S4 forcing, owner's boost choice, control handed back"
+    reason = "independent flags: curve applied, Auto applied, S4 forcing, owner's boost choice, control handed back"
 )]
 pub struct Controller {
     ec: Box<dyn EcBackend>,
@@ -199,6 +225,7 @@ pub struct Controller {
     handed_back: bool,
     fw_version: String,
     applied: bool,
+    auto_applied: bool,
     stall: [StallDetector; 2],
     cpu_filter: TempFilter,
     cpu_pilot: CpuFanPilot,
@@ -258,6 +285,7 @@ impl Controller {
                 handed_back: false,
                 fw_version,
                 applied: false,
+                auto_applied: false,
                 stall: [StallDetector::new(); 2],
                 cpu_filter: TempFilter::new(),
                 cpu_pilot: CpuFanPilot::new(),
@@ -285,6 +313,12 @@ impl Controller {
         self.applied
     }
 
+    /// `true` once the Auto fan profile is in force (factory tables and fan mode `auto` set and verified).
+    #[must_use]
+    pub fn is_auto_applied(&self) -> bool {
+        self.auto_applied
+    }
+
     /// Drains the pending safety events.
     pub fn take_events(&mut self) -> Vec<SafetyEvent> {
         std::mem::take(&mut self.events)
@@ -308,6 +342,7 @@ impl Controller {
     /// logged and returned.
     fn hand_back(&mut self) -> Result<(), String> {
         self.applied = false;
+        self.auto_applied = false;
         self.cpu_live = None;
         for d in &mut self.stall {
             d.reset();
@@ -408,6 +443,9 @@ impl Controller {
     /// runtime suspend and a `gpu_busy` event is recorded.
     pub fn apply_profile(&mut self, profile: Profile) -> Result<(), ControlError> {
         self.writable()?;
+        if self.settings.fan_profile(profile) == FanProfile::Auto {
+            return self.apply_auto(profile);
+        }
         let target = profile.target();
         let mut curves = Vec::with_capacity(Fan::ALL.len());
         let mut cpu_live = None;
@@ -429,14 +467,45 @@ impl Controller {
         if let Err(e) = self.ec.set_shift_mode(target.shift_mode) {
             return Err(self.fallback(EventKind::WriteFailed, format!("shift mode: {e}")));
         }
-        self.verify(&curves, target.shift_mode)?;
+        let expected: Vec<(Fan, RawTables)> = curves.iter().map(|(f, c)| (*f, c.tables())).collect();
+        self.verify(&expected, FanMode::Advanced, target.shift_mode)?;
         self.applied = true;
+        self.auto_applied = false;
         self.cpu_live = cpu_live;
         for d in &mut self.stall {
             d.reset();
         }
-        tracing::info!(profile = %profile, "profile applied to the EC");
-        let policy = if target.gpu == GpuMode::Active {
+        tracing::info!(profile = %profile, fan_profile = %self.settings.fan_profile(profile), "profile applied to the EC");
+        self.apply_gpu_step(target.gpu)
+    }
+
+    /// Fan profile Auto of `profile`: factory tables (ordered, read back) → fan mode `auto` → shift mode →
+    /// readback (S7) → dGPU. The hybrid CPU loop and S9 stay off (the firmware drives the fans); S4 stays on.
+    fn apply_auto(&mut self, profile: Profile) -> Result<(), ControlError> {
+        let target = profile.target();
+        if let Err(e) = self.hand_back() {
+            return Err(self.fallback(EventKind::WriteFailed, format!("factory tables: {e}")));
+        }
+        if let Err(e) = self.ec.set_shift_mode(target.shift_mode) {
+            return Err(self.fallback(EventKind::WriteFailed, format!("shift mode: {e}")));
+        }
+        let expected = self.factory_expected();
+        self.verify(&expected, FanMode::Auto, target.shift_mode)?;
+        self.auto_applied = true;
+        tracing::info!(profile = %profile, "profile applied, fans on the EC factory curve (fan profile auto)");
+        self.apply_gpu_step(target.gpu)
+    }
+
+    /// Factory tables the EC must hold under Auto (empty when unknown for this firmware: only `auto` is set).
+    fn factory_expected(&self) -> Vec<(Fan, RawTables)> {
+        self.factory
+            .map(|f| vec![(Fan::Cpu, f.cpu), (Fan::Gpu, f.gpu)])
+            .unwrap_or_default()
+    }
+
+    /// dGPU polling policy, then the dGPU power step of a profile.
+    fn apply_gpu_step(&mut self, gpu: GpuMode) -> Result<(), ControlError> {
+        let policy = if gpu == GpuMode::Active {
             DgpuPolicy::WhenActive
         } else {
             DgpuPolicy::Off
@@ -444,7 +513,7 @@ impl Controller {
         if let Some(t) = self.telemetry.as_mut() {
             t.set_dgpu_policy(policy);
         }
-        self.apply_gpu(target.gpu)
+        self.apply_gpu(gpu)
     }
 
     /// Writes one fan's tables in kernel-safe order, then reads them back (S7).
@@ -469,24 +538,29 @@ impl Controller {
     }
 
     /// S7: everything written is still what the EC holds.
-    fn verify(&mut self, curves: &[(Fan, StepCurve)], shift: ShiftMode) -> Result<(), ControlError> {
-        if let Some(detail) = self.drift(curves, Some(shift)) {
+    fn verify(
+        &mut self,
+        tables: &[(Fan, RawTables)],
+        mode: FanMode,
+        shift: ShiftMode,
+    ) -> Result<(), ControlError> {
+        if let Some(detail) = self.drift(tables, mode, Some(shift)) {
             return Err(self.fallback(EventKind::ReadbackMismatch, detail));
         }
         Ok(())
     }
 
     /// First difference between the EC and what we applied, if any.
-    fn drift(&self, curves: &[(Fan, StepCurve)], shift: Option<ShiftMode>) -> Option<String> {
-        for (fan, curve) in curves {
+    fn drift(&self, tables: &[(Fan, RawTables)], mode: FanMode, shift: Option<ShiftMode>) -> Option<String> {
+        for (fan, want) in tables {
             match self.ec.read_tables(*fan) {
-                Ok(t) if t == curve.tables() => {}
+                Ok(t) if t == *want => {}
                 Ok(t) => return Some(format!("{fan} tables are {t:?}")),
                 Err(e) => return Some(format!("{fan} tables: {e}")),
             }
         }
         match self.ec.fan_mode() {
-            Ok(FanMode::Advanced) => {}
+            Ok(m) if m == mode => {}
             Ok(m) => return Some(format!("fan mode is {}", m.as_str())),
             Err(e) => return Some(format!("fan mode: {e}")),
         }
@@ -500,19 +574,24 @@ impl Controller {
         None
     }
 
-    /// What the EC must hold now: the generated GPU table, and for the CPU the last live vector written
-    /// (hybrid) or the generated table (legacy firmware).
-    fn expected_curves(&self) -> Option<Vec<(Fan, StepCurve)>> {
-        Fan::ALL
+    /// What the EC must hold now: under Auto the factory tables in `auto`; otherwise, in `advanced`, the
+    /// generated GPU table and for the CPU the last live vector written (hybrid) or the generated table (legacy
+    /// firmware).
+    fn expected_tables(&self) -> Option<(Vec<(Fan, RawTables)>, FanMode)> {
+        if self.auto_applied {
+            return Some((self.factory_expected(), FanMode::Auto));
+        }
+        let tables = Fan::ALL
             .iter()
             .map(|&fan| match (&self.cpu_live, fan) {
-                (Some(live), Fan::Cpu) => Some((fan, live.curve)),
+                (Some(live), Fan::Cpu) => Some((fan, live.curve.tables())),
                 (None, Fan::Cpu) if self.hybrid_base().is_some() => None,
                 _ => generate(&self.settings.curve(self.settings.profile, fan))
                     .ok()
-                    .map(|g| (fan, g.curve)),
+                    .map(|g| (fan, g.curve.tables())),
             })
-            .collect()
+            .collect::<Option<Vec<_>>>()?;
+        Some((tables, FanMode::Advanced))
     }
 
     /// Factory CPU tables whose thresholds the hybrid CPU control keeps (ADR-0010); `None` when unknown for
@@ -596,50 +675,109 @@ impl Controller {
         }
     }
 
-    /// Curve spec, table and report of `fan` in the selected profile, and whether it is custom. For the CPU
-    /// under hybrid control (ADR-0010) the table is the **live vector**: factory thresholds, steps 0–3 at the
-    /// current target, hot steps floored; the report lists the steps raised by the hot floors and S2.
+    /// Curve of `fan` in the selected profile, as `FanCurve` reports it. For the CPU under hybrid control
+    /// (ADR-0010) the table is the **live vector**: factory thresholds, steps 0–3 at the current target, hot
+    /// steps floored; the report lists the steps raised by the hot floors and S2. Under the Auto fan profile:
+    /// the factory table (when known), nothing raised.
     ///
     /// # Errors
     /// [`ControlError::InvalidArgument`] if the stored spec does not generate (cannot happen: validated on load).
-    pub fn fan_curve(&self, fan: Fan) -> Result<(FanCurveSpec, GeneratedCurve, bool), ControlError> {
+    pub fn fan_curve(&self, fan: Fan) -> Result<FanCurveView, ControlError> {
         let profile = self.settings.profile;
         let spec = self.settings.curve(profile, fan);
+        let custom = self.settings.is_custom(profile, fan);
+        if self.settings.fan_profile(profile) == FanProfile::Auto {
+            let factory = self.factory.map(|f| if fan == Fan::Cpu { f.cpu } else { f.gpu });
+            if let Some(table) = factory.or_else(|| self.ec.read_tables(fan).ok()) {
+                return Ok(FanCurveView {
+                    spec,
+                    table,
+                    raised: Vec::new(),
+                    custom,
+                });
+            }
+        }
         let generated = match (&self.cpu_live, fan) {
             (Some(live), Fan::Cpu) => live.clone(),
             _ => self
                 .curve_for(profile, fan)
                 .map_err(|e| ControlError::InvalidArgument(e.to_string()))?,
         };
-        Ok((spec, generated, self.settings.is_custom(profile, fan)))
+        Ok(FanCurveView {
+            spec,
+            table: generated.curve.tables(),
+            raised: generated.report.raised,
+            custom,
+        })
     }
 
-    /// Sets a custom curve for `fan` in the selected profile, saves it and applies the profile. Returns the
-    /// table now in force (for the CPU under hybrid control: the live vector, as [`Self::fan_curve`]).
+    /// Custom curve of `fan` in the selected profile (the editor of the `custom` fan profile), whether or not it
+    /// is in force, with its generated step table and S2 report (like `PreviewFanCurve`).
+    ///
+    /// # Errors
+    /// [`ControlError::InvalidArgument`] if the stored spec does not generate (cannot happen: validated on load).
+    pub fn custom_fan_curve(&self, fan: Fan) -> Result<(FanCurveSpec, GeneratedCurve), ControlError> {
+        let spec = self.settings.custom_curve(self.settings.profile, fan);
+        let generated = generate(&spec).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        Ok((spec, generated))
+    }
+
+    /// Selects `fan_profile` for the selected performance profile (remembered for that profile), saves it and
+    /// applies the profile.
     ///
     /// # Errors
     /// [`ControlError::ReadOnly`], or as [`Self::apply_profile`].
+    pub fn set_fan_profile(&mut self, fan_profile: FanProfile) -> Result<(), ControlError> {
+        self.writable()?;
+        self.handed_back = false;
+        let profile = self.settings.profile;
+        self.settings.set_fan_profile(profile, fan_profile);
+        self.save();
+        self.apply_profile(profile)
+    }
+
+    /// Sets the custom curve of `fan` in the selected profile, switches that profile to the `custom` fan
+    /// profile, saves and applies it. Returns the table now in force (for the CPU under hybrid control: the
+    /// live vector, as [`Self::fan_curve`]). An invalid spec is rejected before anything is changed.
+    ///
+    /// # Errors
+    /// [`ControlError::ReadOnly`], [`ControlError::InvalidArgument`], or as [`Self::apply_profile`].
     pub fn set_fan_curve(&mut self, fan: Fan, spec: FanCurveSpec) -> Result<GeneratedCurve, ControlError> {
         self.writable()?;
         let generated = generate(&spec).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
-        self.settings.curves.insert((self.settings.profile, fan), spec);
+        self.handed_back = false;
+        let profile = self.settings.profile;
+        self.settings.curves.insert((profile, fan), spec);
+        self.settings.set_fan_profile(profile, FanProfile::Custom);
         self.save();
-        self.apply_profile(self.settings.profile)?;
+        self.apply_profile(profile)?;
         if fan == Fan::Cpu && self.hybrid_base().is_some() {
-            return self.fan_curve(fan).map(|(_, g, _)| g);
+            if let Some(live) = &self.cpu_live {
+                return Ok(live.clone());
+            }
         }
         Ok(generated)
     }
 
-    /// Removes the custom curve of `fan` in the selected profile (back to the preset) and applies it.
+    /// Removes the custom curve of `fan` in the selected profile and applies the profile. When no custom curve
+    /// is left and the profile was on `custom`, it goes back to its default fan profile (the preset).
     ///
     /// # Errors
     /// As [`Self::set_fan_curve`].
     pub fn reset_fan_curve(&mut self, fan: Fan) -> Result<(), ControlError> {
         self.writable()?;
-        self.settings.curves.remove(&(self.settings.profile, fan));
+        self.handed_back = false;
+        let profile = self.settings.profile;
+        self.settings.curves.remove(&(profile, fan));
+        let any_left = Fan::ALL
+            .iter()
+            .any(|&f| self.settings.curves.contains_key(&(profile, f)));
+        if !any_left && self.settings.fan_profile(profile) == FanProfile::Custom {
+            self.settings
+                .set_fan_profile(profile, profile.default_fan_profile());
+        }
         self.save();
-        self.apply_profile(self.settings.profile)
+        self.apply_profile(profile)
     }
 
     /// Sets the owner's Cooler Boost preference. Turning it off is refused while S4 forces it.
@@ -692,6 +830,8 @@ impl Controller {
     pub fn status(&self) -> Status {
         Status {
             profile: self.settings.profile,
+            fan_profile: self.settings.fan_profile(self.settings.profile),
+            default_fan_profile: self.settings.profile.default_fan_profile(),
             auto_profile_on_power: self.settings.auto_profile_on_power,
             on_ac: self.last_ac.or_else(|| self.power.ac_online()),
             fan_mode: self
@@ -741,7 +881,7 @@ impl Controller {
             }
             self.drive_cpu(&spec, target);
             self.auto_switch();
-            if self.applied && self.ticks % DRIFT_CHECK_EVERY == 0 {
+            if (self.applied || self.auto_applied) && self.ticks % DRIFT_CHECK_EVERY == 0 {
                 self.check_drift();
             }
         }
@@ -902,11 +1042,11 @@ impl Controller {
     }
 
     fn check_drift(&mut self) {
-        let Some(curves) = self.expected_curves() else {
+        let Some((tables, mode)) = self.expected_tables() else {
             return;
         };
         let shift = self.settings.profile.target().shift_mode;
-        if let Some(detail) = self.drift(&curves, Some(shift)) {
+        if let Some(detail) = self.drift(&tables, mode, Some(shift)) {
             self.event(EventKind::EcReset, 0.0, format!("{detail}: re-applying"));
             if let Err(e) = self.reapply() {
                 tracing::warn!(error = %e, "re-apply after EC reset incomplete");

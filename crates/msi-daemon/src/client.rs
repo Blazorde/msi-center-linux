@@ -18,6 +18,10 @@ pub trait MsiCenter1 {
     /// See the interface documentation.
     fn set_auto_profile_on_power(&self, enabled: bool) -> zbus::Result<()>;
     /// See the interface documentation.
+    fn set_fan_profile(&self, fan_profile: &str) -> zbus::Result<()>;
+    /// See the interface documentation.
+    fn custom_fan_curve(&self, fan: &str) -> zbus::Result<(SpecWire, TableWire, Vec<RaisedWire>)>;
+    /// See the interface documentation.
     fn fan_curve(&self, fan: &str) -> zbus::Result<(SpecWire, TableWire, Vec<RaisedWire>, bool)>;
     /// See the interface documentation.
     fn set_fan_curve(&self, fan: &str, spec: &SpecWire) -> zbus::Result<(TableWire, Vec<RaisedWire>)>;
@@ -42,6 +46,12 @@ pub trait MsiCenter1 {
     /// See the interface documentation.
     #[zbus(property)]
     fn profile(&self) -> zbus::Result<String>;
+    /// See the interface documentation.
+    #[zbus(property)]
+    fn fan_profile(&self) -> zbus::Result<String>;
+    /// See the interface documentation.
+    #[zbus(property)]
+    fn default_fan_profile(&self) -> zbus::Result<String>;
     /// See the interface documentation.
     #[zbus(property)]
     fn auto_profile_on_power(&self) -> zbus::Result<bool>;
