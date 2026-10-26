@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use futures_util::StreamExt as _;
 use msi_daemon::client::{MsiCenter1Proxy, RaisedWire, SpecWire, TableWire};
+use msi_daemon::ec::FACTORY_CPU;
 use zbus::OwnedVariant;
 
 const USAGE: &str = "usage: msictl [--session] <command>
@@ -90,6 +91,13 @@ fn format_curve(
     let _ = writeln!(out, "  speed %       {}", join(&table.0));
     let _ = writeln!(out, "  up ≥ °C           {}", join(&table.1));
     let _ = writeln!(out, "  down < °C         {}", join(&table.2));
+    if fan == "cpu" && table.1 == FACTORY_CPU.up {
+        let _ = writeln!(
+            out,
+            "  live: the EC ignores CPU thresholds; steps 0–3 follow the filtered CPU temperature (now {} %), hot steps floored (ADR-0010)",
+            table.0.first().copied().unwrap_or(0)
+        );
+    }
     for (step, temp, curve, applied, floor_t, floor_s) in raised {
         let _ = writeln!(
             out,
@@ -323,6 +331,17 @@ mod tests {
         );
         assert!(out.contains("   0  30  33  43  57  76 100"), "{out}");
         assert!(out.contains("step 1 (from 55 °C) raised 0 → 30 %"), "{out}");
+        assert!(!out.contains("live:"), "{out}");
+        let live = (
+            vec![37, 37, 37, 50, 80, 100, 100],
+            FACTORY_CPU.up.to_vec(),
+            FACTORY_CPU.down.to_vec(),
+        );
+        let out = format_curve("cpu", &spec, &live, &[], false);
+        assert!(
+            out.contains("live: the EC ignores CPU thresholds") && out.contains("(now 37 %)"),
+            "{out}"
+        );
     }
 
     #[test]

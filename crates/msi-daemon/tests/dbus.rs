@@ -14,7 +14,7 @@ use msi_core::ec::FanMode;
 use msi_core::table::generate;
 use msi_daemon::client::MsiCenter1Proxy;
 use msi_daemon::controller::Controller;
-use msi_daemon::ec::{MemoryEc, MemoryState};
+use msi_daemon::ec::{FACTORY_CPU, MemoryEc, MemoryState};
 use msi_daemon::fs::FsRoot;
 use msi_daemon::gpu::GpuManager;
 use msi_daemon::polkit::{Action, Authorizer, StaticAuthorizer};
@@ -124,16 +124,25 @@ async fn set_profile_applies_the_curves_and_updates_properties() {
     assert_eq!(p.profile().await.unwrap(), "eco");
     assert_eq!(p.fan_mode().await.unwrap(), "advanced");
     let silent = generate(&CurvePreset::Silent.spec()).unwrap().curve.tables();
-    assert_eq!(h.ec.state().cpu, silent);
+    assert_eq!(h.ec.state().gpu, silent);
     assert_eq!(h.ec.state().fan_mode, FanMode::Advanced);
 
+    // ADR-0010: the CPU keeps the factory thresholds; steps 0–3 at the live target (start speed 30 % until
+    // the temperature filter is ready), hot steps floored.
+    let cpu = h.ec.state().cpu;
+    assert_eq!(cpu.speeds, [30, 30, 30, 50, 80, 100, 100]);
+    assert_eq!((cpu.up, cpu.down), (FACTORY_CPU.up, FACTORY_CPU.down));
     let (spec, table, raised, custom) = p.fan_curve("cpu").await.unwrap();
     assert_eq!(spec, spec_to_wire(&CurvePreset::Silent.spec()));
-    assert_eq!(table.0, silent.speeds.to_vec());
-    assert_eq!(table.1, silent.up.to_vec());
-    assert_eq!(table.2, silent.down.to_vec());
-    assert_eq!(raised.len(), 0);
+    assert_eq!(table.0, cpu.speeds.to_vec());
+    assert_eq!(table.1, cpu.up.to_vec());
+    assert_eq!(table.2, cpu.down.to_vec());
+    // Step 3 raised by the S2 floor of 50 % at 75 °C.
+    assert_eq!(raised, [(3, 70, 30, 50, 75, 50)]);
     assert!(!custom);
+    let (_, table, raised, _) = p.fan_curve("gpu").await.unwrap();
+    assert_eq!(table.0, silent.speeds.to_vec());
+    assert_eq!(raised.len(), 0);
 }
 
 #[tokio::test]
@@ -270,6 +279,8 @@ async fn s4_tick_forces_cooler_boost_and_emits_signals() {
     let data = t.args().unwrap().data;
     assert_eq!(f64::try_from(&*data["cpu_temp"]).unwrap(), 97.0);
     assert_eq!(u8::try_from(&*data["fan1_pct"]).unwrap(), 100);
+    // ADR-0010: live CPU target (start speed until the filter has three readings).
+    assert_eq!(u8::try_from(&*data["cpu_fan_target_pct"]).unwrap(), 30);
 }
 
 #[tokio::test]
