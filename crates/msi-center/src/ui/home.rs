@@ -7,6 +7,7 @@ use msi_center::chart::gauge_fraction;
 use msi_center::errors::Service;
 use msi_center::format;
 use msi_center::model::{self, DaemonStatus, Telemetry, TempLevel};
+use msi_core::fan_profile::FanProfile;
 use msi_core::profile::Profile;
 
 use super::profiles::{ProfileSwitch, Variant};
@@ -26,7 +27,9 @@ pub struct Home {
     gpu_warning: gtk::Revealer,
     gpu_warning_text: gtk::Label,
     power: gtk::Label,
-    fans_chip: gtk::Label,
+    fan_chip: gtk::Button,
+    fan_icon: gtk::Image,
+    fan_label: gtk::Label,
     boost: gtk::Label,
     dgpu_chip: gtk::Label,
     read_only: std::cell::Cell<bool>,
@@ -66,7 +69,7 @@ impl Home {
 
         // Hero: the profile switch. One click applies.
         let app = Rc::downgrade(&ctx.app);
-        let profiles = ProfileSwitch::new(Variant::Hero, move |p| {
+        let profiles = ProfileSwitch::new(Variant::Hero, "Profil", move |p| {
             if let Some(a) = app.upgrade() {
                 a.apply_profile(p);
             }
@@ -88,8 +91,20 @@ impl Home {
             .build();
         let (c, power) = chip("battery-full-charged-symbolic");
         chips.append(&c);
-        let (c, fans_chip) = chip("weather-windy-symbolic");
-        chips.append(&c);
+        // Fan profile next to the performance profile: a chip that opens Ventilateurs.
+        let fan_icon = gtk::Image::from_icon_name("weather-windy-symbolic");
+        let fan_label = gtk::Label::builder().css_classes(["numeric"]).build();
+        let fan_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        fan_box.append(&fan_icon);
+        fan_box.append(&fan_label);
+        fan_box.append(&gtk::Image::from_icon_name("go-next-symbolic"));
+        let fan_chip = gtk::Button::builder()
+            .child(&fan_box)
+            .css_classes(["chip", "chip-button"])
+            .action_name("win.page")
+            .action_target(&"fans".to_variant())
+            .build();
+        chips.append(&fan_chip);
         let (c, boost) = chip("temperature-symbolic");
         chips.append(&c);
         let (c, dgpu_chip) = chip("video-display-symbolic");
@@ -154,7 +169,9 @@ impl Home {
             gpu_warning,
             gpu_warning_text,
             power,
-            fans_chip,
+            fan_chip,
+            fan_icon,
+            fan_label,
             boost,
             dgpu_chip,
             read_only: std::cell::Cell::new(false),
@@ -170,6 +187,7 @@ impl Home {
             power_gauge,
         });
         page.show_profile(None, false);
+        page.show_fan_profile(None, false);
         page.set_telemetry(&Telemetry::default());
         page
     }
@@ -179,6 +197,24 @@ impl Home {
         self.profiles.set(shown, pending, !self.read_only.get());
         self.profile_desc
             .set_label(&shown.map_or_else(String::new, model::profile_description));
+    }
+
+    /// Shows the fan profile of the selected profile in its chip.
+    pub fn show_fan_profile(&self, shown: Option<FanProfile>, pending: bool) {
+        self.fan_chip.set_visible(shown.is_some());
+        let Some(fp) = shown else { return };
+        self.fan_icon.set_icon_name(Some(model::fan_profile_icon(fp)));
+        let dots = if pending { "…" } else { "" };
+        self.fan_label
+            .set_label(&format!("Ventilation · {}{dots}", fp.label()));
+        let tip = format!(
+            "Profil de ventilation : {} — {}. Ouvrir Ventilateurs",
+            fp.label(),
+            fp.description()
+        );
+        self.fan_chip.set_tooltip_text(Some(&tip));
+        self.fan_chip
+            .update_property(&[gtk::accessible::Property::Label(&tip)]);
     }
 
     /// The dGPU could not be removed (Éco): explain inline, with a way to the holders.
@@ -201,7 +237,6 @@ impl Home {
             "Boost désactivé"
         };
         self.power.set_label(model::power_source_label(s.on_ac_power));
-        self.fans_chip.set_label(model::fan_mode_label(&s.fan_mode));
         self.boost.set_label(boost);
         self.dgpu_chip
             .set_label(&format!("RTX 4070 · {}", model::gpu_state_label(&s.gpu_state)));

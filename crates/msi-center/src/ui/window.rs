@@ -177,6 +177,18 @@ impl Window {
             );
         }
         menu.append_section(Some("Profil"), &profiles_menu);
+        let fans_menu = gio::Menu::new();
+        for fp in msi_core::fan_profile::FanProfile::ALL {
+            fans_menu.append(
+                Some(fp.label()),
+                Some(&format!(
+                    "app.{}::{}",
+                    msi_center::model::FAN_PROFILE_ACTION,
+                    fp.as_str()
+                )),
+            );
+        }
+        menu.append_section(Some("Ventilation"), &fans_menu);
         menu.append(Some("Réglages"), Some("win.page::prefs"));
         menu.append(Some("À propos de MSI Center"), Some("app.about"));
         menu.append(Some("Quitter"), Some("app.quit"));
@@ -187,7 +199,7 @@ impl Window {
             .primary(true)
             .build();
         let app_weak = Rc::downgrade(app);
-        let header_profiles = ProfileSwitch::new(Variant::Compact, move |p| {
+        let header_profiles = ProfileSwitch::new(Variant::Compact, "Profil", move |p| {
             if let Some(a) = app_weak.upgrade() {
                 a.apply_profile(p);
             }
@@ -421,6 +433,16 @@ impl Window {
         };
         self.home.show_profile(shown, pending);
         self.header_profiles.set(shown, pending, enabled);
+    }
+
+    /// Shows the selected fan profile (Ventilateurs switch, Accueil chip).
+    pub fn show_fan_profile(&self, shown: Option<msi_core::fan_profile::FanProfile>, pending: bool) {
+        let enabled = {
+            let s = self.ctx.app.shared.borrow();
+            s.daemon_up == Some(true) && !s.status.as_ref().is_some_and(|st| st.read_only)
+        };
+        self.home.show_fan_profile(shown, pending);
+        self.fans.show_fan_profile(shown, pending, enabled);
     }
 
     /// The dGPU stays on (Éco): inline on Accueil, banner elsewhere.

@@ -14,6 +14,7 @@ use gtk::{gio, glib};
 use msi_center::APP_ID;
 use msi_center::backend::Backend;
 use msi_center::model;
+use msi_core::fan_profile::FanProfile;
 use msi_core::profile::Profile;
 use ui::app::App;
 
@@ -81,6 +82,30 @@ fn install_actions(app: &Rc<App>) {
             &format!("app.{}::{}", model::PROFILE_ACTION, p.as_str()),
             &[&format!("<Control>{}", i + 1)],
         );
+    }
+
+    // Fan profiles: `app.fan::auto` (stateful) and `app.fan-auto` … without parameter.
+    let fan = gio::SimpleAction::new_stateful(
+        model::FAN_PROFILE_ACTION,
+        Some(glib::VariantTy::STRING),
+        &"".to_variant(),
+    );
+    let a = app.clone();
+    fan.connect_activate(move |_, v| {
+        let target = v.and_then(glib::Variant::str);
+        if let Some(fp) = model::parse_fan_profile_action(model::FAN_PROFILE_ACTION, target) {
+            a.apply_fan_profile(fp);
+        } else {
+            tracing::warn!("app.fan: unknown fan profile {target:?}");
+        }
+    });
+    fan.connect_change_state(|_, _| {});
+    gtk_app.add_action(&fan);
+    for fp in FanProfile::ALL {
+        let action = gio::SimpleAction::new(&model::fan_profile_action_name(fp), None);
+        let a = app.clone();
+        action.connect_activate(move |_, _| a.apply_fan_profile(fp));
+        gtk_app.add_action(&action);
     }
 
     gtk_app.set_accels_for_action("app.quit", &["<Control>q"]);

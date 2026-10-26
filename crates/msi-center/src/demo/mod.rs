@@ -16,6 +16,8 @@ use crate::model::ClipWire;
 
 /// Environment variable enabling the demo mode.
 pub const ENV: &str = "MSI_CENTER_DEMO";
+/// Demo only: fan profile id the fake daemon starts with (default: the profile's default).
+pub const FAN_PROFILE_ENV: &str = "MSI_CENTER_DEMO_FAN_PROFILE";
 
 /// Whether `value` (the content of [`ENV`]) enables the demo mode: `1`, `true`, `yes` or `on`.
 #[must_use]

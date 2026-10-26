@@ -39,9 +39,12 @@ export WAYLAND_DISPLAY=msi-shots-0 GDK_BACKEND=wayland MSI_CENTER_DEMO=1
 for theme in ${SHOT_THEMES:-light dark}; do
     mkdir -p $S/config-\$theme/msi-center
     printf 'theme=%s\nstart-minimised=false\n' \$theme >$S/config-\$theme/msi-center/settings.ini
-    for page in ${SHOT_PAGES:-home fans perf battery clipboard prefs}; do
-        XDG_CONFIG_HOME=$S/config-\$theme MSI_CENTER_PAGE=\$page MSI_CENTER_SCREENSHOT=$OUT/\$page-\$theme.png \
-            GDK_DEBUG=no-portals timeout 30 $BIN >>$S/app.log 2>&1 || echo "\$page-\$theme: exit \$?" >&2
+    for shot in ${SHOT_PAGES:-home fans fans-auto perf battery clipboard prefs}; do
+        page=\${shot%%-*}  # fans-auto: page fans, demo fan profile auto
+        fan=\${shot#\$page}; fan=\${fan#-}
+        XDG_CONFIG_HOME=$S/config-\$theme MSI_CENTER_PAGE=\$page MSI_CENTER_DEMO_FAN_PROFILE=\$fan \
+            MSI_CENTER_SCREENSHOT=$OUT/\$shot-\$theme.png \
+            GDK_DEBUG=no-portals timeout 30 $BIN >>$S/app.log 2>&1 || echo "\$shot-\$theme: exit \$?" >&2
     done
 done
 kill \$comp 2>/dev/null; wait \$comp 2>/dev/null

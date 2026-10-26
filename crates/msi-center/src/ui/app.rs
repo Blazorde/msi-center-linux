@@ -11,6 +11,7 @@ use msi_center::dbus::DaemonEvent;
 use msi_center::errors::AppError;
 use msi_center::model::{DaemonStatus, SafetyEvent, Severity, Telemetry};
 use msi_center::settings::{self, Settings};
+use msi_core::fan_profile::FanProfile;
 use msi_core::profile::Profile;
 
 use super::window::Window;
@@ -55,6 +56,8 @@ pub struct App {
     pub config_dir: PathBuf,
     /// Profile being applied (optimistic UI), if any.
     pub pending_profile: Cell<Option<Profile>>,
+    /// Fan profile being applied (optimistic UI), if any.
+    pub pending_fan_profile: Cell<Option<FanProfile>>,
     /// Profile asked for before the daemon answered (action activated at startup), applied on `DaemonUp`.
     queued_profile: Cell<Option<Profile>>,
     /// Keeps the app alive while a profile asked without a window is being applied.
@@ -76,6 +79,7 @@ impl App {
             settings: RefCell::new(settings),
             config_dir,
             pending_profile: Cell::new(None),
+            pending_fan_profile: Cell::new(None),
             queued_profile: Cell::new(None),
             profile_hold: RefCell::new(None),
         })
@@ -141,6 +145,63 @@ impl App {
         });
     }
 
+    /// The fan profile the UI should show as selected: the one being applied, else the daemon's.
+    pub fn shown_fan_profile(&self) -> Option<FanProfile> {
+        self.pending_fan_profile.get().or_else(|| {
+            self.shared
+                .borrow()
+                .status
+                .as_ref()
+                .and_then(|s| s.fan_profile.parse().ok())
+        })
+    }
+
+    /// Applies the fan profile `fp` to the selected profile (actions, Ventilateurs). Optimistic like
+    /// [`Self::apply_profile`]: shown at once with a progress indicator, snaps back with a toast on failure.
+    pub fn apply_fan_profile(self: &Rc<Self>, fp: FanProfile) {
+        if self.shared.borrow().daemon_up != Some(true) {
+            self.report("Le service msi-daemon n'est pas joignable.", None);
+            return;
+        }
+        let current = self
+            .shared
+            .borrow()
+            .status
+            .as_ref()
+            .map(|s| s.fan_profile.clone());
+        if current.as_deref() == Some(fp.as_str()) && self.pending_fan_profile.get().is_none() {
+            return;
+        }
+        if self.profile_hold.borrow().is_none() && self.window.borrow().is_none() {
+            *self.profile_hold.borrow_mut() = Some(self.gtk.hold());
+        }
+        self.pending_fan_profile.set(Some(fp));
+        self.refresh_profile_ui();
+        let me = self.clone();
+        glib::spawn_future_local(async move {
+            let res = me
+                .backend
+                .daemon(move |d| async move { d.set_fan_profile(fp).await })
+                .await;
+            if me.pending_fan_profile.get() != Some(fp) {
+                return;
+            }
+            // Keep the optimistic choice until the status catches up (PropertiesChanged follows the reply).
+            match res {
+                Ok(()) | Err(AppError::GpuBusy(_)) => {
+                    if let Some(st) = me.shared.borrow_mut().status.as_mut() {
+                        fp.as_str().clone_into(&mut st.fan_profile);
+                    }
+                    me.report(&format!("Ventilation {} appliquée.", fp.label()), None);
+                }
+                Err(e) => me.report(&e.message_fr(), Some(&e)),
+            }
+            me.pending_fan_profile.set(None);
+            me.refresh_profile_ui();
+            me.profile_hold.borrow_mut().take();
+        });
+    }
+
     /// Toast in the window, or a notification without one.
     fn report(&self, msg: &str, err: Option<&AppError>) {
         if let Some(w) = self.window.borrow().as_ref() {
@@ -169,8 +230,17 @@ impl App {
         {
             a.set_state(&shown.map_or("", Profile::as_str).to_variant());
         }
+        let fan = self.shown_fan_profile();
+        if let Some(a) = self
+            .gtk
+            .lookup_action(msi_center::model::FAN_PROFILE_ACTION)
+            .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+        {
+            a.set_state(&fan.map_or("", FanProfile::as_str).to_variant());
+        }
         if let Some(w) = self.window.borrow().as_ref() {
             w.show_profile(shown, self.pending_profile.get().is_some());
+            w.show_fan_profile(fan, self.pending_fan_profile.get().is_some());
         }
     }
 

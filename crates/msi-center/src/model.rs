@@ -237,11 +237,15 @@ pub fn profile_description(p: msi_core::profile::Profile) -> String {
     use msi_core::ec::ShiftMode;
     use msi_core::profile::GpuMode;
     let t = p.target();
-    let curve = match t.curve {
-        CurvePreset::Silent => "courbe Silencieuse (arrêt sous 52 °C)",
-        CurvePreset::Progressive => "courbe Progressive (dès 48 °C)",
-        CurvePreset::Aggressive => "courbe Agressive (jamais à l'arrêt)",
+    let detail = match t.curve {
+        CurvePreset::Silent => "arrêt sous 52 °C",
+        CurvePreset::Progressive => "dès 48 °C",
+        CurvePreset::Aggressive => "jamais à l'arrêt",
     };
+    let curve = format!(
+        "ventilation {} par défaut ({detail})",
+        p.default_fan_profile().label()
+    );
     let shift = match t.shift_mode {
         ShiftMode::Eco => "processeur économe",
         ShiftMode::Comfort => "processeur équilibré",
@@ -596,7 +600,9 @@ mod tests {
         assert_eq!(gpu_state_label("removed"), "Retirée du bus (0 W)");
         assert_eq!(fan_mode_label("auto"), "Courbe d'usine (EC)");
         assert_eq!(power_source_label(false), "Batterie");
-        assert!(profile_description(msi_core::profile::Profile::Eco).contains("RTX 4070 retirée"));
+        let eco = profile_description(msi_core::profile::Profile::Eco);
+        assert!(eco.contains("RTX 4070 retirée"), "{eco}");
+        assert!(eco.starts_with("ventilation Silencieux par défaut"), "{eco}");
     }
 
     #[test]

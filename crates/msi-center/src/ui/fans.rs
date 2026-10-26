@@ -1,4 +1,5 @@
-//! Ventilateurs: step chart with live marker, table, S2 safety report, curve editor with live preview.
+//! Ventilateurs: fan profile switch (Silencieux, Auto, Équilibré, Turbo, Personnalisé), step chart with live
+//! marker, table, S2 safety report, and the Personnalisé curve editor with live preview.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -11,14 +12,18 @@ use msi_center::dbus::FanCurveState;
 use msi_center::errors::Service;
 use msi_center::format::{self, NNBSP};
 use msi_center::model::{self, DaemonStatus, Fan, Telemetry};
+use msi_core::fan_profile::FanProfile;
 
 use super::fanchart::FanChart;
+use super::profiles::{FanProfileSwitch, Variant};
 use super::widgets::{Ctx, Debounce, Gate, glass, hint, page_header, page_scroller, section_title};
 
 #[derive(Debug, Default)]
 struct State {
     fan: Option<Fan>,
     loaded: Option<FanCurveState>,
+    /// The custom curve of the fan (the editor's base), from `CustomFanCurve`.
+    custom: Option<CurveSpec>,
     edit: Option<CurveSpec>,
     preview: Option<Generated>,
     error: Option<String>,
@@ -32,9 +37,25 @@ impl State {
         self.fan.unwrap_or(Fan::Cpu)
     }
 
+    /// Fan profile of the selected profile, if the daemon reports it.
+    fn fan_profile(&self) -> Option<FanProfile> {
+        self.status.as_ref().and_then(|s| s.fan_profile.parse().ok())
+    }
+
+    fn is_auto(&self) -> bool {
+        self.fan_profile() == Some(FanProfile::Auto)
+    }
+
+    /// What the editor starts from: the custom curve, else (older daemon) the curve in force.
+    fn base(&self) -> Option<&CurveSpec> {
+        self.custom
+            .as_ref()
+            .or_else(|| self.loaded.as_ref().map(|l| &l.spec))
+    }
+
     fn dirty(&self) -> bool {
-        match (&self.edit, &self.loaded) {
-            (Some(e), Some(l)) => *e != l.spec,
+        match (&self.edit, self.base()) {
+            (Some(e), Some(b)) => e != b,
             _ => false,
         }
     }
@@ -59,6 +80,12 @@ pub struct Fans {
     pub gate: Gate,
     ctx: Rc<Ctx>,
     state: RefCell<State>,
+    fan_profiles: FanProfileSwitch,
+    fan_card: gtk::Widget,
+    default_hint: gtk::Label,
+    to_default: gtk::Button,
+    auto_note: gtk::Revealer,
+    editor_hint: gtk::Label,
     fan_switch: adw::ToggleGroup,
     origin: gtk::Label,
     chart: FanChart,
@@ -113,8 +140,72 @@ impl Fans {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         content.append(&page_header(
             "Ventilateurs",
-            "Paliers de l'EC, courbe et planchers de sécurité S2",
+            "Profil de ventilation, paliers de l'EC et planchers de sécurité S2",
         ));
+
+        // Fan profile: five glass tiles, one click applies (remembered for the active profile).
+        let app = Rc::downgrade(&ctx.app);
+        let fan_profiles = FanProfileSwitch::new(Variant::Tiles, "Profil de ventilation", move |fp| {
+            if let Some(a) = app.upgrade() {
+                a.apply_fan_profile(fp);
+            }
+        });
+        let default_hint = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["dim", "caption"])
+            .build();
+        let to_default = gtk::Button::builder()
+            .label("Revenir au défaut")
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .css_classes(["flat", "link-button", "small"])
+            .build();
+        let fp_head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let fp_titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        fp_titles.set_hexpand(true);
+        fp_titles.append(
+            &gtk::Label::builder()
+                .label("Profil de ventilation")
+                .xalign(0.0)
+                .css_classes(["card-heading"])
+                .accessible_role(gtk::AccessibleRole::Heading)
+                .build(),
+        );
+        fp_titles.append(&default_hint);
+        fp_head.append(&fp_titles);
+        fp_head.append(&to_default);
+        let auto_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        auto_box.add_css_class("inline-note");
+        auto_box.append(&gtk::Image::from_icon_name("emblem-system-symbolic"));
+        let auto_text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        auto_text.append(
+            &gtk::Label::builder()
+                .label("Courbe d'usine MSI gérée par le contrôleur")
+                .xalign(0.0)
+                .wrap(true)
+                .css_classes(["heading"])
+                .build(),
+        );
+        auto_text.append(&hint(
+            "Le contrôleur embarqué (EC) choisit seul ses paliers, comme sous Windows : aucune courbe \
+             de MSI Center n'est écrite et le CPU n'est plus piloté en direct. La sécurité thermique \
+             (Cooler Boost forcé à 95 °C) reste active.",
+        ));
+        auto_box.append(&auto_text);
+        let auto_note = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(200)
+            .child(&auto_box)
+            .build();
+        let fp_box = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        fp_box.append(&fp_head);
+        fp_box.append(&fan_profiles.root);
+        fp_box.append(&auto_note);
+        let fan_card = glass(&fp_box);
+        fan_card.add_css_class("hero-card");
+        fan_card.set_visible(false);
+        content.append(&fan_card);
 
         let fan_switch = adw::ToggleGroup::builder()
             .css_classes(["segmented"])
@@ -219,8 +310,10 @@ impl Fans {
             .build();
         content.append(&report);
 
-        // Editor.
-        content.append(&section_title("RÉGLAGE DE LA COURBE"));
+        // Editor of the Personnalisé fan profile.
+        content.append(&section_title("COURBE PERSONNALISÉE"));
+        let editor_hint = hint("");
+        content.append(&editor_hint);
         let error_label = gtk::Label::builder()
             .xalign(0.0)
             .wrap(true)
@@ -235,8 +328,8 @@ impl Fans {
         let group = adw::PreferencesGroup::builder()
             .title("Paramètres")
             .description(
-                "L'aperçu est calculé par le service sans rien écrire. « Appliquer » remplace la courbe \
-                 du profil actif pour ce ventilateur.",
+                "L'aperçu est calculé par le service sans rien écrire. « Appliquer » enregistre cette \
+                 courbe pour ce ventilateur et ce profil.",
             )
             .build();
         let mut params = HashMap::new();
@@ -320,6 +413,12 @@ impl Fans {
             gate,
             ctx: ctx.clone(),
             state: RefCell::default(),
+            fan_profiles,
+            fan_card: fan_card.upcast(),
+            default_hint,
+            to_default,
+            auto_note,
+            editor_hint,
             fan_switch,
             origin,
             chart,
@@ -343,6 +442,22 @@ impl Fans {
     }
 
     fn connect(self: &Rc<Self>) {
+        let app = Rc::downgrade(&self.ctx.app);
+        let w = Rc::downgrade(self);
+        self.to_default.connect_clicked(move |_| {
+            let (Some(a), Some(p)) = (app.upgrade(), w.upgrade()) else {
+                return;
+            };
+            let default = p
+                .state
+                .borrow()
+                .status
+                .as_ref()
+                .and_then(|s| s.default_fan_profile.parse().ok());
+            if let Some(fp) = default {
+                a.apply_fan_profile(fp);
+            }
+        });
         let w = Rc::downgrade(self);
         self.fan_switch.connect_active_name_notify(move |g| {
             let (Some(p), Some(name)) = (w.upgrade(), g.active_name()) else {
@@ -371,8 +486,11 @@ impl Fans {
         let w = Rc::downgrade(self);
         self.revert.connect_clicked(move |_| {
             if let Some(p) = w.upgrade() {
-                let spec = p.state.borrow().loaded.as_ref().map(|l| l.spec.clone());
-                p.state.borrow_mut().edit = spec;
+                let spec = p.state.borrow().base().cloned();
+                let mut s = p.state.borrow_mut();
+                s.edit = spec;
+                s.error = None;
+                drop(s);
                 p.refresh();
             }
         });
@@ -413,16 +531,22 @@ impl Fans {
             let res = ctx
                 .app
                 .backend
-                .daemon(move |d| async move { d.fan_curve(fan).await })
+                .daemon(move |d| async move {
+                    let c = d.fan_curve(fan).await?;
+                    // Older daemons have no CustomFanCurve: the editor then starts from the curve in force.
+                    let custom = d.custom_fan_curve(fan).await.ok().map(|(spec, _)| spec);
+                    Ok((c, custom))
+                })
                 .await;
             let Some(p) = w.upgrade() else { return };
             match res {
-                Ok(c) => {
+                Ok((c, custom)) => {
                     let mut s = p.state.borrow_mut();
                     if s.fan() != fan {
                         return;
                     }
-                    s.edit = Some(c.spec.clone());
+                    s.edit = Some(custom.clone().unwrap_or_else(|| c.spec.clone()));
+                    s.custom = custom;
                     s.loaded = Some(c);
                     s.preview = None;
                     s.error = None;
@@ -492,9 +616,9 @@ impl Fans {
                 .daemon(move |d| async move { d.set_fan_curve(fan, &spec).await })
                 .await;
             match res {
-                Ok(g) if g.raised.is_empty() => ctx.toast("Courbe appliquée."),
+                Ok(g) if g.raised.is_empty() => ctx.toast("Courbe personnalisée appliquée."),
                 Ok(g) => ctx.toast(&format!(
-                    "Courbe appliquée ; {} palier(s) relevé(s) par la sécurité S2.",
+                    "Courbe personnalisée appliquée ; {} palier(s) relevé(s) par la sécurité S2.",
                     g.raised.len()
                 )),
                 Err(e) => ctx.error(&e),
@@ -586,14 +710,36 @@ impl Fans {
         });
     }
 
-    /// Daemon status changed (profile, boost, read-only).
+    /// Shows the fan profile of the selected profile in the switch, with its default and the Auto note.
+    pub fn show_fan_profile(&self, shown: Option<FanProfile>, pending: bool, enabled: bool) {
+        let (default, profile) = {
+            let s = self.state.borrow();
+            let st = s.status.as_ref();
+            (
+                st.and_then(|st| st.default_fan_profile.parse::<FanProfile>().ok()),
+                st.map(|st| st.profile.clone()).unwrap_or_default(),
+            )
+        };
+        self.fan_card.set_visible(shown.is_some());
+        self.fan_profiles.set(shown, pending, enabled);
+        self.fan_profiles.set_default(default);
+        self.default_hint.set_label(&model::fan_profile_default_hint(
+            &profile,
+            default.map_or("", FanProfile::as_str),
+        ));
+        self.to_default
+            .set_visible(enabled && default.is_some() && shown.is_some() && shown != default);
+        self.auto_note.set_reveal_child(shown == Some(FanProfile::Auto));
+    }
+
+    /// Daemon status changed (profile, fan profile, boost, read-only).
     pub fn set_status(self: &Rc<Self>, s: &DaemonStatus) {
         let profile_changed = self
             .state
             .borrow()
             .status
             .as_ref()
-            .is_some_and(|old| old.profile != s.profile);
+            .is_some_and(|old| old.profile != s.profile || old.fan_profile != s.fan_profile);
         self.state.borrow_mut().status = Some(s.clone());
         self.syncing.set(true);
         self.boost.set_active(s.cooler_boost);
@@ -650,10 +796,16 @@ impl Fans {
             .status
             .as_ref()
             .map_or("?", |st| model::profile_label(&st.profile));
-        let origin = match &s.loaded {
-            Some(l) if l.custom => format!("Courbe personnalisée du profil {profile}."),
-            Some(_) => format!("Preset du profil {profile}."),
-            None => "Chargement…".to_owned(),
+        let auto = s.is_auto();
+        let fp = s.fan_profile();
+        let origin = match (&s.loaded, fp) {
+            (None, _) => "Chargement…".to_owned(),
+            (Some(_), Some(FanProfile::Auto)) => {
+                format!("Courbe d'usine MSI (Auto), gérée par le contrôleur, profil {profile}.")
+            }
+            (Some(l), _) if l.custom => format!("Courbe personnalisée du profil {profile}."),
+            (Some(_), Some(fp)) => format!("Ventilation {} du profil {profile}.", fp.label()),
+            (Some(_), None) => format!("Preset du profil {profile}."),
         };
         let dirty = s.dirty();
         let extra = if dirty {
@@ -661,7 +813,8 @@ impl Fans {
         } else {
             ""
         };
-        let live = fan == Fan::Cpu && s.loaded.as_ref().is_some_and(|l| l.generated.table.is_live_cpu());
+        let live =
+            fan == Fan::Cpu && !auto && s.loaded.as_ref().is_some_and(|l| l.generated.table.is_live_cpu());
         let live_note = if live {
             format!(" {}", live_cpu_note(s.temps.cpu_fan_target))
         } else {
@@ -692,9 +845,10 @@ impl Fans {
         self.error.set_reveal_child(s.error.is_some());
         self.apply
             .set_sensitive(dirty && s.error.is_none() && s.preview.is_some() && !read_only);
+        let is_custom = fp == Some(FanProfile::Custom) || s.loaded.as_ref().is_some_and(|l| l.custom);
+        self.editor_labels(is_custom || fp.is_none());
         self.revert.set_sensitive(dirty);
-        self.reset
-            .set_sensitive(!read_only && s.loaded.as_ref().is_some_and(|l| l.custom));
+        self.reset.set_sensitive(!read_only && is_custom);
 
         // Report.
         while let Some(c) = self.report_list.first_child() {
@@ -716,7 +870,14 @@ impl Fans {
             .set_reveal_child(shown.as_ref().is_some_and(|g| !g.raised.is_empty()));
         let applied = s.loaded.as_ref().map(|l| l.generated.clone());
         let preview = if dirty { s.preview.clone() } else { None };
-        let spec = s.edit.clone();
+        // The exponential curve drawn: the one being edited, else the one in force (none under Auto).
+        let spec = if dirty {
+            s.edit.clone()
+        } else if auto {
+            None
+        } else {
+            s.loaded.as_ref().map(|l| l.spec.clone())
+        };
         let temp = s.temps.temp_of(fan);
         drop(s);
         self.chart.update(|d| {
@@ -726,6 +887,21 @@ impl Fans {
             d.temp = temp;
         });
         self.refresh_table();
+    }
+
+    /// Labels of the Personnalisé editor: applying switches the profile to Personnalisé unless it is already.
+    fn editor_labels(&self, is_custom: bool) {
+        self.apply.set_label(if is_custom {
+            "Appliquer"
+        } else {
+            "Appliquer en Personnalisé"
+        });
+        self.editor_hint.set_label(if is_custom {
+            "Votre courbe pour ce ventilateur et ce profil. Les planchers de sécurité S2 s'appliquent toujours."
+        } else {
+            "Modifiez un réglage : l'aperçu s'affiche en pointillés, sans rien écrire. « Appliquer en \
+             Personnalisé » enregistre la courbe et passe ce profil en Personnalisé."
+        });
     }
 
     fn refresh_table(&self) {

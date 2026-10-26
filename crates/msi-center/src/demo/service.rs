@@ -584,7 +584,15 @@ where
 /// # Errors
 /// Socket pair or connection setup failures.
 pub async fn connect(now_ms: i64) -> zbus::Result<DemoLinks> {
-    let (daemon_server, daemon) = pair(DAEMON_PATH, DemoDaemon::default()).await?;
+    let demo = DemoDaemon::default();
+    // Screenshots of another fan profile (`scripts/app-shots.sh`, page `fans-auto`).
+    if let Some(fp) = std::env::var(super::FAN_PROFILE_ENV)
+        .ok()
+        .and_then(|v| v.parse::<FanProfile>().ok())
+    {
+        demo.inner().state.set_fan_profile(fp);
+    }
+    let (daemon_server, daemon) = pair(DAEMON_PATH, demo).await?;
     let (clipd_server, clipd) = pair(CLIPD_PATH, DemoClipd::new(now_ms)).await?;
     let iface = daemon_server
         .object_server()
