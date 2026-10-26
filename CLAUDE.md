@@ -26,12 +26,17 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 ## Commands
 
 ```bash
-scripts/ci.sh      # fmt --check, clippy -D warnings, test, cargo deny
+scripts/ci.sh        # fmt --check, clippy -D warnings, test, extension checks, cargo deny
+scripts/ext-check.sh # GNOME extension only (offline, ~1 s)
+scripts/ext-smoke.sh # GNOME extension end-to-end in an isolated headless shell with a mock msi-daemon
 ```
 
 Run it before declaring work done. There is **no GitHub Actions** (quota unavailable, ADR-0007): `scripts/ci.sh`
 is the CI, enforced by `.githooks/pre-push`; `.githooks/commit-msg` enforces Conventional Commits.
 Hooks need `git config core.hooksPath .githooks` once per clone. Never use `--no-verify`. Releases: `scripts/release.sh`.
+
+Never test the extension (or anything) against the real system bus: it can D-Bus-activate `msi-daemon`,
+which rewrites the EC. The extension itself never auto-starts the daemon (`NO_AUTO_START`).
 
 ## Hard rules (hardware safety)
 

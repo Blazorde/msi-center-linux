@@ -26,3 +26,4 @@
 
 ## 📖 Utilisateur
 - [Installation](user/installation.md)
+- [Extension GNOME (barre, menu, `Super+V`)](user/extension.md)

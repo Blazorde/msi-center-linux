@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Gauge: arc + needle. Symbolic, recolored by St (fill = currentColor). -->
+  <path fill="#bebebe" d="M8 2a7 7 0 0 0-7 7c0 1.6.54 3.07 1.45 4.25l1.2-.9A5.5 5.5 0 0 1 2.5 9a5.5 5.5 0 0 1 11 0c0 1.25-.42 2.4-1.13 3.33l1.2.91A6.97 6.97 0 0 0 15 9a7 7 0 0 0-7-7z"/>
+  <path fill="#bebebe" d="M11.6 5.2 8.9 8.1A1.5 1.5 0 1 0 9.9 9.1l2.9-2.7z"/>
+</svg>

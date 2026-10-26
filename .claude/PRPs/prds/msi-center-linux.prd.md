@@ -156,7 +156,7 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 | 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | in-progress | - | 3 | #2 (msi-core) |
 | 5 | GPU manager | RTD3 config, holder detection, PCI remove/rescan | in-progress | with 2, 6 | 1 | #4 (code + probe; real remove untested) |
 | 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | complete | with 2, 5 | 1 | #3 |
-| 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | pending | with 8 | 4, 5, 6 | - |
+| 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | in-progress | with 8 | 4, 5, 6 | feat/ext-gnome (headless smoke-tested; owner session test pending) |
 | 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | pending | with 7 | 4, 5, 6 | - |
 | 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | pending | - | 7, 8 | - |
 

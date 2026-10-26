@@ -1,8 +1,9 @@
 {
   "uuid": "msi-center@blazorde",
   "name": "MSI Center",
-  "description": "Top bar stats, performance profiles and clipboard history for MSI Stealth 14 AI Studio.",
+  "description": "Top bar stats, performance profiles and clipboard history for MSI Stealth 14 AI Studio. Front-end for msi-daemon and clipd.",
   "shell-version": ["51"],
+  "settings-schema": "org.gnome.shell.extensions.msi-center",
   "url": "https://github.com/Blazorde/msi-center-linux",
-  "version-name": "0.0.1"
+  "version-name": "0.1.0"
 }
