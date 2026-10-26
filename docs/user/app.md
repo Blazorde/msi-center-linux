@@ -45,18 +45,39 @@ Dans **Réglages** :
 - **Démarrer en arrière-plan** : avec ou sans fenêtre à l'ouverture de session.
 - **Thème** : Système, Clair ou Sombre (enregistré dans `~/.config/msi-center/settings.ini`).
 
+## Changer de profil sans commande
+
+Trois façons, toutes en un clic, sans terminal :
+
+- **Accueil** : le grand sélecteur Éco / Équilibré / Gaming (icône, nom, description). Le profil cliqué
+  s'éclaire tout de suite et affiche « Application… » le temps que le service l'applique ; en cas de refus
+  (polkit, lecture seule), le sélecteur revient au profil réel et un message explique pourquoi. Si la
+  RTX 4070 est encore utilisée en passant en Éco, un avertissement apparaît dans la carte avec
+  **Voir les processus**.
+- **Barre de titre** de toutes les autres pages : le même sélecteur en version compacte (icônes, infobulles),
+  et le menu principal (section **Profil**). Raccourcis `Ctrl+1` (Éco), `Ctrl+2` (Équilibré), `Ctrl+3` (Gaming).
+- **Clic droit sur l'icône** de MSI Center dans le dock ou le menu des applications : Éco, Équilibré, Gaming.
+  Fonctionne aussi quand la fenêtre est fermée (notification en cas d'échec).
+
+Pour l'extension et les scripts, l'app expose des actions GApplication :
+
+```bash
+gapplication action org.blazorde.MsiCenter profile-eco         # ou profile-balanced, profile-gaming
+gapplication action org.blazorde.MsiCenter profile "'gaming'"  # action à paramètre (état = profil affiché)
+```
+
 ## Les pages
 
 | Page | Contenu |
 |---|---|
-| **Accueil** | Profil Éco / Balanced / Gaming, jauges en direct : températures CPU/GPU, ventilateurs (tr/min et consigne), CPU, RTX 4070, iGPU, mémoire, NPU, puissance. |
+| **Accueil** | Sélecteur de profil Éco / Équilibré / Gaming, état (alimentation, pilotage, Cooler Boost, RTX), jauges en anneau animées : températures CPU/GPU, ventilateurs (tr/min et consigne), CPU, RTX 4070, iGPU, mémoire, NPU, puissance. |
 | **Ventilateurs** | Pour chaque ventilateur : la table à 7 paliers en graphique (marqueur de la température actuelle), la table écrite dans l'EC, les paliers **relevés par les planchers de sécurité S2** (signalés « ▲ »), le réglage de la courbe avec aperçu en direct, Appliquer, Annuler, Revenir au preset, Cooler Boost. |
 | **Performance & GPU** | Ce que fait chaque profil, état de la RTX 4070, processus qui la gardent allumée, profil automatique secteur/batterie, firmware EC, mode lecture seule. |
 | **Batterie** | Limite de charge 50–100 % (explication longévité), source d'alimentation. |
 | **Presse-papiers** | Recherche, filtre par tags, liste ou grille, miniatures d'images, copier, épingler, tags, sélection multiple et suppression, effacement de l'historique non épinglé. |
 | **Réglages** | Démarrage et thème. |
 
-Raccourcis : `Alt+1` … `Alt+6` changent de page, `Ctrl+F` cherche dans le presse-papiers, `Ctrl+W` ferme la
+Raccourcis : `Ctrl+1` … `Ctrl+3` changent de profil, `Alt+1` … `Alt+6` changent de page, `Ctrl+F` cherche dans le presse-papiers, `Ctrl+W` ferme la
 fenêtre, `Ctrl+Q` quitte.
 
 ### Courbe des ventilateurs
@@ -86,7 +107,12 @@ bandeau en haut.
 ## Style
 
 Thème « Liquid Glass » aux couleurs du Golden Gate : orange international `#C0362C`, coucher de soleil
-`#F28C38 → #C0362C → #2B2D42`, cartes translucides, reflets, ombres douces, variantes claire et sombre.
+`#F28C38 → #C0362C → #2B2D42`, verre en couches (reflet spéculaire, bord intérieur, ombres de contact et de
+profondeur), grands titres, chiffres tabulaires, jauges en anneau animées, variantes claire et sombre. Le
+brief de design et les captures de chaque page sont dans [docs/design](../design/app-liquid-glass.md).
+
+- **Mouvement réduit** : si les animations sont désactivées (Paramètres GNOME → Accessibilité, ou
+  `gtk-enable-animations`), transitions et balayages des jauges sont supprimés.
 
 - GTK ne peut pas flouter le bureau **derrière** la fenêtre sous Wayland : le verre dépoli est simulé par un
   arrière-plan interne (dégradé, taches floutées, silhouette du pont, grain) vu à travers les cartes.
@@ -103,7 +129,16 @@ Thème « Liquid Glass » aux couleurs du Golden Gate : orange international `#C
 cargo run -p msi-center                      # fenêtre
 cargo run -p msi-center -- --background      # sans fenêtre
 MSI_CENTER_SCREENSHOT=/tmp/a.png MSI_CENTER_PAGE=fans cargo run -p msi-center   # capture PNG puis quitte
+MSI_CENTER_DEMO=1 cargo run -p msi-center    # mode démo : services simulés, aucun bus contacté
+scripts/app-shots.sh                         # captures de toutes les pages, clair + sombre (GNOME headless isolé)
 ```
+
+Le **mode démo** (`MSI_CENTER_DEMO=1`) sert `org.blazorde.MsiCenter1` et `org.blazorde.Clipd1` simulés dans
+le processus, sur des connexions pair-à-pair privées (`src/demo/`) : télémétrie réaliste qui suit le profil,
+courbes calculées par `msi-core`, historique de presse-papiers fictif, et un processus factice qui garde la
+RTX 4070 quelques secondes en passant de Gaming à Éco. L'instance démo est non unique : elle ne prend
+jamais la main sur une vraie instance de l'app. Seuls les services sont simulés : les réglages de l'app
+(thème, démarrage) restent les vrais.
 
 Le code testable (clients D-Bus, modèles de vue, géométrie des graphiques, autostart) est dans la
 bibliothèque `crates/msi-center/src/` ; `tests/dbus.rs` le teste contre les vrais services en pair-à-pair,

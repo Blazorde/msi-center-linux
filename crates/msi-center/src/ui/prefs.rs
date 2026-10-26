@@ -8,7 +8,7 @@ use msi_center::autostart;
 use msi_center::settings::Theme;
 
 use super::style;
-use super::widgets::{Ctx, hint, page_scroller};
+use super::widgets::{Ctx, hint, page_header, page_scroller};
 
 /// The page.
 #[derive(Debug)]
@@ -33,6 +33,7 @@ impl Prefs {
     /// Builds the page.
     pub fn new(ctx: &Rc<Ctx>) -> Rc<Self> {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        content.append(&page_header("Réglages", "Démarrage et apparence"));
         let start = adw::PreferencesGroup::builder()
             .title("Démarrage")
             .description(

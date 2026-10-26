@@ -120,6 +120,36 @@ impl Backend {
         ));
     }
 
+    /// Demo mode: serves both services in-process ([`crate::demo::service`]) and connects to them over
+    /// private socket pairs. No bus is contacted; there is no reconnection.
+    pub fn start_demo(&self, tx: &mpsc::UnboundedSender<Event>) {
+        let (daemon, clips, tx) = (self.daemon.clone(), self.clips.clone(), tx.clone());
+        self.rt.spawn(async move {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+            let links = match crate::demo::service::connect(now_ms).await {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = tx.send(Event::DaemonDown(AppError::from_zbus(&e, Service::Daemon)));
+                    let _ = tx.send(Event::ClipdDown(AppError::from_zbus(&e, Service::Clipd)));
+                    return;
+                }
+            };
+            let (d, c) = tokio::join!(
+                run_daemon(&links.daemon, &daemon, &tx),
+                run_clipd(&links.clipd, &clips, &tx)
+            );
+            if let Err(e) = d {
+                let _ = tx.send(Event::DaemonDown(e));
+            }
+            if let Err(e) = c {
+                let _ = tx.send(Event::ClipdDown(e));
+            }
+            drop(links);
+        });
+    }
+
     /// Asks a supervisor to reconnect now.
     pub fn retry(&self, service: Service) {
         match service {

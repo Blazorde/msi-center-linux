@@ -5,6 +5,38 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 ## [Unreleased]
 
 ### Added
+- App : **changer de profil sans commande**. Grand sélecteur en verre Éco / Équilibré / Gaming sur l'Accueil
+  (icône, nom, description, un clic applique, état optimiste avec « Application… », retour au profil réel et
+  message en cas d'erreur, avertissement « RTX 4070 occupée » dans la carte), sélecteur compact dans la barre
+  de titre des autres pages, section Profil du menu, raccourcis `Ctrl+1/2/3`, actions GApplication
+  `app.profile::eco|balanced|gaming` et `app.profile-eco|…` pour l'extension et les scripts, et actions du
+  fichier `.desktop` (clic droit sur l'icône du dock), utilisables fenêtre fermée.
+- App : refonte visuelle « Liquid Glass × Golden Gate » ([brief et captures](docs/design/app-liquid-glass.md)) :
+  verre en couches (reflet spéculaire, bords intérieur/extérieur, profondeur), grands titres de page,
+  chiffres tabulaires, jauges en anneau au balayage animé, graphique des paliers avec remplissage et
+  repère lisible, légende en pastilles, survol/appui animés (respecte « mouvement réduit »), parité
+  clair/sombre, contraste élevé inchangé (Adwaita pur).
+- App : mode démo `MSI_CENTER_DEMO=1` (services simulés dans le processus, aucun bus) et
+  `scripts/app-shots.sh` (captures de toutes les pages en clair et sombre dans un GNOME headless isolé).
+- Sécurité S9 (ventilo bloqué) : ventilo à 0 % (et 0 tr/min si connu) sur puce ≥ 70 °C (filtrée sur 2 lectures)
+  pendant 30 s → tables d'usine + `auto`, `SafetyEvent("fan_stalled")`, lecture seule jusqu'au redémarrage
+  (`msictl status` : `SAFETY STOP (S9)`).
+- `RestoreFactory()` (D-Bus, polkit `set-fan-curve`) et `msictl factory` : rendre la main à l'EC (tables d'usine
+  puis `auto`) jusqu'au prochain profil. `msi-daemon --restore-factory` (sans D-Bus, idempotent).
+- Paquets Arch (phase 9) : `packaging/arch/PKGBUILD` scindé en `msi-center-linux` (daemon, `msictl`, `clipd`,
+  app, unités, presets systemd, D-Bus, polkit, autostart `/etc/xdg/autostart`, extension GNOME avec schéma
+  compilé) et `msi-ec-blazorde-dkms` (sources DKMS, `/usr/lib/modules-load.d/msi-ec.conf`, en conflit avec les
+  paquets `msi-ec` upstream). `msi-daemon` (démarrage) et `clipd` (chaque session) activés à l'installation par
+  presets ; arrêt du daemon (tables d'usine, `auto`) avant désinstallation. `scripts/package.sh` construit dans
+  `dist/` sans rien installer ; `scripts/release.sh` joint ces paquets à la release et vérifie les versions
+  (`Cargo.toml`, `PKGBUILD`, `metadata.json`). Docs : [installation](docs/user/installation.md) (installation en
+  une fois, migration depuis `dev-install.sh`), [checklist v0.1.0](docs/product/release-checklist.md).
+- `scripts/dev-install.sh --enable` : démarrage automatique (DKMS `msi-ec-blazorde`, `modules-load.d`,
+  `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
+
+### Changed
+- App : le profil `balanced` s'affiche « Équilibré » ; les événements `gpu_busy` et `fan_stalled` ont un
+  message en français ; en liste, les cartes du presse-papiers prennent la hauteur de leur contenu.
 - Ventilo CPU piloté en direct ([ADR-0010](docs/adr/0010-hybrid-cpu-fan-control.md), accepté) : l'EC ignore
   les seuils CPU écrits, donc `msi-daemon` garde les seuils d'usine et module chaque seconde les vitesses des
   paliers 0–3 depuis la courbe exponentielle du profil, sur une température CPU filtrée (médiane + moyenne,
@@ -62,24 +94,6 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 - `scripts/ext-install.sh` (installation utilisateur, sans sudo), `scripts/ext-check.sh` (vérifications
   hors-ligne de l'extension, appelées par `scripts/ci.sh`), `scripts/ext-smoke.sh` (test de bout en bout dans un
   GNOME Shell headless isolé avec un faux `msi-daemon`).
-
-- Sécurité S9 (ventilo bloqué) : ventilo à 0 % (et 0 tr/min si connu) sur puce ≥ 70 °C (filtrée sur 2 lectures)
-  pendant 30 s → tables d'usine + `auto`, `SafetyEvent("fan_stalled")`, lecture seule jusqu'au redémarrage
-  (`msictl status` : `SAFETY STOP (S9)`).
-- `RestoreFactory()` (D-Bus, polkit `set-fan-curve`) et `msictl factory` : rendre la main à l'EC (tables d'usine
-  puis `auto`) jusqu'au prochain profil. `msi-daemon --restore-factory` (sans D-Bus, idempotent).
-- Paquets Arch (phase 9) : `packaging/arch/PKGBUILD` scindé en `msi-center-linux` (daemon, `msictl`, `clipd`,
-  app, unités, presets systemd, D-Bus, polkit, autostart `/etc/xdg/autostart`, extension GNOME avec schéma
-  compilé) et `msi-ec-blazorde-dkms` (sources DKMS, `/usr/lib/modules-load.d/msi-ec.conf`, en conflit avec les
-  paquets `msi-ec` upstream). `msi-daemon` (démarrage) et `clipd` (chaque session) activés à l'installation par
-  presets ; arrêt du daemon (tables d'usine, `auto`) avant désinstallation. `scripts/package.sh` construit dans
-  `dist/` sans rien installer ; `scripts/release.sh` joint ces paquets à la release et vérifie les versions
-  (`Cargo.toml`, `PKGBUILD`, `metadata.json`). Docs : [installation](docs/user/installation.md) (installation en
-  une fois, migration depuis `dev-install.sh`), [checklist v0.1.0](docs/product/release-checklist.md).
-- `scripts/dev-install.sh --enable` : démarrage automatique (DKMS `msi-ec-blazorde`, `modules-load.d`,
-  `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
-
-### Changed
 - Arrêt du daemon (signal, sortie, panic, `ExecStopPost`) et replis S7 : les **tables d'usine** sont réécrites
   avant `fan_mode=auto` (l'EC n'a qu'une copie des tables : avant, « auto » gardait nos courbes). Tables d'usine
   du firmware `14K2EMS1.110` dans `msi-core`.

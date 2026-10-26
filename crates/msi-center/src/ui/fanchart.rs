@@ -63,6 +63,17 @@ fn text(cr: &cairo::Context, s: &str, x: f64, y: f64, align: f64) {
     }
 }
 
+#[allow(clippy::many_single_char_names, reason = "geometry")]
+fn rounded(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    cr.new_sub_path();
+    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
+    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
+    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
+    cr.arc(x + r, y + r, r, PI, 3.0 * FRAC_PI_2);
+    cr.close_path();
+}
+
 impl FanChart {
     /// Builds an empty chart.
     pub fn new() -> Self {
@@ -208,6 +219,18 @@ fn draw(area: &gtk::DrawingArea, cr: &cairo::Context, w: f64, h: f64, d: &ChartD
     };
     let table: &Table = &g.table;
 
+    // Soft accent fill under the steps: reads as "how hard the fan works" at a glance.
+    let rise = chart::rising_path(table);
+    path(cr, &f, &rise);
+    cr.line_to(f.x(chart::T_MAX), f.y(0.0));
+    cr.line_to(f.x(chart::T_MIN), f.y(0.0));
+    cr.close_path();
+    let fill = cairo::LinearGradient::new(0.0, f.y0, 0.0, f.y0 + f.h);
+    fill.add_color_stop_rgba(0.0, RED.0, RED.1, RED.2, 0.20);
+    fill.add_color_stop_rgba(1.0, ORANGE.0, ORANGE.1, ORANGE.2, 0.02);
+    let _ = cr.set_source(&fill);
+    let _ = cr.fill();
+
     // Way down (dashed).
     cr.set_source_rgba(RED.0, RED.1, RED.2, 0.45);
     cr.set_line_width(1.5);
@@ -253,17 +276,40 @@ fn draw(area: &gtk::DrawingArea, cr: &cairo::Context, w: f64, h: f64, d: &ChartD
         cr.line_to(x.round() + 0.5, f.y0 + f.h);
         let _ = cr.stroke();
         cr.set_dash(&[], 0.0);
+        cr.set_source_rgba(RED.0, RED.1, RED.2, 0.18);
+        cr.arc(x, y, 13.0, 0.0, std::f64::consts::TAU);
+        let _ = cr.fill();
         cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
         cr.arc(x, y, 7.0, 0.0, std::f64::consts::TAU);
         let _ = cr.fill();
         cr.set_source_rgba(RED.0, RED.1, RED.2, 1.0);
         cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
         let _ = cr.fill();
-        ink(0.9);
         cr.set_font_size(11.0);
+        cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
         let label = format!("{temp:.0}{NNBSP}°C · {:.0}{NNBSP}%", m.speed);
         let align = if x > f.x0 + f.w * 0.75 { 1.0 } else { 0.0 };
-        let dx = if align > 0.5 { -10.0 } else { 10.0 };
-        text(cr, &label, x + dx, (y - 12.0).max(f.y0 + 12.0), align);
+        let dx = if align > 0.5 { -16.0 } else { 16.0 };
+        let ty = (y - 16.0).max(f.y0 + 14.0);
+        // Label on a small glass pill, legible over the grid and the hatching.
+        if let Ok(ext) = cr.text_extents(&label) {
+            let (pw, ph) = (ext.width() + 14.0, 20.0);
+            let px = if align > 0.5 {
+                x + dx - ext.width() - 7.0
+            } else {
+                x + dx - 7.0
+            };
+            let py = ty - 14.0;
+            rounded(cr, px, py, pw, ph, ph / 2.0);
+            let dark = (fr + fgc + fb) / 3.0 > 0.5;
+            if dark {
+                cr.set_source_rgba(0.11, 0.11, 0.17, 0.88);
+            } else {
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+            }
+            let _ = cr.fill();
+        }
+        ink(0.95);
+        text(cr, &label, x + dx, ty, align);
     }
 }

@@ -1,10 +1,20 @@
-/* MSI Center — "Liquid Glass" / "Golden Gate" theme, light variant (base).
+/* MSI Center — "Liquid Glass" × "Golden Gate", light variant (base). Design brief: docs/design/app-liquid-glass.md
  *
- * Palette: International Orange #C0362C (accent), sunset #F28C38 → #C0362C → #2B2D42.
- * GTK cannot blur what lies behind the window (no backdrop-filter, Wayland gives no access to the desktop
- * pixels), so the "frosted" look comes from an in-app backdrop (blurred sunset blobs, bridge silhouette,
- * grain noise — see src/ui/backdrop.rs) seen through translucent cards. Dark overrides: style-dark.css.
- * High contrast mode unloads both files (plain Adwaita).
+ * One warm accent only: International Orange #C0362C and its sunset gradient #F28C38 → #C0362C, reserved for
+ * the active state, the live value and the primary action. Everything else is glass, bone white and bay navy.
+ *
+ * Glass is built in layers (GTK cannot blur what lies behind the window on Wayland; the in-app backdrop of
+ * src/ui/backdrop.rs shows through):
+ *   body      translucent fill + faint vertical gradient
+ *   specular  bright 1px inset line on top + white sheen over the first third
+ *   rim       1px inner light border (inset box-shadow)
+ *   edge      1px outer dark hairline (border)
+ *   depth     short contact shadow + long soft shadow tinted with the bay navy
+ *   glow      only on the active element: accent ring + coloured shadow
+ *
+ * Motion: explicit properties only (never `all`), strong ease-out cubic-bezier(0.23, 1, 0.32, 1), ≤ 220 ms.
+ * GTK drops every CSS transition when gtk-enable-animations is off (reduced motion).
+ * Dark overrides: style-dark.css. High contrast mode unloads both files (plain Adwaita).
  */
 
 :root {
@@ -15,13 +25,24 @@
   --sunset-orange: #f28c38;
   --sunset-red: #c0362c;
   --sunset-navy: #2b2d42;
-  --glass-bg: alpha(#ffffff, 0.56);
-  --glass-hi: alpha(#ffffff, 0.92);
-  --glass-border: alpha(#ffffff, 0.72);
-  --glass-shade: alpha(#2b2d42, 0.16);
-  --glass-tint: alpha(#c0362c, 0.10);
-  --ink: #23243a;
-  --ink-dim: alpha(#23243a, 0.72);
+
+  --ink: #1d1e33;
+  --ink-dim: alpha(#1d1e33, 0.72);
+  --ink-faint: alpha(#1d1e33, 0.08);
+
+  --glass-body: alpha(#ffffff, 0.52);
+  --glass-body-hover: alpha(#ffffff, 0.64);
+  --glass-sheen: alpha(#ffffff, 0.55);
+  --glass-specular: alpha(#ffffff, 0.95);
+  --glass-rim: alpha(#ffffff, 0.55);
+  --glass-edge: alpha(#2b2d42, 0.10);
+  --glass-contact: alpha(#2b2d42, 0.10);
+  --glass-depth: alpha(#2b2d42, 0.16);
+  --glass-tint: alpha(#c0362c, 0.08);
+  --well: alpha(#2b2d42, 0.05);
+  --accent-glow: alpha(#c0362c, 0.38);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
 window.msi-window {
@@ -46,24 +67,25 @@ window.msi-window viewport {
   background: none;
 }
 
-/* Sidebar: one big glass slab. */
+/* ---------- Sidebar: one tall glass slab ---------- */
+
 window.msi-window .sidebar-pane {
-  background-color: alpha(#ffffff, 0.38);
-  background-image: linear-gradient(180deg, alpha(#ffffff, 0.50), alpha(#ffffff, 0.12));
-  border-right: 1px solid var(--glass-border);
-  box-shadow: inset -1px 0 0 alpha(#ffffff, 0.6);
+  background-color: alpha(#ffffff, 0.40);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.55), alpha(#ffffff, 0.10) 40%, alpha(#ffffff, 0.18));
+  border-right: 1px solid var(--glass-edge);
+  box-shadow: inset -1px 0 0 var(--glass-rim);
 }
 
 window.msi-window .sidebar-pane list.navigation-sidebar {
   background: none;
-  padding: 6px 8px;
+  padding: 6px 10px;
 }
 
 window.msi-window .sidebar-pane list.navigation-sidebar > row {
-  border-radius: 14px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 9px 12px;
   margin: 2px 0;
-  transition: background-color 200ms ease, box-shadow 200ms ease;
+  transition: background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out);
 }
 
 window.msi-window .sidebar-pane list.navigation-sidebar > row:hover {
@@ -71,9 +93,14 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:hover {
 }
 
 window.msi-window .sidebar-pane list.navigation-sidebar > row:selected {
-  background-color: alpha(#ffffff, 0.75);
+  background-color: alpha(#ffffff, 0.82);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.6), alpha(#ffffff, 0));
   color: var(--ink);
-  box-shadow: inset 3px 0 0 var(--sunset-red), 0 4px 14px -6px var(--glass-shade);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    0 0 0 1px var(--glass-edge),
+    0 4px 12px -6px var(--glass-depth);
 }
 
 window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
@@ -81,110 +108,302 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
 }
 
 .brand-mark {
-  min-width: 34px;
-  min-height: 34px;
-  border-radius: 11px;
+  min-width: 32px;
+  min-height: 32px;
+  border-radius: 10px;
   background-image: linear-gradient(135deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
-  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.45), 0 4px 12px -4px alpha(#c0362c, 0.6);
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.5), inset 0 0 0 1px alpha(#ffffff, 0.12), 0 4px 12px -4px alpha(#c0362c, 0.6);
   color: #ffffff;
 }
 
 .brand-title {
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 
-/* Glass cards. */
-.glass {
-  border-radius: 20px;
-  padding: 18px;
-  background-color: var(--glass-bg);
-  background-image: linear-gradient(180deg, alpha(#ffffff, 0.50), alpha(#ffffff, 0.08) 55%, alpha(#ffffff, 0.22));
-  border: 1px solid var(--glass-border);
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    inset 0 -1px 0 alpha(#2b2d42, 0.04),
-    0 1px 2px alpha(#2b2d42, 0.08),
-    0 12px 32px -10px var(--glass-shade),
-    0 30px 60px -28px var(--glass-tint);
-  transition: box-shadow 260ms ease, background-color 260ms ease;
+.status-dot {
+  font-size: 9pt;
 }
 
-.glass.compact {
-  padding: 12px 14px;
-  border-radius: 18px;
-}
+/* ---------- Typography ---------- */
 
-.glass.interactive:hover {
-  background-color: alpha(#ffffff, 0.66);
-  box-shadow:
-    inset 0 1px 0 var(--glass-hi),
-    0 2px 4px alpha(#2b2d42, 0.08),
-    0 18px 40px -12px alpha(#2b2d42, 0.22),
-    0 30px 60px -24px alpha(#c0362c, 0.18);
-}
-
-.glass.selected {
-  box-shadow:
-    0 0 0 2px var(--accent-bg-color),
-    inset 0 1px 0 var(--glass-hi),
-    0 12px 32px -10px var(--glass-shade);
-}
-
-/* Decorative sunset strip on hero cards (never behind text). */
-.sunset-strip {
-  min-height: 4px;
-  border-radius: 4px;
-  background-image: linear-gradient(90deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
+.page-header {
+  margin: 6px 4px 6px 4px;
 }
 
 .page-title {
-  font-size: 22pt;
+  font-size: 26pt;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+}
+
+.page-subtitle {
+  color: var(--ink-dim);
 }
 
 .section-title {
   font-weight: 700;
-  font-size: 11pt;
+  font-size: 10.5pt;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
   color: var(--ink-dim);
-  letter-spacing: 0.04em;
+  margin-left: 4px;
+}
+
+.card-heading {
+  font-size: 15pt;
+  font-weight: 800;
+  letter-spacing: -0.01em;
 }
 
 .card-title {
   font-weight: 700;
 }
 
+.card-icon {
+  color: var(--ink-dim);
+}
+
 .dim {
   color: var(--ink-dim);
+}
+
+.numeric,
+.gauge-value,
+.big-value {
+  font-feature-settings: "tnum";
 }
 
 .gauge-value {
   font-size: 17pt;
   font-weight: 800;
-  font-feature-settings: "tnum";
+  letter-spacing: -0.02em;
 }
 
 .big-value {
-  font-size: 34pt;
+  font-size: 36pt;
   font-weight: 800;
-  font-feature-settings: "tnum";
+  letter-spacing: -0.03em;
 }
 
-.numeric {
-  font-feature-settings: "tnum";
+/* ---------- Glass cards ---------- */
+
+.glass {
+  border-radius: 22px;
+  padding: 20px;
+  background-color: var(--glass-body);
+  background-image: linear-gradient(180deg, var(--glass-sheen), alpha(#ffffff, 0) 34%, alpha(#ffffff, 0.10));
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 0 0 1px var(--glass-rim),
+    0 1px 2px var(--glass-contact),
+    0 14px 34px -14px var(--glass-depth),
+    0 30px 60px -30px var(--glass-tint);
+  transition:
+    transform 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out),
+    background-color 200ms var(--ease-out);
+}
+
+.glass.compact {
+  padding: 14px 16px;
+  border-radius: 20px;
+}
+
+.glass.interactive:hover {
+  background-color: var(--glass-body-hover);
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 0 0 1px var(--glass-rim),
+    0 2px 4px var(--glass-contact),
+    0 20px 40px -16px alpha(#2b2d42, 0.24),
+    0 30px 60px -26px alpha(#c0362c, 0.16);
+}
+
+.glass.selected {
+  box-shadow:
+    0 0 0 2px var(--accent-bg-color),
+    inset 0 1px 0 var(--glass-specular),
+    0 14px 34px -14px var(--glass-depth);
+}
+
+.hero-card {
+  padding: 22px;
+  border-radius: 26px;
+}
+
+/* Decorative sunset strip (never behind text). */
+.sunset-strip {
+  min-height: 4px;
+  border-radius: 4px;
+  background-image: linear-gradient(90deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
+}
+
+/* Status chips: small glass pills, icon + word. */
+.chip {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 9.5pt;
+  font-weight: 600;
+  color: var(--ink-dim);
+  background-color: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+.chip image {
+  -gtk-icon-size: 14px;
+}
+
+/* ---------- Profile picker (hero + compact) ---------- */
+
+.profile-picker.hero {
+  padding: 6px;
+  border-radius: 24px;
+  background-color: var(--well);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.08), inset 0 0 0 1px var(--ink-faint), 0 1px 0 alpha(#ffffff, 0.8);
+}
+
+.profile-picker .profile-segment {
+  min-height: 0;
+  border: none;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--ink);
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 220ms var(--ease-out),
+    box-shadow 220ms var(--ease-out),
+    color 220ms var(--ease-out);
+}
+
+.profile-picker.hero .profile-segment {
+  border-radius: 18px; /* concentric: 24 − 6 */
+  padding: 14px 16px 16px 16px;
+}
+
+.profile-picker .profile-segment:hover {
+  background-color: alpha(#ffffff, 0.45);
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.8), 0 2px 6px -3px var(--glass-depth);
+}
+
+.profile-picker .profile-segment:active {
+  transform: scale(0.97);
+}
+
+.profile-picker .profile-segment:checked {
+  background-color: alpha(#ffffff, 0.92);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.9), alpha(#ffffff, 0) 45%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 0 0 1.5px alpha(#c0362c, 0.85),
+    0 6px 16px -6px var(--accent-glow),
+    0 18px 36px -18px alpha(#f28c38, 0.55);
+}
+
+.profile-picker .profile-segment.pending:checked {
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 0 0 1.5px alpha(#c0362c, 0.45),
+    0 6px 16px -8px var(--accent-glow);
+}
+
+.profile-picker .profile-segment:disabled {
+  opacity: 0.55;
+}
+
+.profile-picker .profile-segment:focus-visible {
+  outline: 2px solid alpha(#c0362c, 0.7);
+  outline-offset: 2px;
+}
+
+.profile-glyph {
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: 12px;
+  background-color: alpha(#2b2d42, 0.07);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+  color: var(--ink-dim);
+  transition: background-color 220ms var(--ease-out), color 220ms var(--ease-out), box-shadow 220ms var(--ease-out);
+}
+
+.profile-segment:checked .profile-glyph {
+  background-image: linear-gradient(135deg, var(--sunset-orange), var(--sunset-red) 70%);
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.45), 0 4px 10px -4px alpha(#c0362c, 0.7);
+}
+
+.profile-name {
+  font-size: 14pt;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.profile-tagline {
+  font-size: 9.5pt;
+  font-weight: 400;
+  color: var(--ink-dim);
+}
+
+.profile-state {
+  font-size: 9pt;
+  font-weight: 400;
+  font-weight: 700;
+  color: var(--accent-color);
+}
+
+/* Compact: a segmented control in the header bar. */
+.profile-picker.compact {
+  padding: 3px;
+  border-radius: 999px;
+  background-color: alpha(#ffffff, 0.40);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.10), inset 0 0 0 1px var(--ink-faint);
+}
+
+.profile-picker.compact .profile-segment {
+  border-radius: 999px;
+  padding: 4px 16px;
+  min-height: 26px;
+}
+
+.profile-picker.compact .profile-segment:checked {
+  background-color: var(--accent-bg-color);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.24), alpha(#ffffff, 0));
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.35), 0 4px 12px -5px var(--accent-glow);
+}
+
+/* GPU busy, inline in the hero card. */
+.inline-warning {
+  border-radius: 14px;
+  padding: 10px 12px;
+  background-color: alpha(#f28c38, 0.16);
+  box-shadow: inset 0 0 0 1px alpha(#c0362c, 0.25);
+  color: #6e2410;
+}
+
+.inline-warning image {
+  color: #a12a22;
+}
+
+/* ---------- Gauges ---------- */
+
+.gauge-card {
+  padding-bottom: 12px;
 }
 
 /* Level badges: always a word + icon, colour is only a reinforcement. */
 .level-badge {
   border-radius: 999px;
   padding: 1px 8px;
-  font-size: 9pt;
+  font-size: 8.5pt;
   font-weight: 700;
 }
 
 .level-badge.level-normal {
-  background-color: alpha(#2f7d4f, 0.16);
+  background-color: alpha(#2f7d4f, 0.14);
   color: #1f5a37;
 }
 
@@ -198,14 +417,17 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
   color: #8a1f18;
 }
 
+/* ---------- Fans ---------- */
+
 .raised-mark {
   font-weight: 800;
   color: var(--accent-color);
 }
 
 .step-cell {
-  padding: 4px 6px;
-  border-radius: 8px;
+  padding: 5px 6px;
+  border-radius: 9px;
+  transition: background-color 200ms var(--ease-out), box-shadow 200ms var(--ease-out);
 }
 
 .step-cell.raised {
@@ -213,38 +435,77 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
 }
 
 .step-cell.current {
-  box-shadow: inset 0 0 0 2px alpha(#2b2d42, 0.45);
+  background-color: alpha(#ffffff, 0.75);
+  box-shadow: inset 0 0 0 1.5px alpha(#2b2d42, 0.45), 0 2px 6px -3px var(--glass-depth);
+  font-weight: 700;
 }
 
 .warning-card {
-  border-color: alpha(#c0362c, 0.45);
-  background-color: alpha(#fff3ee, 0.78);
+  border-color: alpha(#c0362c, 0.35);
+  background-color: alpha(#fff3ee, 0.80);
 }
 
-/* Profile switch: a liquid pill. */
-.profile-switch {
+.legend {
+  font-size: 9pt;
+}
+
+.legend-item {
+  border-radius: 999px;
+  padding: 2px 9px;
+  background-color: var(--well);
+  color: var(--ink-dim);
+}
+
+/* Segmented toggle groups (fan selector, clipboard scope, theme). */
+.segmented {
   border-radius: 999px;
   padding: 3px;
-  background-color: alpha(#ffffff, 0.45);
-  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.10), 0 1px 0 alpha(#ffffff, 0.8);
+  background-color: var(--well);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.08), inset 0 0 0 1px var(--ink-faint);
 }
 
-.profile-switch toggle {
+.segmented toggle {
   border-radius: 999px;
-  padding: 8px 18px;
-  transition: background-color 220ms ease, box-shadow 220ms ease, color 220ms ease;
+  padding: 7px 18px;
+  transition: background-color 200ms var(--ease-out), box-shadow 200ms var(--ease-out), color 200ms var(--ease-out);
 }
 
-.profile-switch toggle:checked {
-  background-color: var(--accent-bg-color);
-  background-image: linear-gradient(180deg, alpha(#ffffff, 0.22), alpha(#ffffff, 0));
-  color: #ffffff;
-  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.35), 0 6px 16px -6px alpha(#c0362c, 0.7);
+.segmented toggle:checked {
+  background-color: alpha(#ffffff, 0.95);
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 #ffffff, 0 0 0 1px var(--glass-edge), 0 3px 10px -4px var(--glass-depth);
 }
 
-/* Clipboard. */
+/* ---------- Buttons ---------- */
+
+button.pill,
+button.suggested-action,
+button.destructive-action {
+  transition: transform 140ms var(--ease-out), box-shadow 200ms var(--ease-out), background-color 200ms var(--ease-out);
+}
+
+button.pill:active,
+button.suggested-action:active,
+button.destructive-action:active {
+  transform: scale(0.97);
+}
+
+button.pill.small {
+  padding: 4px 14px;
+  min-height: 28px;
+  font-size: 9.5pt;
+}
+
+button.pill.suggested-action,
+button.suggested-action {
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.20), alpha(#ffffff, 0));
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.32), 0 6px 18px -8px alpha(#c0362c, 0.8);
+}
+
+/* ---------- Clipboard ---------- */
+
 .clip-card {
-  border-radius: 16px;
+  border-radius: 18px;
   padding: 12px;
   min-width: 220px;
 }
@@ -256,7 +517,9 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
 
 .clip-thumb {
   border-radius: 12px;
-  background-color: alpha(#2b2d42, 0.06);
+  background-color: var(--well);
+  outline: 1px solid alpha(#000000, 0.10);
+  outline-offset: -1px;
 }
 
 .tag-chip {
@@ -264,7 +527,7 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
   padding: 2px 12px;
   min-height: 26px;
   background-color: alpha(#ffffff, 0.55);
-  box-shadow: inset 0 0 0 1px alpha(#2b2d42, 0.10);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
 }
 
 .tag-chip:checked {
@@ -279,30 +542,42 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
   background-color: alpha(#2b2d42, 0.08);
 }
 
-.status-dot {
-  font-size: 9pt;
-}
+/* ---------- Lists and preferences on glass ---------- */
 
-button.pill.suggested-action {
-  background-image: linear-gradient(180deg, alpha(#ffffff, 0.18), alpha(#ffffff, 0));
-  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.3), 0 6px 18px -8px alpha(#c0362c, 0.8);
-}
-
-/* Lists inside glass: let the glass be the surface. */
 .glass list.boxed-list,
 .glass .boxed-list {
   background-color: alpha(#ffffff, 0.55);
-  box-shadow: inset 0 0 0 1px alpha(#ffffff, 0.7);
+  box-shadow: inset 0 0 0 1px var(--glass-rim);
   border-radius: 14px;
 }
 
 preferencesgroup .boxed-list {
-  background-color: alpha(#ffffff, 0.58);
-  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.9), 0 8px 24px -12px alpha(#2b2d42, 0.2);
-  border: 1px solid alpha(#ffffff, 0.7);
-  border-radius: 16px;
+  background-color: var(--glass-body);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.45), alpha(#ffffff, 0) 40%);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 0 0 1px var(--glass-rim),
+    0 1px 2px var(--glass-contact),
+    0 12px 30px -16px var(--glass-depth);
+}
+
+preferencesgroup .boxed-list > row {
+  background: none;
+}
+
+preferencesgroup .boxed-list > row.accent .title {
+  color: var(--accent-color);
+  font-weight: 700;
 }
 
 banner > revealer > widget {
   background-color: alpha(#c0362c, 0.14);
+}
+
+toast {
+  border-radius: 999px;
+  background-color: alpha(#1d1e33, 0.88);
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.12), 0 10px 30px -10px alpha(#000000, 0.5);
 }

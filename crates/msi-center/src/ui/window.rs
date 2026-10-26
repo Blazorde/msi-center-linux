@@ -17,6 +17,7 @@ use super::fans::Fans;
 use super::home::Home;
 use super::perf::Perf;
 use super::prefs::Prefs;
+use super::profiles::{ProfileSwitch, Variant};
 use super::style;
 use super::widgets::Ctx;
 
@@ -44,6 +45,8 @@ pub struct Window {
     gpu_banner: adw::Banner,
     safety_banner: adw::Banner,
     connection: gtk::Label,
+    /// Compact profile switch of the header bar (hidden on Accueil, which has the large one).
+    header_profiles: ProfileSwitch,
     /// Accueil.
     pub home: Rc<Home>,
     /// Ventilateurs.
@@ -93,7 +96,7 @@ impl Window {
 
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
-            .transition_duration(220)
+            .transition_duration(180)
             .vexpand(true)
             .build();
         stack.add_css_class("pages");
@@ -120,6 +123,9 @@ impl Window {
             .build();
         let mark_icon = gtk::Image::from_icon_name("org.blazorde.MsiCenter-symbolic");
         mark_icon.set_hexpand(true);
+        mark.set_halign(gtk::Align::Center);
+        mark.set_hexpand(false);
+        brand.set_hexpand(false);
         mark_icon.set_valign(gtk::Align::Center);
         mark.append(&mark_icon);
         brand.append(&mark);
@@ -159,6 +165,18 @@ impl Window {
 
         // Content.
         let menu = gio::Menu::new();
+        let profiles_menu = gio::Menu::new();
+        for p in msi_core::profile::Profile::ALL {
+            profiles_menu.append(
+                Some(msi_center::model::profile_label(p.as_str())),
+                Some(&format!(
+                    "app.{}::{}",
+                    msi_center::model::PROFILE_ACTION,
+                    p.as_str()
+                )),
+            );
+        }
+        menu.append_section(Some("Profil"), &profiles_menu);
         menu.append(Some("Réglages"), Some("win.page::prefs"));
         menu.append(Some("À propos de MSI Center"), Some("app.about"));
         menu.append(Some("Quitter"), Some("app.quit"));
@@ -168,7 +186,15 @@ impl Window {
             .tooltip_text("Menu principal")
             .primary(true)
             .build();
-        let header = adw::HeaderBar::new();
+        let app_weak = Rc::downgrade(app);
+        let header_profiles = ProfileSwitch::new(Variant::Compact, move |p| {
+            if let Some(a) = app_weak.upgrade() {
+                a.apply_profile(p);
+            }
+        });
+        let header = adw::HeaderBar::builder()
+            .title_widget(&header_profiles.root)
+            .build();
         header.pack_end(&menu_button);
 
         let daemon_banner = adw::Banner::builder()
@@ -237,6 +263,7 @@ impl Window {
             gpu_banner,
             safety_banner,
             connection,
+            header_profiles,
             home,
             fans,
             perf,
@@ -260,6 +287,7 @@ impl Window {
             };
             me.stack.set_visible_child_name(id);
             me.content_page.set_title(title);
+            me.header_profiles.root.set_visible(*id != "home");
             me.split.set_show_content(true);
             if *id == "perf" {
                 me.perf.load_holders();
@@ -380,9 +408,27 @@ impl Window {
         self.win.is_active()
     }
 
-    /// Shows the "GPU busy" banner.
-    pub fn show_gpu_busy(&self) {
-        self.gpu_banner.set_revealed(true);
+    /// What pages need (toasts, app).
+    pub fn ctx(&self) -> &Ctx {
+        &self.ctx
+    }
+
+    /// Shows the selected profile in both switches.
+    pub fn show_profile(&self, shown: Option<msi_core::profile::Profile>, pending: bool) {
+        let enabled = {
+            let s = self.ctx.app.shared.borrow();
+            s.daemon_up == Some(true) && !s.status.as_ref().is_some_and(|st| st.read_only)
+        };
+        self.home.show_profile(shown, pending);
+        self.header_profiles.set(shown, pending, enabled);
+    }
+
+    /// The dGPU stays on (Éco): inline on Accueil, banner elsewhere.
+    pub fn show_gpu_busy(&self, text: &str) {
+        self.home.show_gpu_busy(text);
+        if self.stack.visible_child_name().as_deref() != Some("home") {
+            self.gpu_banner.set_revealed(true);
+        }
         self.perf.load_holders();
     }
 
@@ -494,6 +540,9 @@ impl Window {
             Event::Daemon(DaemonEvent::Telemetry(t)) => {
                 self.home.set_telemetry(t);
                 self.fans.set_telemetry(t);
+            }
+            Event::Daemon(DaemonEvent::Safety(e)) if e.kind == "gpu_busy" => {
+                self.show_gpu_busy(&e.describe());
             }
             Event::Daemon(DaemonEvent::Safety(e)) => self.show_safety(e),
             Event::ClipdUp => {

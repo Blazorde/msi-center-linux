@@ -9,6 +9,7 @@ mod fans;
 mod home;
 mod perf;
 mod prefs;
+mod profiles;
 pub mod style;
 mod widgets;
 mod window;

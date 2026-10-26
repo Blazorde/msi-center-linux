@@ -9,7 +9,7 @@ use msi_center::format;
 use msi_center::model::{self, DaemonStatus};
 use msi_core::battery::CHARGE_LIMIT_RANGE;
 
-use super::widgets::{Ctx, Gate, glass, hint, page_scroller};
+use super::widgets::{Ctx, Gate, glass, hint, page_header, page_scroller};
 
 /// The page.
 #[derive(Debug)]
@@ -40,6 +40,7 @@ impl Battery {
     /// Builds the page.
     pub fn new(ctx: &Rc<Ctx>) -> Rc<Self> {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        content.append(&page_header("Batterie", "Limite de charge et alimentation"));
         let (lo, hi) = (
             f64::from(*CHARGE_LIMIT_RANGE.start()),
             f64::from(*CHARGE_LIMIT_RANGE.end()),
@@ -63,12 +64,11 @@ impl Battery {
             .build();
         let advice_label = hint(advice(100));
         let hero = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        hero.append(&gtk::Box::builder().css_classes(["sunset-strip"]).build());
         hero.append(
             &gtk::Label::builder()
                 .label("Limite de charge")
                 .xalign(0.0)
-                .css_classes(["title-2"])
+                .css_classes(["card-heading"])
                 .accessible_role(gtk::AccessibleRole::Heading)
                 .build(),
         );

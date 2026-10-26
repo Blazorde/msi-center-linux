@@ -1,16 +1,16 @@
-//! Accueil: live gauges, profile switch, at-a-glance status.
+//! Accueil: the profile switch (hero), live ring gauges, status at a glance.
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use msi_center::chart::gauge_fraction;
-use msi_center::errors::{AppError, Service};
+use msi_center::errors::Service;
 use msi_center::format;
 use msi_center::model::{self, DaemonStatus, Telemetry, TempLevel};
 use msi_core::profile::Profile;
 
-use super::widgets::{Ctx, Gate, Gauge, glass, hint, page_scroller, section_title};
+use super::profiles::{ProfileSwitch, Variant};
+use super::widgets::{Ctx, Gate, Gauge, chip, glass, page_header, page_scroller, section_title};
 
 /// Highest rpm on the gauges (100 % is ≈ 6 000 tr/min on this machine; values above are clamped).
 const RPM_MAX: f64 = 6500.0;
@@ -20,10 +20,16 @@ const RPM_MAX: f64 = 6500.0;
 pub struct Home {
     /// Root widget.
     pub gate: Gate,
-    ctx: Rc<Ctx>,
-    profiles: adw::ToggleGroup,
+    /// The hero profile switch.
+    pub profiles: ProfileSwitch,
     profile_desc: gtk::Label,
-    status_line: gtk::Label,
+    gpu_warning: gtk::Revealer,
+    gpu_warning_text: gtk::Label,
+    power: gtk::Label,
+    fans_chip: gtk::Label,
+    boost: gtk::Label,
+    dgpu_chip: gtk::Label,
+    read_only: std::cell::Cell<bool>,
     cpu_temp: Gauge,
     gpu_temp: Gauge,
     fan1: Gauge,
@@ -33,8 +39,7 @@ pub struct Home {
     igpu: Gauge,
     ram: Gauge,
     npu: Gauge,
-    power: Gauge,
-    syncing: Cell<bool>,
+    power_gauge: Gauge,
 }
 
 fn flow(gauges: &[&Gauge]) -> gtk::FlowBox {
@@ -43,8 +48,8 @@ fn flow(gauges: &[&Gauge]) -> gtk::FlowBox {
         .homogeneous(true)
         .min_children_per_line(2)
         .max_children_per_line(6)
-        .column_spacing(12)
-        .row_spacing(12)
+        .column_spacing(14)
+        .row_spacing(14)
         .build();
     for g in gauges {
         f.append(&g.root);
@@ -54,56 +59,82 @@ fn flow(gauges: &[&Gauge]) -> gtk::FlowBox {
 
 impl Home {
     /// Builds the page.
+    #[allow(clippy::too_many_lines, reason = "widget tree")]
     pub fn new(ctx: &Rc<Ctx>) -> Rc<Self> {
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 16);
+        content.append(&page_header("Accueil", "MSI Stealth 14 AI Studio · en direct"));
 
-        // Hero: profile switch.
-        let profiles = adw::ToggleGroup::builder()
-            .css_classes(["profile-switch"])
-            .homogeneous(true)
-            .halign(gtk::Align::Start)
-            .build();
-        for (p, icon) in [
-            (Profile::Eco, "power-profile-power-saver-symbolic"),
-            (Profile::Balanced, "power-profile-balanced-symbolic"),
-            (Profile::Gaming, "power-profile-performance-symbolic"),
-        ] {
-            let label = model::profile_label(p.as_str());
-            let content = adw::ButtonContent::builder().icon_name(icon).label(label).build();
-            profiles.add(
-                adw::Toggle::builder()
-                    .name(p.as_str())
-                    .child(&content)
-                    .tooltip(model::profile_description(p))
-                    .build(),
-            );
-        }
-        let profile_desc = hint("");
-        let status_line = gtk::Label::builder()
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["dim", "numeric"])
-            .build();
-        let hero = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        hero.append(&gtk::Box::builder().css_classes(["sunset-strip"]).build());
-        hero.append(
+        // Hero: the profile switch. One click applies.
+        let app = Rc::downgrade(&ctx.app);
+        let profiles = ProfileSwitch::new(Variant::Hero, move |p| {
+            if let Some(a) = app.upgrade() {
+                a.apply_profile(p);
+            }
+        });
+        let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        head.append(
             &gtk::Label::builder()
                 .label("Profil")
                 .xalign(0.0)
-                .css_classes(["title-2"])
+                .hexpand(true)
+                .css_classes(["card-heading"])
                 .accessible_role(gtk::AccessibleRole::Heading)
                 .build(),
         );
-        hero.append(&profiles);
+        let chips = adw::WrapBox::builder()
+            .child_spacing(6)
+            .line_spacing(6)
+            .halign(gtk::Align::End)
+            .build();
+        let (c, power) = chip("battery-full-charged-symbolic");
+        chips.append(&c);
+        let (c, fans_chip) = chip("weather-windy-symbolic");
+        chips.append(&c);
+        let (c, boost) = chip("temperature-symbolic");
+        chips.append(&c);
+        let (c, dgpu_chip) = chip("video-display-symbolic");
+        chips.append(&c);
+        head.append(&chips);
+
+        let profile_desc = gtk::Label::builder()
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["dim", "caption"])
+            .build();
+
+        let gpu_warning_text = gtk::Label::builder().xalign(0.0).wrap(true).hexpand(true).build();
+        let see = gtk::Button::builder()
+            .label("Voir les processus")
+            .valign(gtk::Align::Center)
+            .css_classes(["pill", "small"])
+            .action_name("win.page")
+            .action_target(&"perf".to_variant())
+            .build();
+        let warn = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        warn.add_css_class("inline-warning");
+        warn.append(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+        warn.append(&gpu_warning_text);
+        warn.append(&see);
+        let gpu_warning = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(200)
+            .child(&warn)
+            .build();
+
+        let hero = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        hero.append(&head);
+        hero.append(&profiles.root);
+        hero.append(&gpu_warning);
         hero.append(&profile_desc);
-        hero.append(&status_line);
-        content.append(&glass(&hero));
+        let card = glass(&hero);
+        card.add_css_class("hero-card");
+        content.append(&card);
 
         let cpu_temp = Gauge::new("CPU", "temperature-symbolic");
         let gpu_temp = Gauge::new("GPU", "temperature-symbolic");
         let fan1 = Gauge::new("Ventilateur CPU", "weather-windy-symbolic");
         let fan2 = Gauge::new("Ventilateur GPU", "weather-windy-symbolic");
-        content.append(&section_title("TEMPÉRATURES ET VENTILATEURS"));
+        content.append(&section_title("Températures et ventilateurs"));
         content.append(&flow(&[&cpu_temp, &gpu_temp, &fan1, &fan2]));
 
         let cpu = Gauge::new("Processeur", "computer-symbolic");
@@ -111,17 +142,22 @@ impl Home {
         let igpu = Gauge::new("Arc (iGPU)", "video-display-symbolic");
         let ram = Gauge::new("Mémoire", "drive-harddisk-solidstate-symbolic");
         let npu = Gauge::new("NPU", "applications-science-symbolic");
-        let power = Gauge::new("Puissance", "battery-full-charged-symbolic");
-        content.append(&section_title("UTILISATION"));
-        content.append(&flow(&[&cpu, &dgpu, &igpu, &ram, &npu, &power]));
+        let power_gauge = Gauge::new("Puissance", "battery-full-charged-symbolic");
+        content.append(&section_title("Utilisation"));
+        content.append(&flow(&[&cpu, &dgpu, &igpu, &ram, &npu, &power_gauge]));
 
         let gate = Gate::new(ctx, Service::Daemon, &page_scroller(&content));
         let page = Rc::new(Self {
             gate,
-            ctx: ctx.clone(),
             profiles,
             profile_desc,
-            status_line,
+            gpu_warning,
+            gpu_warning_text,
+            power,
+            fans_chip,
+            boost,
+            dgpu_chip,
+            read_only: std::cell::Cell::new(false),
             cpu_temp,
             gpu_temp,
             fan1,
@@ -131,83 +167,44 @@ impl Home {
             igpu,
             ram,
             npu,
-            power,
-            syncing: Cell::new(false),
+            power_gauge,
         });
-        let weak = Rc::downgrade(&page);
-        page.profiles.connect_active_name_notify(move |g| {
-            let (Some(p), Some(name)) = (weak.upgrade(), g.active_name()) else {
-                return;
-            };
-            if !p.syncing.get() {
-                p.set_profile(name.to_string());
-            }
-        });
+        page.show_profile(None, false);
         page.set_telemetry(&Telemetry::default());
         page
     }
 
-    fn set_profile(&self, name: String) {
-        let ctx = self.ctx.clone();
-        let label = model::profile_label(&name);
-        let label = label.to_owned();
-        Ctx::spawn(async move {
-            let n = name.clone();
-            match ctx
-                .app
-                .backend
-                .daemon(move |d| async move { d.set_profile(&n).await })
-                .await
-            {
-                Ok(()) => ctx.toast(&format!("Profil {label} appliqué.")),
-                Err(e @ AppError::GpuBusy(_)) => {
-                    ctx.error(&e);
-                    if let Some(w) = ctx.app.window.borrow().as_ref() {
-                        w.show_gpu_busy();
-                    }
-                }
-                Err(e) => {
-                    ctx.error(&e);
-                    // Snap back to the real profile.
-                    if let Some(w) = ctx.app.window.borrow().as_ref()
-                        && let Some(s) = ctx.app.shared.borrow().status.as_ref()
-                    {
-                        w.home.set_status(s);
-                    }
-                }
-            }
-        });
+    /// Shows the selected (or being applied) profile.
+    pub fn show_profile(&self, shown: Option<Profile>, pending: bool) {
+        self.profiles.set(shown, pending, !self.read_only.get());
+        self.profile_desc
+            .set_label(&shown.map_or_else(String::new, model::profile_description));
+    }
+
+    /// The dGPU could not be removed (Éco): explain inline, with a way to the holders.
+    pub fn show_gpu_busy(&self, text: &str) {
+        self.gpu_warning_text.set_label(text);
+        self.gpu_warning.set_reveal_child(true);
     }
 
     /// Daemon status changed.
     pub fn set_status(&self, s: &DaemonStatus) {
-        self.syncing.set(true);
-        self.profiles.set_active_name(Some(&s.profile));
-        self.syncing.set(false);
-        for t in ["eco", "balanced", "gaming"] {
-            if let Some(toggle) = self.profiles.toggle_by_name(t) {
-                toggle.set_enabled(!s.read_only);
-            }
+        self.read_only.set(s.read_only);
+        if s.gpu_state == "removed" || s.profile != "eco" {
+            self.gpu_warning.set_reveal_child(false);
         }
-        let desc = match s.profile.as_str() {
-            "eco" => model::profile_description(Profile::Eco),
-            "gaming" => model::profile_description(Profile::Gaming),
-            _ => model::profile_description(Profile::Balanced),
-        };
-        self.profile_desc.set_label(&desc);
         let boost = if s.boost_forced {
-            "forcé (sécurité)"
+            "Cooler Boost forcé"
         } else if s.cooler_boost {
-            "activé"
+            "Cooler Boost"
         } else {
-            "désactivé"
+            "Boost désactivé"
         };
-        self.status_line.set_label(&format!(
-            "Alimentation : {} · Ventilateurs : {} · Cooler Boost : {boost} · RTX 4070 : {}",
-            model::power_source_label(s.on_ac_power),
-            model::fan_mode_label(&s.fan_mode),
-            model::gpu_state_label(&s.gpu_state),
-        ));
+        self.power.set_label(model::power_source_label(s.on_ac_power));
+        self.fans_chip.set_label(model::fan_mode_label(&s.fan_mode));
+        self.boost.set_label(boost);
+        self.dgpu_chip
+            .set_label(&format!("RTX 4070 · {}", model::gpu_state_label(&s.gpu_state)));
     }
 
     /// New telemetry sample.
@@ -253,7 +250,7 @@ impl Home {
         pct(&self.igpu, t.igpu_pct, "");
         pct(&self.ram, t.ram_pct, "");
         pct(&self.npu, t.npu_pct, "");
-        self.power.set(
+        self.power_gauge.set(
             &format::watts(t.power_w),
             t.power_w.map(|w| gauge_fraction(w, 0.0, 115.0)),
             "processeur",

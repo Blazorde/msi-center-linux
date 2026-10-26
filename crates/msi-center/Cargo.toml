@@ -20,7 +20,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
-zbus = { workspace = true, features = ["proxy"] }
+zbus = { workspace = true, features = ["proxy", "p2p"] }
 
 [dev-dependencies]
 clip-core.workspace = true

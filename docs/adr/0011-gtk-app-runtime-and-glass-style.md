@@ -59,3 +59,6 @@
 - L'arrière-plan est une texture fixe (redessinée au changement clair/sombre) : il ne réagit pas au
   redimensionnement autrement que par mise à l'échelle (`ContentFit::Cover`), suffisant pour un flou.
 - Toute nouvelle variable d'environnement GPU passe par `msi_center::gpu_env` (testé).
+- Mode démo (`MSI_CENTER_DEMO=1`, ajouté avec la refonte « Liquid Glass ») : les mêmes clients zbus parlent à
+  des services simulés servis dans le processus sur des paires de sockets (fonctionnalité `p2p` de zbus, déjà
+  utilisée par les tests) ; aucun bus n'est contacté. Sert aux captures (`scripts/app-shots.sh`).
