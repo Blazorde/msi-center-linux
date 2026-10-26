@@ -11,6 +11,7 @@ use msi_center::dbus::DaemonEvent;
 use msi_center::errors::AppError;
 use msi_center::model::{DaemonStatus, SafetyEvent, Severity, Telemetry};
 use msi_center::settings::{self, Settings};
+use msi_core::profile::Profile;
 
 use super::window::Window;
 
@@ -52,6 +53,12 @@ pub struct App {
     pub settings: RefCell<Settings>,
     /// `$XDG_CONFIG_HOME`.
     pub config_dir: PathBuf,
+    /// Profile being applied (optimistic UI), if any.
+    pub pending_profile: Cell<Option<Profile>>,
+    /// Profile asked for before the daemon answered (action activated at startup), applied on `DaemonUp`.
+    queued_profile: Cell<Option<Profile>>,
+    /// Keeps the app alive while a profile asked without a window is being applied.
+    profile_hold: RefCell<Option<gio::ApplicationHoldGuard>>,
 }
 
 impl App {
@@ -68,7 +75,103 @@ impl App {
             start_hidden: Cell::new(false),
             settings: RefCell::new(settings),
             config_dir,
+            pending_profile: Cell::new(None),
+            queued_profile: Cell::new(None),
+            profile_hold: RefCell::new(None),
         })
+    }
+
+    /// The profile the UI should show as selected: the one being applied, else the daemon's.
+    pub fn shown_profile(&self) -> Option<Profile> {
+        self.pending_profile.get().or_else(|| {
+            self.shared
+                .borrow()
+                .status
+                .as_ref()
+                .and_then(|s| s.profile.parse().ok())
+        })
+    }
+
+    /// Applies `p` (actions, extension, both switches). Optimistic: the switches show `p` with a progress
+    /// indicator at once; on failure they snap back and a toast (or a notification without a window)
+    /// explains. Before the daemon answered, the request is queued and applied on connection.
+    pub fn apply_profile(self: &Rc<Self>, p: Profile) {
+        if self.profile_hold.borrow().is_none() && self.window.borrow().is_none() {
+            // No window (desktop action, extension): stay alive until the call returns.
+            *self.profile_hold.borrow_mut() = Some(self.gtk.hold());
+        }
+        if self.shared.borrow().daemon_up != Some(true) {
+            self.queued_profile.set(Some(p));
+            self.pending_profile.set(Some(p));
+            self.refresh_profile_ui();
+            return;
+        }
+        let current = self.shared.borrow().status.as_ref().map(|s| s.profile.clone());
+        if current.as_deref() == Some(p.as_str()) && self.pending_profile.get().is_none() {
+            self.profile_hold.borrow_mut().take();
+            return;
+        }
+        self.pending_profile.set(Some(p));
+        self.refresh_profile_ui();
+        let me = self.clone();
+        glib::spawn_future_local(async move {
+            let res = me
+                .backend
+                .daemon(move |d| async move { d.set_profile(p.as_str()).await })
+                .await;
+            // A later click superseded this one: its own reply settles the UI.
+            if me.pending_profile.get() != Some(p) {
+                return;
+            }
+            me.pending_profile.set(None);
+            let label = msi_center::model::profile_label(p.as_str());
+            match res {
+                Ok(()) => me.report(&format!("Profil {label} appliqué."), None),
+                Err(e @ AppError::GpuBusy(_)) => {
+                    // The EC part is applied: keep the profile, explain inline.
+                    me.report(&format!("Profil {label} appliqué."), None);
+                    if let Some(w) = me.window.borrow().as_ref() {
+                        w.show_gpu_busy(&e.message_fr());
+                    }
+                }
+                Err(e) => me.report(&e.message_fr(), Some(&e)),
+            }
+            me.refresh_profile_ui();
+            me.profile_hold.borrow_mut().take();
+        });
+    }
+
+    /// Toast in the window, or a notification without one.
+    fn report(&self, msg: &str, err: Option<&AppError>) {
+        if let Some(w) = self.window.borrow().as_ref() {
+            match err {
+                Some(e) => w.ctx().error(e),
+                None => w.ctx().toast(msg),
+            }
+            return;
+        }
+        if let Some(e) = err {
+            tracing::warn!("{e}");
+        }
+        let n = gio::Notification::new("MSI Center");
+        n.set_body(Some(msg));
+        n.set_default_action("app.activate");
+        self.gtk.send_notification(Some("profile"), &n);
+    }
+
+    /// Pushes the shown profile to the window and the `app.profile` action state.
+    pub fn refresh_profile_ui(&self) {
+        let shown = self.shown_profile();
+        if let Some(a) = self
+            .gtk
+            .lookup_action(msi_center::model::PROFILE_ACTION)
+            .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+        {
+            a.set_state(&shown.map_or("", Profile::as_str).to_variant());
+        }
+        if let Some(w) = self.window.borrow().as_ref() {
+            w.show_profile(shown, self.pending_profile.get().is_some());
+        }
     }
 
     /// Saves the preferences (logged on failure).
@@ -127,10 +230,23 @@ impl App {
         if let Some(w) = win {
             w.handle(ev);
         }
-        if let Event::Daemon(DaemonEvent::Safety(e)) = ev
-            && !visible
-        {
-            self.notify_safety(e);
+        match ev {
+            Event::Daemon(DaemonEvent::Safety(e)) if !visible => self.notify_safety(e),
+            Event::Daemon(DaemonEvent::Status(_)) => self.refresh_profile_ui(),
+            Event::DaemonUp { .. } => {
+                if let Some(p) = self.queued_profile.take() {
+                    self.pending_profile.set(None);
+                    self.apply_profile(p);
+                }
+            }
+            // A request queued before the daemon answered: the daemon is down, give up and say so.
+            Event::DaemonDown(e) if self.queued_profile.take().is_some() => {
+                self.pending_profile.set(None);
+                self.report(&e.message_fr(), Some(e));
+                self.refresh_profile_ui();
+                self.profile_hold.borrow_mut().take();
+            }
+            _ => {}
         }
     }
 

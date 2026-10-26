@@ -27,4 +27,5 @@
 ## 📖 Utilisateur
 - [Installation](user/installation.md)
 - [L'application MSI Center](user/app.md)
+- [Design de l'app (Liquid Glass × Golden Gate, captures)](design/app-liquid-glass.md)
 - [Extension GNOME (barre, menu, `Super+V`)](user/extension.md)

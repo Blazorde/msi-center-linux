@@ -172,9 +172,55 @@ impl Fan {
 pub fn profile_label(p: &str) -> &'static str {
     match p {
         "eco" => "Éco",
-        "balanced" => "Balanced",
+        "balanced" => "Équilibré",
         "gaming" => "Gaming",
         _ => "Inconnu",
+    }
+}
+
+/// Name of the parameterised application action selecting a profile: `app.profile::eco`.
+pub const PROFILE_ACTION: &str = "profile";
+
+/// Name of the parameterless application action selecting `p` (`profile-eco`, …). These are also the
+/// desktop-file action ids: a D-Bus-activatable app receives them as `ActivateAction` without a parameter.
+#[must_use]
+pub fn profile_action_name(p: msi_core::profile::Profile) -> String {
+    format!("{PROFILE_ACTION}-{}", p.as_str())
+}
+
+/// The profile selected by activating the application action `action` with the string `target`:
+/// `("profile", Some("eco"))` or `("profile-eco", None)`. A leading `app.` is accepted. Anything else is
+/// `None` (unknown action, unknown profile, missing or extra parameter).
+#[must_use]
+pub fn parse_profile_action(action: &str, target: Option<&str>) -> Option<msi_core::profile::Profile> {
+    let action = action.strip_prefix("app.").unwrap_or(action);
+    let name = match (action, target) {
+        (PROFILE_ACTION, Some(t)) => t.trim(),
+        (a, None) => a.strip_prefix(PROFILE_ACTION)?.strip_prefix('-')?,
+        _ => return None,
+    };
+    name.parse().ok()
+}
+
+/// One short line telling what a profile is for (hero switch).
+#[must_use]
+pub const fn profile_tagline(p: msi_core::profile::Profile) -> &'static str {
+    use msi_core::profile::Profile;
+    match p {
+        Profile::Eco => "Silence et autonomie, RTX éteinte",
+        Profile::Balanced => "Le quotidien, RTX en veille",
+        Profile::Gaming => "Pleine puissance, RTX active",
+    }
+}
+
+/// Symbolic icon of a profile.
+#[must_use]
+pub const fn profile_icon(p: msi_core::profile::Profile) -> &'static str {
+    use msi_core::profile::Profile;
+    match p {
+        Profile::Eco => "power-profile-power-saver-symbolic",
+        Profile::Balanced => "power-profile-balanced-symbolic",
+        Profile::Gaming => "power-profile-performance-symbolic",
     }
 }
 
@@ -267,6 +313,13 @@ impl SafetyEvent {
             }
             "write_failed" => "Écriture EC en échec : retour à la courbe d'usine par sécurité.".to_owned(),
             "ec_reset" => "L'EC avait perdu les courbes : elles ont été ré-appliquées.".to_owned(),
+            "gpu_busy" => {
+                "La RTX 4070 est utilisée par des applications : elle reste en veille au lieu d'être retirée."
+                    .to_owned()
+            }
+            "fan_stalled" => {
+                format!("Ventilateur arrêté alors qu'il devrait tourner ({t}) : Cooler Boost activé.")
+            }
             other => format!("Événement de sécurité « {other} »."),
         }
     }
@@ -275,7 +328,7 @@ impl SafetyEvent {
     #[must_use]
     pub fn severity(&self) -> Severity {
         match self.kind.as_str() {
-            "boost_released" | "ec_reset" => Severity::Info,
+            "boost_released" | "ec_reset" | "gpu_busy" => Severity::Info,
             _ => Severity::Warning,
         }
     }
@@ -497,6 +550,47 @@ mod tests {
         assert_eq!(e("boost_released", 80.0).severity(), Severity::Info);
         assert_eq!(e("write_failed", 0.0).severity(), Severity::Warning);
         assert!(e("weird", 0.0).describe().contains("weird"));
+    }
+
+    #[test]
+    fn profile_actions() {
+        use msi_core::profile::Profile;
+        for p in Profile::ALL {
+            let name = profile_action_name(p);
+            assert_eq!(parse_profile_action(&name, None), Some(p));
+            assert_eq!(parse_profile_action(&format!("app.{name}"), None), Some(p));
+            assert_eq!(parse_profile_action(PROFILE_ACTION, Some(p.as_str())), Some(p));
+            assert_ne!(profile_tagline(p), "");
+            assert!(profile_icon(p).ends_with("-symbolic"));
+        }
+        assert_eq!(
+            parse_profile_action("app.profile", Some(" gaming ")),
+            Some(Profile::Gaming)
+        );
+        for (a, t) in [
+            ("profile", None),
+            ("profile", Some("turbo")),
+            ("profile-eco", Some("eco")),
+            ("profile-", None),
+            ("profileeco", None),
+            ("quit", None),
+            ("page", Some("eco")),
+        ] {
+            assert_eq!(parse_profile_action(a, t), None, "{a} {t:?}");
+        }
+    }
+
+    #[test]
+    fn desktop_file_lists_the_profile_actions() {
+        use msi_core::profile::Profile;
+        let desktop = include_str!("../data/org.blazorde.MsiCenter.desktop");
+        let names: Vec<String> = Profile::ALL.into_iter().map(profile_action_name).collect();
+        assert!(desktop.contains(&format!("\nActions={};\n", names.join(";"))));
+        for (p, n) in Profile::ALL.into_iter().zip(&names) {
+            let section = format!("[Desktop Action {n}]\nName={}\n", profile_label(p.as_str()));
+            assert!(desktop.contains(&section), "{section}");
+            assert!(desktop.contains(&format!("gapplication action org.blazorde.MsiCenter {n}\n")));
+        }
     }
 
     #[test]

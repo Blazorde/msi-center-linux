@@ -8,7 +8,7 @@ use msi_center::errors::Service;
 use msi_center::model::{self, DaemonStatus};
 use msi_core::profile::Profile;
 
-use super::widgets::{Ctx, Gate, page_scroller};
+use super::widgets::{Ctx, Gate, page_header, page_scroller};
 
 /// The page.
 #[derive(Debug)]
@@ -38,10 +38,14 @@ impl Perf {
     /// Builds the page.
     pub fn new(ctx: &Rc<Ctx>) -> Rc<Self> {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        content.append(&page_header(
+            "Performance & GPU",
+            "Profils, carte graphique et contrôleur embarqué",
+        ));
 
         let profiles = adw::PreferencesGroup::builder()
             .title("Profils")
-            .description("Ce que chaque profil applique. Changez de profil depuis l'Accueil ou l'extension.")
+            .description("Ce que chaque profil applique. Changez de profil depuis l'Accueil, la barre de titre, l'extension ou le clic droit sur l'icône de l'app.")
             .build();
         let mut profile_rows = Vec::new();
         for p in Profile::ALL {
@@ -88,7 +92,7 @@ impl Perf {
         let power = adw::PreferencesGroup::builder().title("Alimentation").build();
         let auto = adw::SwitchRow::builder()
             .title("Profil automatique secteur / batterie")
-            .subtitle("Balanced sur secteur, Éco sur batterie")
+            .subtitle("Équilibré sur secteur, Éco sur batterie")
             .build();
         let source = value_row("Source actuelle");
         power.add(&auto);

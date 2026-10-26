@@ -13,6 +13,8 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use msi_center::APP_ID;
 use msi_center::backend::Backend;
+use msi_center::model;
+use msi_core::profile::Profile;
 use ui::app::App;
 
 fn install_actions(app: &Rc<App>) {
@@ -50,6 +52,37 @@ fn install_actions(app: &Rc<App>) {
     });
     gtk_app.add_action(&about);
 
+    // Profiles: `app.profile::eco` (stateful: its state is the shown profile) for menus, shortcuts and the
+    // extension; `app.profile-eco` … without parameter for the desktop-file actions (dock right-click).
+    let profile = gio::SimpleAction::new_stateful(
+        model::PROFILE_ACTION,
+        Some(glib::VariantTy::STRING),
+        &"".to_variant(),
+    );
+    let a = app.clone();
+    profile.connect_activate(move |_, v| {
+        let target = v.and_then(glib::Variant::str);
+        if let Some(p) = model::parse_profile_action(model::PROFILE_ACTION, target) {
+            a.apply_profile(p);
+        } else {
+            tracing::warn!("app.profile: unknown profile {target:?}");
+        }
+    });
+    // Activating with the current state (menus) must not be refused by GAction's state check.
+    profile.connect_change_state(|_, _| {});
+    gtk_app.add_action(&profile);
+    for (i, p) in Profile::ALL.into_iter().enumerate() {
+        let name = model::profile_action_name(p);
+        let action = gio::SimpleAction::new(&name, None);
+        let a = app.clone();
+        action.connect_activate(move |_, _| a.apply_profile(p));
+        gtk_app.add_action(&action);
+        gtk_app.set_accels_for_action(
+            &format!("app.{}::{}", model::PROFILE_ACTION, p.as_str()),
+            &[&format!("<Control>{}", i + 1)],
+        );
+    }
+
     gtk_app.set_accels_for_action("app.quit", &["<Control>q"]);
     gtk_app.set_accels_for_action("window.close", &["<Control>w"]);
     for (i, page) in ["home", "fans", "perf", "battery", "clipboard", "prefs"]
@@ -75,7 +108,12 @@ fn startup(app: &Rc<App>) {
         *app.hold.borrow_mut() = Some(app.gtk.hold());
     }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.backend.start(&tx);
+    if msi_center::demo::enabled() {
+        tracing::info!("demo mode: simulated services, no bus is contacted");
+        app.backend.start_demo(&tx);
+    } else {
+        app.backend.start(&tx);
+    }
     let a = app.clone();
     glib::spawn_future_local(async move {
         while let Some(ev) = rx.recv().await {
@@ -116,7 +154,12 @@ fn main() -> glib::ExitCode {
             return glib::ExitCode::FAILURE;
         }
     };
-    let gtk_app = adw::Application::builder().application_id(APP_ID).build();
+    let mut builder = adw::Application::builder().application_id(APP_ID);
+    if msi_center::demo::enabled() {
+        // Never hand over to (or take over) a real instance of the app.
+        builder = builder.flags(gio::ApplicationFlags::NON_UNIQUE);
+    }
+    let gtk_app = builder.build();
     gtk_app.add_main_option(
         "background",
         glib::Char::from(0),

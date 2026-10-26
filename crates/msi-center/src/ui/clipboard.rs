@@ -10,7 +10,7 @@ use msi_center::errors::Service;
 use msi_center::format;
 use msi_center::model::{ClipEntry, Scope, parse_tag_input};
 
-use super::widgets::{Ctx, Debounce, Gate, hint};
+use super::widgets::{Ctx, Debounce, Gate, hint, page_header};
 
 const PAGE: u32 = 60;
 
@@ -78,12 +78,19 @@ impl Clipboard {
         content.set_margin_start(16);
         content.set_margin_end(16);
         content.set_margin_top(12);
+        content.append(&page_header(
+            "Presse-papiers",
+            "Historique de session, éléments épinglés et tags",
+        ));
 
         let search = gtk::SearchEntry::builder()
             .placeholder_text("Rechercher dans le texte…")
             .hexpand(true)
             .build();
-        let scope = adw::ToggleGroup::builder().homogeneous(true).build();
+        let scope = adw::ToggleGroup::builder()
+            .homogeneous(true)
+            .css_classes(["segmented"])
+            .build();
         for (s, label) in [
             (Scope::All, "Tout"),
             (Scope::Pinned, "Épinglés"),
@@ -170,7 +177,7 @@ impl Clipboard {
 
         let flow = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .homogeneous(true)
+            .homogeneous(false)
             .min_children_per_line(1)
             .max_children_per_line(1)
             .column_spacing(12)
@@ -275,6 +282,8 @@ impl Clipboard {
             let grid = g.active_name().is_some_and(|n| n == "grid");
             p.state.borrow_mut().grid = grid;
             p.flow.set_max_children_per_line(if grid { 4 } else { 1 });
+            // Grid: equal tiles; list: each card as tall as its content.
+            p.flow.set_homogeneous(grid);
             p.render();
         });
         let w = Rc::downgrade(&page);

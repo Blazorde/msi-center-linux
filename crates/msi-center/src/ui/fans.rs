@@ -13,7 +13,7 @@ use msi_center::format::{self, NNBSP};
 use msi_center::model::{self, DaemonStatus, Fan, Telemetry};
 
 use super::fanchart::FanChart;
-use super::widgets::{Ctx, Debounce, Gate, glass, hint, page_scroller, section_title};
+use super::widgets::{Ctx, Debounce, Gate, glass, hint, page_header, page_scroller, section_title};
 
 #[derive(Debug, Default)]
 struct State {
@@ -86,20 +86,20 @@ impl std::fmt::Debug for Fans {
 
 const ROWS: [&str; 5] = ["Palier", "Vitesse", "Monte à ≥", "Redescend <", "Sécurité S2"];
 
-fn legend() -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-    b.add_css_class("caption");
+fn legend() -> adw::WrapBox {
+    let b = adw::WrapBox::builder().child_spacing(6).line_spacing(6).build();
+    b.add_css_class("legend");
     for (sym, text) in [
         ("━", "paliers"),
         ("╍", "descente (hystérésis)"),
-        ("┈", "courbe exponentielle"),
+        ("···", "courbe exponentielle"),
         ("▨", "plancher de sécurité S2"),
         ("▲", "palier relevé"),
         ("●", "température actuelle"),
     ] {
         let l = gtk::Label::builder()
             .label(format!("{sym} {text}"))
-            .css_classes(["dim"])
+            .css_classes(["legend-item"])
             .build();
         b.append(&l);
     }
@@ -111,9 +111,13 @@ impl Fans {
     #[allow(clippy::too_many_lines, reason = "widget tree")]
     pub fn new(ctx: &Rc<Ctx>) -> Rc<Self> {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        content.append(&page_header(
+            "Ventilateurs",
+            "Paliers de l'EC, courbe et planchers de sécurité S2",
+        ));
 
         let fan_switch = adw::ToggleGroup::builder()
-            .css_classes(["profile-switch"])
+            .css_classes(["segmented"])
             .homogeneous(true)
             .halign(gtk::Align::Start)
             .build();
@@ -140,11 +144,7 @@ impl Fans {
         let chart = FanChart::new();
         let chart_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
         chart_box.append(&chart.area);
-        let legend_scroll = gtk::ScrolledWindow::builder()
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .child(&legend())
-            .build();
-        chart_box.append(&legend_scroll);
+        chart_box.append(&legend());
         content.append(&glass(&chart_box));
 
         // Table.

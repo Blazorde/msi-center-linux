@@ -8,6 +8,7 @@ pub mod backend;
 pub mod chart;
 pub mod curve;
 pub mod dbus;
+pub mod demo;
 pub mod errors;
 pub mod format;
 pub mod gpu_env;
