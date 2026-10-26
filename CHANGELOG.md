@@ -94,6 +94,34 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 - `scripts/ext-install.sh` (installation utilisateur, sans sudo), `scripts/ext-check.sh` (vérifications
   hors-ligne de l'extension, appelées par `scripts/ci.sh`), `scripts/ext-smoke.sh` (test de bout en bout dans un
   GNOME Shell headless isolé avec un faux `msi-daemon`).
+
+- Sécurité S9 (ventilo bloqué) : ventilo à 0 % (et 0 tr/min si connu) sur puce ≥ 70 °C (filtrée sur 2 lectures)
+  pendant 30 s → tables d'usine + `auto`, `SafetyEvent("fan_stalled")`, lecture seule jusqu'au redémarrage
+  (`msictl status` : `SAFETY STOP (S9)`).
+- `RestoreFactory()` (D-Bus, polkit `set-fan-curve`) et `msictl factory` : rendre la main à l'EC (tables d'usine
+  puis `auto`) jusqu'au prochain profil. `msi-daemon --restore-factory` (sans D-Bus, idempotent).
+- Paquets Arch (phase 9) : `packaging/arch/PKGBUILD` scindé en `msi-center-linux` (daemon, `msictl`, `clipd`,
+  app, unités, presets systemd, D-Bus, polkit, autostart `/etc/xdg/autostart`, extension GNOME avec schéma
+  compilé) et `msi-ec-blazorde-dkms` (sources DKMS, `/usr/lib/modules-load.d/msi-ec.conf`, en conflit avec les
+  paquets `msi-ec` upstream). `msi-daemon` (démarrage) et `clipd` (chaque session) activés à l'installation par
+  presets ; arrêt du daemon (tables d'usine, `auto`) avant désinstallation. `scripts/package.sh` construit dans
+  `dist/` sans rien installer ; `scripts/release.sh` joint ces paquets à la release et vérifie les versions
+  (`Cargo.toml`, `PKGBUILD`, `metadata.json`). Docs : [installation](docs/user/installation.md) (installation en
+  une fois, migration depuis `dev-install.sh`), [checklist v0.1.0](docs/product/release-checklist.md).
+- `scripts/dev-install.sh --enable` : démarrage automatique (DKMS `msi-ec-blazorde`, `modules-load.d`,
+  `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
+
+### Changed
+- Extension : changement de profil sans commande et nouvelle disposition de la barre. L'indicateur principal
+  est **à gauche** (juste après Activités) et affiche le profil courant (glyphe + nom court, une teinte par
+  profil) avant les métriques ; un clic ouvre le menu dont le premier élément est un sélecteur à trois grandes
+  pastilles « verre » Éco / Équilibré / Gaming (surbrillance immédiate + indicateur d'activité, retour arrière
+  sur erreur, navigation clavier). Option molette sur l'indicateur et raccourci « profil suivant » (OSD GNOME),
+  désactivés par défaut. Le presse-papiers a son **propre bouton à droite** (icône + pastille du nombre de clips
+  de la session, masquable) qui ouvre la popup `Super+V` sous lui ; l'entrée du menu ne revient que si ce bouton
+  est masqué. Zone et position des deux boutons réglables dans les préférences. Style affiné (rayons
+  concentriques, animations ease-out courtes, plus d'animation de taille pour la popup ouverte au clavier,
+  barre de défilement parasite sous les tags supprimée). Docs : [extension](docs/user/extension.md).
 - Arrêt du daemon (signal, sortie, panic, `ExecStopPost`) et replis S7 : les **tables d'usine** sont réécrites
   avant `fan_mode=auto` (l'EC n'a qu'une copie des tables : avant, « auto » gardait nos courbes). Tables d'usine
   du firmware `14K2EMS1.110` dans `msi-core`.

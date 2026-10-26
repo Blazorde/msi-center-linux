@@ -23,8 +23,37 @@ export default class MsiCenterPrefs extends ExtensionPreferences {
     _barPage(settings) {
         const page = new Adw.PreferencesPage({title: 'Barre supérieure', icon_name: 'utilities-system-monitor-symbolic'});
 
+        const profiles = new Adw.PreferencesGroup({
+            title: 'Profils',
+            description: 'Un clic sur l’indicateur ouvre le sélecteur Éco / Équilibré / Gaming.',
+        });
+        profiles.add(this._switchRow(settings, 'scroll-cycles-profile', 'Molette sur l’indicateur',
+            'Vers le haut : plus performant ; vers le bas : plus silencieux'));
+        profiles.add(this._accelRow(settings, 'profile-cycle-shortcut',
+            'Raccourci « profil suivant » (format GTK, ex. <Super>F5 ; vide = aucun)'));
+        page.add(profiles);
+
+        const place = new Adw.PreferencesGroup({
+            title: 'Emplacement',
+            description: 'Zone de la barre et position dans la zone (0 = premier élément).',
+        });
+        place.add(this._boxRow(settings, 'main-indicator-box', 'Indicateur principal'));
+        place.add(this._indexRow(settings, 'main-indicator-index', 'Position de l’indicateur',
+            'À gauche, 1 = juste après Activités'));
+        place.add(this._switchRow(settings, 'show-clipboard-button', 'Bouton presse-papiers',
+            'Raccourci vers l’historique ; masqué, l’entrée revient dans le menu'));
+        const clipBox = this._boxRow(settings, 'clipboard-button-box', 'Zone du bouton presse-papiers');
+        const clipIndex = this._indexRow(settings, 'clipboard-button-index', 'Position du bouton presse-papiers',
+            'À droite, 0 = avant les icônes système');
+        const badge = this._switchRow(settings, 'clipboard-badge', 'Pastille du bouton', 'Nombre de clips de la session');
+        for (const row of [clipBox, clipIndex, badge]) {
+            settings.bind('show-clipboard-button', row, 'sensitive', Gio.SettingsBindFlags.GET);
+            place.add(row);
+        }
+        page.add(place);
+
         const display = new Adw.PreferencesGroup({title: 'Affichage'});
-        display.add(this._switchRow(settings, 'icon-only', 'Icône seule', 'Masque les métriques, garde l’icône'));
+        display.add(this._switchRow(settings, 'icon-only', 'Icône seule', 'Masque le nom du profil et les métriques, garde l’icône'));
         display.add(this._switchRow(settings, 'show-sparkline', 'Mini-graphe dans le menu', 'CPU % et °C sur 60 s'));
         display.add(this._switchRow(settings, 'blur', 'Verre dépoli', 'Flou d’arrière-plan du menu et de la popup'));
         page.add(display);
@@ -91,21 +120,7 @@ export default class MsiCenterPrefs extends ExtensionPreferences {
         page.add(capture);
 
         const shortcut = new Adw.PreferencesGroup({title: 'Raccourci'});
-        const entry = new Adw.EntryRow({
-            title: 'Ouvrir l’historique (format GTK, ex. <Super>v)', use_markup: false, show_apply_button: true,
-        });
-        entry.text = settings.get_strv('clipboard-shortcut')[0] ?? '';
-        entry.connect('apply', () => {
-            const accel = entry.text.trim();
-            const [ok] = Gtk.accelerator_parse(accel);
-            if (accel === '' || ok) {
-                settings.set_strv('clipboard-shortcut', accel === '' ? [] : [accel]);
-                entry.remove_css_class('error');
-            } else {
-                entry.add_css_class('error');
-            }
-        });
-        shortcut.add(entry);
+        shortcut.add(this._accelRow(settings, 'clipboard-shortcut', 'Ouvrir l’historique (format GTK, ex. <Super>v)'));
 
         // GNOME binds <Super>v to the notification list by default; offer (never force) to free it.
         const shell = new Gio.Settings({schema_id: SHELL_KEYBINDINGS});
@@ -127,6 +142,47 @@ export default class MsiCenterPrefs extends ExtensionPreferences {
         shortcut.add(conflict);
         page.add(shortcut);
         return page;
+    }
+
+    /** Entry row editing a single-accelerator `as` key; empty = no shortcut, invalid = red row. */
+    _accelRow(settings, key, title) {
+        const entry = new Adw.EntryRow({title, use_markup: false, show_apply_button: true});
+        entry.text = settings.get_strv(key)[0] ?? '';
+        entry.connect('apply', () => {
+            const accel = entry.text.trim();
+            const [ok] = Gtk.accelerator_parse(accel);
+            if (accel === '' || ok) {
+                settings.set_strv(key, accel === '' ? [] : [accel]);
+                entry.remove_css_class('error');
+            } else {
+                entry.add_css_class('error');
+            }
+        });
+        return entry;
+    }
+
+    _boxRow(settings, key, title) {
+        const ids = ['left', 'center', 'right'];
+        const row = new Adw.ComboRow({title, model: Gtk.StringList.new(['Gauche', 'Centre', 'Droite'])});
+        row.selected = Math.max(0, ids.indexOf(settings.get_string(key)));
+        row.connect('notify::selected', () => {
+            if (ids[row.selected] && ids[row.selected] !== settings.get_string(key))
+                settings.set_string(key, ids[row.selected]);
+        });
+        const id = settings.connect(`changed::${key}`, () => {
+            row.selected = Math.max(0, ids.indexOf(settings.get_string(key)));
+        });
+        row.connect('destroy', () => settings.disconnect(id));
+        return row;
+    }
+
+    _indexRow(settings, key, title, subtitle) {
+        const row = new Adw.SpinRow({
+            title, subtitle,
+            adjustment: new Gtk.Adjustment({lower: 0, upper: 20, step_increment: 1, page_increment: 5}),
+        });
+        settings.bind(key, row, 'value', Gio.SettingsBindFlags.DEFAULT);
+        return row;
     }
 
     _switchRow(settings, key, title, subtitle) {

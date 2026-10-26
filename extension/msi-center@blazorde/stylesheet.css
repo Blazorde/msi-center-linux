@@ -24,17 +24,24 @@
  *     --glass-specular   rgba(255, 255, 255, 0.95)
  *     --glass-fill       rgba(43, 45, 66, 0.06)
  *     --text-muted       rgba(43, 45, 66, 0.60)
- *   Shape
- *     --radius-panel     26px   menu / popup card
+ *   Profiles (one hue per mode, all from the bay at dusk)
+ *     eco       Pacific teal   #3FA796 → #22616E   glyph dark #6FD3C0 · light #23806F
+ *     balanced  sunset         #F28C38 → #C0362C   glyph dark #F7A25A · light #C0562C
+ *     gaming    Intl. Orange   #C0362C → #6E1A2B   glyph dark #FF6A55 · light #B02E25
+ *   Shape (concentric: outer = inner + padding)
+ *     --radius-panel     26px   menu / popup card (8 px padding)
+ *     --radius-pill      18px   profile pills = 26 − 8
  *     --radius-control   14px   segments, rows
  *     --radius-pill      999px  chips, pills
- *   Motion: easing lives in JS (`ease()`, EASE_OUT_QUAD / EASE_OUT_BACK, 120–230 ms);
- *           CSS hovers use `transition-duration: 160ms`.
+ *   Motion: easing lives in JS (`ease()`, ease-out only, never ease-in): press 90 ms → 0.96, release 160 ms,
+ *           popup from the button 180 ms EASE_OUT_QUINT (scales from the button), from the keyboard a 90 ms
+ *           fade only, close 110 ms. CSS state changes use `transition-duration: 160ms` (St cross-fades).
+ *           All of it collapses to 0 when GNOME animations are off (`enable-animations`).
  */
 
 /* ── Top bar ─────────────────────────────────────────────────────────────── */
 
-.msi-panel-box { spacing: 6px; }
+.msi-panel-box { spacing: 8px; }
 .msi-metrics { spacing: 8px; }
 .msi-metric { spacing: 3px; }
 .msi-metric-prefix {
@@ -48,6 +55,47 @@
 }
 .msi-panel-icon { color: #F28C38; transition-duration: 160ms; }
 .msi-panel-icon.msi-muted { color: rgba(255, 255, 255, 0.35); }
+
+/* Profile chip: tinted glass capsule, glyph + short name */
+.msi-chip-panel {
+    spacing: 5px;
+    padding: 2px 10px 2px 7px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    transition-duration: 160ms;
+}
+.msi-chip-panel .msi-panel-icon { icon-size: 16px; }
+.msi-chip-label { font-weight: 700; letter-spacing: 0.2px; }
+.msi-chip-panel.msi-profile-eco {
+    background-color: rgba(63, 167, 150, 0.22);
+    border-color: rgba(111, 211, 192, 0.30);
+}
+.msi-chip-panel.msi-profile-eco .msi-panel-icon { color: #6FD3C0; }
+.msi-chip-panel.msi-profile-balanced {
+    background-color: rgba(242, 140, 56, 0.20);
+    border-color: rgba(247, 162, 90, 0.32);
+}
+.msi-chip-panel.msi-profile-balanced .msi-panel-icon { color: #F7A25A; }
+.msi-chip-panel.msi-profile-gaming {
+    background-color: rgba(192, 54, 44, 0.34);
+    border-color: rgba(255, 106, 85, 0.38);
+}
+.msi-chip-panel.msi-profile-gaming .msi-panel-icon { color: #FF6A55; }
+
+/* Clipboard button: icon + unobtrusive count */
+.msi-clip-button-box { spacing: 4px; }
+.msi-clip-badge {
+    min-width: 8px;
+    padding: 0 5px;
+    border-radius: 999px;
+    font-size: 0.7em;
+    font-weight: 800;
+    font-feature-settings: "tnum";
+    text-align: center;
+    color: rgba(255, 255, 255, 0.92);
+    background-color: rgba(255, 255, 255, 0.14);
+}
+.msi-clip-button:active .msi-clip-badge { background-color: #C0362C; color: #FFFFFF; }
 
 /* ── Glass surfaces (menu box + popup card) ─────────────────────────────── */
 
@@ -74,7 +122,7 @@
 .msi-light.msi-menu .popup-menu-item,
 .msi-light .msi-clip-row, .msi-light .msi-segment, .msi-light .msi-chip, .msi-light .msi-search,
 .msi-light .msi-clip-preview { color: #2B2D42; }
-.msi-header-item .msi-header, .msi-segment:checked, .msi-chip:checked { color: #FFFFFF; }
+.msi-segment:checked, .msi-chip:checked { color: #FFFFFF; }
 
 /* PopupMenu content box: override the theme's opaque background */
 .msi-menu.popup-menu-content {
@@ -93,29 +141,92 @@
 .msi-menu .popup-separator-menu-item-separator { background-color: rgba(255, 255, 255, 0.10); }
 .msi-light.msi-menu .popup-separator-menu-item-separator { background-color: rgba(43, 45, 66, 0.10); }
 
-/* Header: sunset strip  #F28C38 → #C0362C (St gradients are 2-stop; indigo closes in the pill) */
-.msi-header-item, .msi-header-item:hover { padding: 0; background-color: transparent; }
-.msi-header {
-    padding: 14px 16px 12px 16px;
-    border-radius: 20px;
-    background-gradient-direction: horizontal;
+/* Profile switcher: three glass pills, the first and biggest thing in the menu */
+.msi-profiles-item, .msi-profiles-item:hover, .msi-profiles-item:focus {
+    padding: 2px 0 6px 0;
+    background-color: transparent;
+}
+.msi-profiles { spacing: 8px; }
+.msi-pill-row { spacing: 6px; }
+.msi-profile-pill {
+    padding: 12px 6px 11px 6px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-top-color: rgba(255, 255, 255, 0.16);         /* specular top edge */
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #F5F1EE;
+    transition-duration: 160ms;
+}
+.msi-profile-pill:hover { background-color: rgba(255, 255, 255, 0.10); }
+.msi-profile-pill:focus { border-color: rgba(242, 140, 56, 0.95); }
+.msi-profile-pill:insensitive { color: rgba(245, 241, 238, 0.40); }
+.msi-light .msi-profile-pill {
+    border-color: rgba(43, 45, 66, 0.08);
+    border-top-color: rgba(255, 255, 255, 0.95);
+    background-color: rgba(255, 255, 255, 0.45);
+    color: #2B2D42;
+}
+.msi-light .msi-profile-pill:hover { background-color: rgba(255, 255, 255, 0.75); }
+.msi-light .msi-profile-pill:focus { border-color: rgba(192, 54, 44, 0.85); }
+.msi-light .msi-profile-pill:insensitive { color: rgba(43, 45, 66, 0.40); }
+
+.msi-pill-box { spacing: 2px; }
+.msi-pill-bubble {
+    width: 40px;
+    height: 40px;
+    margin-bottom: 6px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.07);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.10);
+}
+.msi-light .msi-pill-bubble { background-color: rgba(43, 45, 66, 0.06); }
+.msi-pill-icon { icon-size: 20px; }
+.msi-pill-label { font-weight: 800; font-size: 1em; }
+.msi-pill-caption { font-size: 0.74em; color: rgba(245, 241, 238, 0.58); }
+.msi-light .msi-pill-caption { color: rgba(43, 45, 66, 0.58); }
+
+/* Per-profile glyph tint (resting) */
+.msi-profile-eco .msi-pill-icon { color: #6FD3C0; }
+.msi-profile-balanced .msi-pill-icon { color: #F7A25A; }
+.msi-profile-gaming .msi-pill-icon { color: #FF6A55; }
+.msi-light .msi-profile-eco .msi-pill-icon { color: #23806F; }
+.msi-light .msi-profile-balanced .msi-pill-icon { color: #C0562C; }
+.msi-light .msi-profile-gaming .msi-pill-icon { color: #B02E25; }
+
+/* Selected: the pill fills with its own dusk gradient and lifts on a tinted shadow */
+.msi-profile-pill:checked,
+.msi-light .msi-profile-pill:checked {
+    color: #FFFFFF;
+    border-color: rgba(255, 255, 255, 0.10);
+    border-top-color: rgba(255, 255, 255, 0.50);
+    background-gradient-direction: vertical;
+}
+.msi-profile-pill:checked .msi-pill-icon { color: #FFFFFF; }
+.msi-profile-pill:checked .msi-pill-caption { color: rgba(255, 255, 255, 0.84); }
+.msi-profile-pill:checked .msi-pill-bubble {
+    background-color: rgba(255, 255, 255, 0.22);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.35);
+}
+.msi-profile-pill.msi-profile-eco:checked {
+    background-gradient-start: #3FA796;
+    background-gradient-end: #22616E;
+    box-shadow: 0 6px 18px 0 rgba(34, 97, 110, 0.45);
+}
+.msi-profile-pill.msi-profile-balanced:checked {
     background-gradient-start: #F28C38;
     background-gradient-end: #C0362C;
-    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.40);
-    color: #FFFFFF;
-    spacing: 2px;
+    box-shadow: 0 6px 18px 0 rgba(192, 54, 44, 0.42);
 }
-.msi-header-row { spacing: 8px; }
-.msi-title { font-size: 1.15em; font-weight: 800; letter-spacing: 0.2px; }
-.msi-subtitle { font-size: 0.85em; color: rgba(255, 255, 255, 0.86); }
-.msi-pill {
-    padding: 3px 10px;
-    border-radius: 999px;
-    background-color: rgba(43, 45, 66, 0.72);          /* indigo dusk */
-    color: #FFFFFF;
-    font-size: 0.85em;
-    font-weight: 700;
+.msi-profile-pill.msi-profile-gaming:checked {
+    background-gradient-start: #C0362C;
+    background-gradient-end: #6E1A2B;
+    box-shadow: 0 6px 18px 0 rgba(110, 26, 43, 0.50);
 }
+.msi-profile-pill:checked:focus { border-color: rgba(255, 255, 255, 0.85); }
+.msi-profile-pill:busy .msi-pill-caption { color: rgba(255, 255, 255, 0.70); }
+
+.msi-status-line { font-size: 0.8em; color: rgba(245, 241, 238, 0.62); }
+.msi-light .msi-status-line { color: rgba(43, 45, 66, 0.62); }
 
 /* Banners */
 .msi-banner { margin: 4px 0; padding: 8px 12px; border-radius: 14px; }
@@ -126,8 +237,7 @@
 .msi-banner-muted { background-color: rgba(127, 127, 140, 0.18); }
 .msi-light .msi-banner-error { background-color: rgba(192, 54, 44, 0.20); color: #7A1F18; }
 
-/* Segmented control (profiles, popup scope) */
-.msi-segment-item, .msi-segment-item:hover { padding: 8px 4px; background-color: transparent; }
+/* Segmented control (popup scope) */
 .msi-segmented {
     padding: 3px;
     border-radius: 16px;
@@ -272,8 +382,10 @@
     width: 112px;
     height: 72px;
     border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.10);         /* neutral outline: edges never melt into glass */
     background-color: rgba(0, 0, 0, 0.18);
 }
+.msi-light .msi-thumb { border-color: rgba(0, 0, 0, 0.10); }
 .msi-check { icon-size: 14px; padding: 3px; border-radius: 999px; color: transparent;
     border: 1px solid rgba(127, 127, 140, 0.8); }
 .msi-clip-row:checked .msi-check { color: #FFFFFF; background-color: #C0362C; border-color: #C0362C; }

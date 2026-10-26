@@ -17,11 +17,14 @@ export const METRIC_LABELS = {
     'fan': 'Ventilateurs',
 };
 
-/** Profile ids exposed by `org.blazorde.MsiCenter1.SetProfile`, with their UI label. */
+/**
+ * Profile ids exposed by `org.blazorde.MsiCenter1.SetProfile`, ordered from quietest to fastest, with their UI
+ * label, a one-line caption and the Adwaita symbolic glyph (the same ones GNOME uses for power profiles).
+ */
 export const PROFILES = [
-    {id: 'eco', label: 'Éco'},
-    {id: 'balanced', label: 'Équilibré'},
-    {id: 'gaming', label: 'Gaming'},
+    {id: 'eco', label: 'Éco', caption: 'Silence · autonomie', icon: 'power-profile-power-saver-symbolic'},
+    {id: 'balanced', label: 'Équilibré', caption: 'Usage courant', icon: 'power-profile-balanced-symbolic'},
+    {id: 'gaming', label: 'Gaming', caption: 'Performances max', icon: 'power-profile-performance-symbolic'},
 ];
 
 /**
@@ -30,6 +33,73 @@ export const PROFILES = [
  */
 export function profileLabel(id) {
     return PROFILES.find(p => p.id === id)?.label ?? (id || '–');
+}
+
+/**
+ * @param {string} id profile id
+ * @returns {{id: string, label: string, caption: string, icon: string}|null}
+ */
+export function profileInfo(id) {
+    return PROFILES.find(p => p.id === id) ?? null;
+}
+
+/**
+ * Next profile in quiet → fast order. Pure UI navigation: the daemon still validates the id.
+ *
+ * @param {string} current current profile id (unknown → starts from `balanced`)
+ * @param {number} delta +1 = faster, -1 = quieter
+ * @param {boolean} wrap true wraps around (shortcut), false clamps at the ends (scroll)
+ * @returns {string} profile id (equal to `current` when clamped)
+ */
+export function cycleProfile(current, delta, wrap = true) {
+    const n = PROFILES.length;
+    let i = PROFILES.findIndex(p => p.id === current);
+    if (i < 0)
+        i = PROFILES.findIndex(p => p.id === 'balanced');
+    const step = Math.sign(delta);
+    const j = wrap ? (((i + step) % n) + n) % n : Math.min(n - 1, Math.max(0, i + step));
+    return PROFILES[j].id;
+}
+
+/** Top bar boxes accepted by `Main.panel.addToStatusArea`. */
+export const PANEL_BOXES = ['left', 'center', 'right'];
+
+/**
+ * Sanitize a top bar placement read from GSettings.
+ *
+ * @param {string} box `left` · `center` · `right`
+ * @param {number} index position inside the box (0 = first)
+ * @param {string} fallback box used when `box` is unknown
+ * @returns {{box: string, index: number}}
+ */
+export function panelPlacement(box, index, fallback = 'right') {
+    const b = PANEL_BOXES.includes(box) ? box : fallback;
+    const i = Number.isInteger(index) && index >= 0 ? index : 0;
+    return {box: b, index: i};
+}
+
+/**
+ * GTK accelerator → short French hint, e.g. `<Super><Shift>v` → `Super+Maj+V`.
+ *
+ * @param {string} accel
+ * @returns {string}
+ */
+export function formatAccel(accel) {
+    return (accel ?? '').replace(/<Super>/gi, 'Super+').replace(/<Control>|<Primary>|<Ctrl>/gi, 'Ctrl+')
+        .replace(/<Shift>/gi, 'Maj+').replace(/<Alt>/gi, 'Alt+')
+        .replace(/(^|\+)([a-z])$/, (_m, sep, c) => `${sep}${c.toUpperCase()}`);
+}
+
+/**
+ * Unobtrusive badge text for a count of clips.
+ *
+ * @param {number} n
+ * @returns {string} '' when nothing to show, `99+` above 99
+ */
+export function badgeText(n) {
+    if (!Number.isFinite(n) || n <= 0)
+        return '';
+    return n > 99 ? '99+' : String(Math.floor(n));
 }
 
 const pct = v => (typeof v === 'number' && Number.isFinite(v) ? `${Math.round(v)}%` : null);

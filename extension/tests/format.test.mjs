@@ -4,8 +4,9 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 
 import {
-    METRICS, daemonErrorText, formatFans, formatMetric, formatRelative, formatSize, normalizeOrder,
-    parseTags, pickCaptureMime, profileLabel, pushSample, safetyEventText,
+    METRICS, PROFILES, badgeText, cycleProfile, daemonErrorText, formatAccel, formatFans, formatMetric,
+    formatRelative, formatSize, normalizeOrder, panelPlacement, parseTags, pickCaptureMime, profileInfo,
+    profileLabel, pushSample, safetyEventText,
 } from '../msi-center@blazorde/lib/format.js';
 
 test('normalizeOrder drops unknown/duplicates and appends missing', () => {
@@ -88,4 +89,42 @@ test('labels and error texts', () => {
     assert.match(safetyEventText('boost_forced', 92.4).text, /92 °C/);
     assert.equal(safetyEventText('write_failed', 0).level, 'error');
     assert.equal(safetyEventText('mystery', 0, 'detail').text, 'detail');
+});
+
+test('profiles: quiet → fast order, glyph and caption for each', () => {
+    assert.deepEqual(PROFILES.map(p => p.id), ['eco', 'balanced', 'gaming']);
+    for (const p of PROFILES)
+        assert.ok(p.icon.endsWith('-symbolic') && p.caption.length > 0, p.id);
+    assert.equal(profileInfo('gaming').label, 'Gaming');
+    assert.equal(profileInfo('turbo'), null);
+});
+
+test('cycleProfile wraps for the shortcut, clamps for scroll', () => {
+    assert.equal(cycleProfile('eco', 1), 'balanced');
+    assert.equal(cycleProfile('gaming', 1), 'eco');
+    assert.equal(cycleProfile('eco', -1), 'gaming');
+    assert.equal(cycleProfile('gaming', 1, false), 'gaming');
+    assert.equal(cycleProfile('eco', -1, false), 'eco');
+    assert.equal(cycleProfile('balanced', -3, false), 'eco');
+    assert.equal(cycleProfile('', 1), 'gaming'); // unknown starts from balanced
+});
+
+test('panelPlacement sanitizes box and index', () => {
+    assert.deepEqual(panelPlacement('left', 1), {box: 'left', index: 1});
+    assert.deepEqual(panelPlacement('top', -2, 'left'), {box: 'left', index: 0});
+    assert.deepEqual(panelPlacement('center', 2.5), {box: 'center', index: 0});
+});
+
+test('formatAccel produces short French hints', () => {
+    assert.equal(formatAccel('<Super>v'), 'Super+V');
+    assert.equal(formatAccel('<Super><Shift>p'), 'Super+Maj+P');
+    assert.equal(formatAccel('<Primary><Alt>F5'), 'Ctrl+Alt+F5');
+    assert.equal(formatAccel(''), '');
+});
+
+test('badgeText hides zero and caps at 99+', () => {
+    assert.equal(badgeText(0), '');
+    assert.equal(badgeText(NaN), '');
+    assert.equal(badgeText(7), '7');
+    assert.equal(badgeText(250), '99+');
 });
