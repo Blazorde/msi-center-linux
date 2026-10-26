@@ -11,16 +11,29 @@
 //! | S7 | [`Controller::apply_profile`] reads back tables, fan mode and shift mode; mismatch → factory + `auto` + event |
 //! | S8 | [`Controller::new`]: unknown firmware or missing curve files → read-only, no EC write at all |
 //! | S9 | [`Controller::tick`] feeds one `StallDetector` per fan (0 % at a filtered ≥ 70 °C for 30 s) → factory + `auto`, read-only until restart |
+//! | ADR-0010 | CPU fan driven live: factory thresholds kept, [`Controller::tick`] writes only `cpu/fan_curve_speeds` (from `msi_core::hybrid`) when the vector changes, read back (S7) |
+//!
+//! # Hybrid CPU control (ADR-0010)
+//!
+//! The EC ignores written CPU thresholds, so when the factory tables of the firmware are known the CPU table
+//! keeps them and only its speeds are ours: [`msi_core::hybrid::hybrid_cpu_table`] of the live target that
+//! [`msi_core::hybrid::CpuFanPilot`] computes from the filtered CPU temperature. Every tick updates the
+//! filter and the target; the speeds are written only while our curve is in force (`applied`: profile
+//! applied and verified, not handed back, not tripped, EC still in `advanced` with the factory thresholds)
+//! and only when the vector changes, then read back (S7: mismatch → factory + `auto` + event). The drift
+//! check compares the EC with the last vector written. Firmware without known factory tables: the CPU table
+//! is generated like the GPU one (previous behaviour).
 
 use std::fmt;
 
 use msi_core::battery::ChargeLimit;
 use msi_core::curve::FanCurveSpec;
 use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
+use msi_core::hybrid::{CpuFanPilot, TempFilter, hybrid_cpu_table};
 use msi_core::profile::{GpuMode, Profile};
 use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
 use msi_core::supervisor::{BoostDecision, SensorReading, ThermalSupervisor};
-use msi_core::table::{GeneratedCurve, StepCurve, generate, write_plan};
+use msi_core::table::{GeneratedCurve, RawTables, StepCurve, TableWrite, generate, write_plan};
 
 use crate::ec::{EcBackend, Fan, restore_factory};
 use crate::gpu::{GpuError, GpuManager, GpuState, Holder, PowerControl};
@@ -162,6 +175,9 @@ pub struct Readings {
     pub fan_rpm: [Option<u32>; 2],
     /// Cooler Boost as read.
     pub cooler_boost: Option<bool>,
+    /// Live CPU fan target (%) in force in the EC (speed of CPU steps 0–3, ADR-0010); `None` when the CPU is
+    /// not driven live (curve not applied, handed back, legacy firmware).
+    pub cpu_fan_target: Option<u8>,
 }
 
 /// The daemon state. See the module documentation.
@@ -184,6 +200,9 @@ pub struct Controller {
     fw_version: String,
     applied: bool,
     stall: [StallDetector; 2],
+    cpu_filter: TempFilter,
+    cpu_pilot: CpuFanPilot,
+    cpu_live: Option<GeneratedCurve>,
     supervisor: ThermalSupervisor,
     boost_forced: bool,
     user_boost: bool,
@@ -240,6 +259,9 @@ impl Controller {
                 fw_version,
                 applied: false,
                 stall: [StallDetector::new(); 2],
+                cpu_filter: TempFilter::new(),
+                cpu_pilot: CpuFanPilot::new(),
+                cpu_live: None,
                 supervisor: ThermalSupervisor::new(),
                 boost_forced: false,
                 user_boost,
@@ -286,6 +308,7 @@ impl Controller {
     /// logged and returned.
     fn hand_back(&mut self) -> Result<(), String> {
         self.applied = false;
+        self.cpu_live = None;
         for d in &mut self.stall {
             d.reset();
         }
@@ -387,9 +410,14 @@ impl Controller {
         self.writable()?;
         let target = profile.target();
         let mut curves = Vec::with_capacity(Fan::ALL.len());
+        let mut cpu_live = None;
         for fan in Fan::ALL {
-            let generated = generate(&self.settings.curve(profile, fan))
+            let generated = self
+                .curve_for(profile, fan)
                 .map_err(|e| ControlError::InvalidArgument(format!("{fan} curve: {e}")))?;
+            if fan == Fan::Cpu && self.hybrid_base().is_some() {
+                cpu_live = Some(generated.clone());
+            }
             curves.push((fan, generated.curve));
         }
         for (fan, curve) in &curves {
@@ -403,6 +431,7 @@ impl Controller {
         }
         self.verify(&curves, target.shift_mode)?;
         self.applied = true;
+        self.cpu_live = cpu_live;
         for d in &mut self.stall {
             d.reset();
         }
@@ -471,15 +500,43 @@ impl Controller {
         None
     }
 
+    /// What the EC must hold now: the generated GPU table, and for the CPU the last live vector written
+    /// (hybrid) or the generated table (legacy firmware).
     fn expected_curves(&self) -> Option<Vec<(Fan, StepCurve)>> {
         Fan::ALL
             .iter()
-            .map(|&fan| {
-                generate(&self.settings.curve(self.settings.profile, fan))
+            .map(|&fan| match (&self.cpu_live, fan) {
+                (Some(live), Fan::Cpu) => Some((fan, live.curve)),
+                (None, Fan::Cpu) if self.hybrid_base().is_some() => None,
+                _ => generate(&self.settings.curve(self.settings.profile, fan))
                     .ok()
-                    .map(|g| (fan, g.curve))
+                    .map(|g| (fan, g.curve)),
             })
             .collect()
+    }
+
+    /// Factory CPU tables whose thresholds the hybrid CPU control keeps (ADR-0010); `None` when unknown for
+    /// this firmware (the CPU table is then generated like the GPU one).
+    fn hybrid_base(&self) -> Option<RawTables> {
+        self.factory.map(|f| f.cpu)
+    }
+
+    /// Live CPU target for `spec`: the pilot's last output kept within the curve's range (the profile may
+    /// have changed since), or the curve's start speed before any output.
+    fn cpu_target(&self, spec: &FanCurveSpec) -> u8 {
+        self.cpu_pilot.output().map_or_else(
+            || CpuFanPilot::initial(spec),
+            |o| o.clamp(spec.idle(), spec.params().max()),
+        )
+    }
+
+    /// Table of `fan` in `profile`: hybrid live vector for the CPU (ADR-0010), generated table otherwise.
+    fn curve_for(&self, profile: Profile, fan: Fan) -> Result<GeneratedCurve, msi_core::table::TableError> {
+        let spec = self.settings.curve(profile, fan);
+        match (fan, self.hybrid_base()) {
+            (Fan::Cpu, Some(base)) => hybrid_cpu_table(&spec, &base, self.cpu_target(&spec)),
+            _ => generate(&spec),
+        }
     }
 
     /// dGPU step. Never kills anything: removal is refused while the dGPU is held (ADR-0008).
@@ -539,18 +596,26 @@ impl Controller {
         }
     }
 
-    /// Curve spec, generated table and report of `fan` in the selected profile, and whether it is custom.
+    /// Curve spec, table and report of `fan` in the selected profile, and whether it is custom. For the CPU
+    /// under hybrid control (ADR-0010) the table is the **live vector**: factory thresholds, steps 0–3 at the
+    /// current target, hot steps floored; the report lists the steps raised by the hot floors and S2.
     ///
     /// # Errors
     /// [`ControlError::InvalidArgument`] if the stored spec does not generate (cannot happen: validated on load).
     pub fn fan_curve(&self, fan: Fan) -> Result<(FanCurveSpec, GeneratedCurve, bool), ControlError> {
         let profile = self.settings.profile;
         let spec = self.settings.curve(profile, fan);
-        let generated = generate(&spec).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        let generated = match (&self.cpu_live, fan) {
+            (Some(live), Fan::Cpu) => live.clone(),
+            _ => self
+                .curve_for(profile, fan)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?,
+        };
         Ok((spec, generated, self.settings.is_custom(profile, fan)))
     }
 
-    /// Sets a custom curve for `fan` in the selected profile, saves it and applies the profile.
+    /// Sets a custom curve for `fan` in the selected profile, saves it and applies the profile. Returns the
+    /// table now in force (for the CPU under hybrid control: the live vector, as [`Self::fan_curve`]).
     ///
     /// # Errors
     /// [`ControlError::ReadOnly`], or as [`Self::apply_profile`].
@@ -560,6 +625,9 @@ impl Controller {
         self.settings.curves.insert((self.settings.profile, fan), spec);
         self.save();
         self.apply_profile(self.settings.profile)?;
+        if fan == Fan::Cpu && self.hybrid_base().is_some() {
+            return self.fan_curve(fan).map(|(_, g, _)| g);
+        }
         Ok(generated)
     }
 
@@ -645,7 +713,13 @@ impl Controller {
         let sample = self.telemetry.as_mut().map(|t| t.sample(now));
         let cpu_temp = self.ec.temperature(Fan::Cpu);
         let gpu_temp = self.ec.temperature(Fan::Gpu);
-        let readings = Readings {
+        let now_ms = now.0 / 1_000_000;
+        let filtered = self
+            .cpu_filter
+            .update(cpu_temp.as_ref().ok().copied().filter(|&t| t > 0));
+        let spec = self.settings.curve(self.settings.profile, Fan::Cpu);
+        let target = self.cpu_pilot.update(&spec, filtered, now_ms);
+        let mut readings = Readings {
             fan_rpm: sample
                 .as_ref()
                 .map_or([None; 2], |s| [s.thermals.fan1_rpm, s.thermals.fan2_rpm]),
@@ -654,6 +728,7 @@ impl Controller {
             gpu_temp: gpu_temp.as_ref().ok().copied().filter(|&t| t > 0),
             fan_pct: [self.ec.fan_speed(Fan::Cpu).ok(), self.ec.fan_speed(Fan::Gpu).ok()],
             cooler_boost: self.ec.cooler_boost().ok(),
+            cpu_fan_target: None,
         };
         if self.read_only.is_none() {
             // The EC reports 0 °C for the GPU when the dGPU is off: absent, not failed.
@@ -664,12 +739,76 @@ impl Controller {
             if self.applied {
                 self.check_stall(now, &readings);
             }
+            self.drive_cpu(&spec, target);
             self.auto_switch();
             if self.applied && self.ticks % DRIFT_CHECK_EVERY == 0 {
                 self.check_drift();
             }
         }
+        readings.cpu_fan_target = self
+            .cpu_live
+            .as_ref()
+            .filter(|_| self.applied)
+            .map(|g| g.curve.speeds()[0]);
         readings
+    }
+
+    /// ADR-0010: writes the CPU speed vector for `target` when it differs from the one in force. Only while our
+    /// curve is applied and the EC is still in `advanced` with the factory thresholds (otherwise the drift
+    /// check re-applies); only `cpu/fan_curve_speeds` is written, then read back (S7).
+    fn drive_cpu(&mut self, spec: &FanCurveSpec, target: u8) {
+        let (Some(base), Some(live)) = (self.hybrid_base(), self.cpu_live.as_ref()) else {
+            return;
+        };
+        if !self.applied || self.handed_back || self.tripped.is_some() {
+            return;
+        }
+        let next = match hybrid_cpu_table(spec, &base, target) {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!(error = %e, target, "hybrid CPU table rejected: not written");
+                return;
+            }
+        };
+        if next.curve == live.curve {
+            return;
+        }
+        if !matches!(self.ec.fan_mode(), Ok(FanMode::Advanced)) {
+            return;
+        }
+        let current = match self.ec.read_tables(Fan::Cpu) {
+            Ok(t) => t,
+            Err(e) => {
+                let _ = self.fallback(EventKind::ReadbackMismatch, format!("cpu tables: {e}"));
+                return;
+            }
+        };
+        if current.up != base.up || current.down != base.down {
+            return;
+        }
+        let plan = write_plan(&current, &next.curve);
+        if plan.iter().any(|w| !matches!(w, TableWrite::Speeds(_))) {
+            return;
+        }
+        for write in &plan {
+            if let Err(e) = self.ec.write_table(Fan::Cpu, write) {
+                let _ = self.fallback(EventKind::WriteFailed, format!("cpu speeds write: {e}"));
+                return;
+            }
+        }
+        match self.ec.read_tables(Fan::Cpu) {
+            Ok(t) if t == next.curve.tables() => {
+                tracing::debug!(target, speeds = ?t.speeds, "CPU fan speeds updated");
+                self.cpu_live = Some(next);
+            }
+            Ok(t) => {
+                let detail = format!("cpu tables read back {t:?}, expected {:?}", next.curve.tables());
+                let _ = self.fallback(EventKind::ReadbackMismatch, detail);
+            }
+            Err(e) => {
+                let _ = self.fallback(EventKind::ReadbackMismatch, format!("cpu readback: {e}"));
+            }
+        }
     }
 
     /// S9: a fan stopped at a filtered ≥ 70 °C for 30 s → factory tables + `auto`, read-only until restart.

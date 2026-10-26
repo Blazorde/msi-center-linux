@@ -82,7 +82,67 @@ Justification :
 - **Progressif** : démarre dès 42 °C, montée exponentielle régulière, 100 % à 79 °C.
 - **Agressif** : jamais arrêté (30 %), réagit tôt, 100 % dès 74 °C ; hystérésis 3 °C pour redescendre vite.
 - Tous atteignent **100 % avant 85 °C** (S2), alors que la table d'usine plafonne à 96 % à 90 °C.
-- Les mêmes presets s'appliquent aux deux ventilos (CPU et GPU).
+- Les mêmes presets s'appliquent aux deux ventilos (CPU et GPU). Le **GPU** reçoit la table ci-dessus telle
+  quelle. Le **CPU** est piloté en hybride (section suivante) : l'EC ignore les seuils CPU écrits.
+
+### Pilotage hybride du ventilo CPU (ADR-0010)
+
+Mesures ([carte EC](ec-map.md#seuils-cpu-ignorés-par-lec-2026-10-25-premier-essai-du-daemon--2-spikes)) :
+l'EC **ignore les seuils CPU écrits** et choisit son palier CPU sur une température **lissée**, nettement sous
+`cpu/realtime_temperature` ; il applique en revanche les **vitesses** CPU écrites en direct (< 2 s). On garde
+donc les seuils d'usine (montée 57 62 70 77 83 90, descente 53 57 65 73 80 87, jamais réécrits) et le daemon
+module **en direct** les vitesses (`msi_core::hybrid`, boucle de 1 s de `msi-daemon`) :
+
+1. **Filtre** (`TempFilter`) : médiane des 5 dernières lectures de `cpu/realtime_temperature` (un pic isolé,
+   ou deux d'affilée, ne passe jamais), puis moyenne glissante exponentielle (α = 0,3, ≈ 3 s). Rien avant
+   3 lectures ; une lecture illisible est ignorée (S4 s'en charge).
+2. **Consigne** (`CpuFanPilot`) : `f(T_filtrée)` de la courbe exponentielle du profil (paramètres `T0, T1,
+   min, max, k` ci-dessus ; les seuils `up` de la courbe ne servent plus qu'au GPU).
+   - **Repos** : sous `T0 − hystérésis` la consigne est `idle` (0 % permis) ; le ventilo ne redémarre qu'à
+     `T0`. Au redémarrage, il part de la vitesse de départ `min` (≥ 30 % pour les presets : plus basse vitesse
+     vérifiée qui tourne, ≈ 2070 tr/min).
+   - **Bande morte** : un écart < 3 % n'est appliqué qu'après 20 s (une montée à `max` n'attend jamais) : pas
+     de « pompage » sur une température qui oscille.
+   - **Pente** : au plus **+5 %/s** en montée (30 → 100 % en 14 s), **−1 %/s** en descente (redescente lente et
+     silencieuse). Seuls sauts : l'arrêt (vers `idle`) et le démarrage (vers `min`).
+   - Avant la première lecture filtrée : `min` (le ventilo tourne doucement 3 s au démarrage du daemon).
+3. **Vecteur écrit** (`hybrid_cpu_table`) : paliers **0–3 = consigne** (quel que soit le palier 0–3 où l'EC se
+   trouve, le ventilo suit notre courbe), paliers **4–6 ≥ max(consigne, f(seuil d'entrée), 60 / 80 / 100 %)**,
+   puis les planchers **S2** sur le palier montant des seuils d'usine : ≥ 30 % aux paliers 1–2 (60 °C),
+   ≥ 50 % au palier 3 (75 °C), **100 % au palier 5** (85 °C tombe entre 83 et 90 °C) et au palier 6. Chaque
+   relèvement est signalé (`raised`). Le vecteur passe `StepCurve::new` (S1–S3, S2, règles noyau) avant toute
+   écriture ; sinon rien n'est écrit.
+4. **Écriture** : seulement `cpu/fan_curve_speeds`, seulement quand le vecteur change, seulement si la courbe
+   est appliquée et vérifiée, l'EC en `advanced` et les seuils CPU toujours ceux d'usine (sinon le contrôle de
+   dérive de 10 s ré-applique). Relecture (S7) : divergence ou échec → tables d'usine + `auto` + `SafetyEvent`.
+   Jamais après `RestoreFactory`, un repli S7 ou S9, ni en lecture seule (S8).
+
+Comportement obtenu (consigne des paliers 0–3 selon la température CPU **filtrée**, régime établi) :
+
+| °C filtrés | 40 | 45 | 50 | 55 | 60 | 65 | 70 | 75 | 80 | ≥ T1 | Paliers 4 / 5 / 6 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Silencieux** (T0 50, arrêt < 46, T1 82) | 0 | 0 | 30 | 32 | 37 | 45 | 57 | 73 | 92 | 100 | 80 / 100 / 100 |
+| **Progressif** (T0 42, arrêt < 38, T1 79) | 0* | 31 | 34 | 41 | 49 | 60 | 72 | 87 | 100 | 100 | 93 / 100 / 100 |
+| **Agressif** (T0 40, repos 30 %, T1 74) | 40 | 44 | 51 | 59 | 69 | 79 | 90 | 100 | 100 | 100 | 100 / 100 / 100 |
+| *Usine (rappel, température lissée de l'EC)* | *0* | *0* | *0* | *0* | *36* | *40* | *50* | *50* | *62* | | *62 / 80 / 96* |
+
+\* 30 % si le ventilo tournait déjà (hystérésis : arrêt sous 38 °C). Les paliers 1–3 sont en plus relevés à
+30 / 30 / 50 % au minimum (S2) : l'EC n'y entre que vers 57 / 62 / 70 °C lissés, où la consigne est déjà
+au-dessus. Silencieux reste **arrêté sous 46–50 °C**, démarre **doucement à 30 % dès 50 °C** (au lieu de 0 %
+jusqu'à ~57 °C lissés puis des sauts), monte de façon exponentielle et lente, et atteint 100 % à 82 °C.
+
+Argument de sécurité :
+
+- Les paliers chauds 4–6 sont **toujours** sûrs dans l'EC, même si le daemon se fige : ≥ 60 % dès 77 °C
+  lissés, 100 % dès 83 °C ; et le vecteur respecte S2 **statiquement** sur les seuils d'usine. Seul le palier
+  0 (EC lissé < 57 °C) peut être à `idle`.
+- Daemon figé : watchdog (S6) → tué, `ExecStopPost` restaure les tables d'usine (S5). Daemon tué : hook de
+  panic / `ExecStopPost` (S5). S4 (Cooler Boost à 95 °C) et S9 (ventilo arrêté à 70 °C) inchangés.
+- La consigne dépend de la vraie température (filtrée, pas lissée par l'EC) : elle monte **avant** que l'EC
+  change de palier.
+- Quelques écritures EC par minute au plus en régime établi (une par seconde pendant une rampe).
+- Firmware sans tables d'usine connues (`.104`–`.109`) : pas de pilotage hybride, la table CPU générée est
+  écrite comme pour le GPU (comportement précédent).
 
 ## Invariants (non négociables)
 
@@ -94,7 +154,7 @@ Justification :
 | S4 | CPU ou GPU ≥ **95 °C** sur **2 lectures consécutives** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics). Capteur illisible → forcé immédiatement | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
 | S5 | Arrêt du daemon (normal, signal, panic) → **tables d'usine réécrites** puis EC remis en fan mode `auto` (voir [Restitution à l'EC](#restitution-à-lec-tables-dusine)) | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost=msi-daemon --restore-factory` |
 | S6 | Watchdog systemd (`WatchdogSec=15`) : `WATCHDOG=1` après chaque tick de 1 s réussi ; daemon figé → tué, redémarré, et S5 s'applique (`ExecStopPost`) | systemd + `msi-daemon` (`notify`) |
-| S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → tables d'usine + `auto` + `SafetyEvent` | `msi-daemon` |
+| S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → tables d'usine + `auto` + `SafetyEvent`. Vaut aussi pour chaque écriture en direct des vitesses CPU (ADR-0010) | `msi-daemon` |
 | S8 | Firmware EC non reconnu, ou attributs de courbe absents (module amont, `firmware=` forcé) → aucune écriture, mode lecture seule | `msi-ec` fork + daemon (liste dans `msi-core`) |
 | S9 | Nos tables en vigueur (`advanced`) et un ventilo à **0 %** (et 0 tr/min si connu) alors que la température **filtrée** (minimum des 2 dernières lectures) de son capteur est **≥ 70 °C** pendant **≥ 30 s** → tables d'usine + `auto`, `SafetyEvent("fan_stalled")`, **lecture seule jusqu'au redémarrage** du daemon (`ReadOnly`, `ReadOnlyReason` commençant par `S9`) | `msi-core` (`stall::StallDetector`) + `msi-daemon` (tick 1 Hz) |
 

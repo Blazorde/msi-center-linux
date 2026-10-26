@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use msi_center::chart;
-use msi_center::curve::{CurveSpec, Generated, Param};
+use msi_center::curve::{CurveSpec, Generated, Param, live_cpu_note};
 use msi_center::dbus::FanCurveState;
 use msi_center::errors::Service;
 use msi_center::format::{self, NNBSP};
@@ -611,16 +611,35 @@ impl Fans {
         }
     }
 
-    /// New telemetry: moves the live marker.
-    pub fn set_telemetry(&self, t: &Telemetry) {
-        let fan = {
+    /// New telemetry: moves the live marker. When the CPU fan is driven live (ADR-0010) and its target moved,
+    /// reloads the curve so the chart and table show the vector in force.
+    pub fn set_telemetry(self: &Rc<Self>, t: &Telemetry) {
+        let (fan, stale) = {
             let mut s = self.state.borrow_mut();
+            let previous = s.temps.cpu_fan_target;
             s.temps = t.clone();
-            s.fan()
+            let live = s
+                .loaded
+                .as_ref()
+                .filter(|l| l.generated.table.is_live_cpu())
+                .map(|l| l.generated.table.speeds[0]);
+            let stale = s.fan() == Fan::Cpu
+                && !s.dirty()
+                && t.cpu_fan_target.is_some_and(|target| live != Some(target))
+                && t.cpu_fan_target != previous;
+            (s.fan(), stale)
         };
+        if stale {
+            self.load();
+            return;
+        }
         let temp = t.temp_of(fan);
         self.chart.update(|d| d.temp = temp);
-        self.refresh_table();
+        if fan == Fan::Cpu {
+            self.refresh();
+        } else {
+            self.refresh_table();
+        }
     }
 
     fn refresh(&self) {
@@ -642,8 +661,14 @@ impl Fans {
         } else {
             ""
         };
+        let live = fan == Fan::Cpu && s.loaded.as_ref().is_some_and(|l| l.generated.table.is_live_cpu());
+        let live_note = if live {
+            format!(" {}", live_cpu_note(s.temps.cpu_fan_target))
+        } else {
+            String::new()
+        };
         self.origin
-            .set_label(&format!("{} — {origin}{extra}", fan.label()));
+            .set_label(&format!("{} — {origin}{extra}{live_note}", fan.label()));
 
         // Sliders.
         if let Some(e) = &s.edit {

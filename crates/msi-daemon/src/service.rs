@@ -184,6 +184,10 @@ pub fn telemetry_map(r: &Readings) -> HashMap<String, OwnedVariant> {
     if let Some(b) = r.cooler_boost {
         put("cooler_boost", b.into());
     }
+    // ADR-0010: live CPU fan target in force (speed of CPU steps 0–3), only while the CPU is driven live.
+    if let Some(p) = r.cpu_fan_target {
+        put("cpu_fan_target_pct", p.into());
+    }
     m
 }
 
@@ -372,7 +376,9 @@ impl MsiCenter {
     }
 
     /// Curve of `fan` (`cpu`, `gpu`) in the selected profile: spec, resulting EC table, steps raised by the
-    /// safety floors, and whether it is a custom curve (vs the profile preset).
+    /// safety floors, and whether it is a custom curve (vs the profile preset). For the CPU under hybrid
+    /// control (ADR-0010) the table is the live vector in force: factory thresholds, steps 0–3 at the current
+    /// target, hot steps floored.
     #[zbus(out_args("spec", "table", "raised", "custom"))]
     async fn fan_curve(&self, fan: String) -> Result<(SpecWire, TableWire, Vec<RaisedWire>, bool), MsiError> {
         let fan = parse_fan(&fan)?;
@@ -609,6 +615,7 @@ mod tests {
             fan_pct: [Some(33), None],
             fan_rpm: [Some(2200), None],
             cooler_boost: Some(false),
+            cpu_fan_target: Some(37),
         };
         let m = telemetry_map(&r);
         let mut keys: Vec<&str> = m.keys().map(String::as_str).collect();
@@ -617,6 +624,7 @@ mod tests {
             keys,
             [
                 "cooler_boost",
+                "cpu_fan_target_pct",
                 "cpu_pct",
                 "cpu_temp",
                 "dgpu_state",
@@ -629,5 +637,6 @@ mod tests {
         assert_eq!(f64::try_from(&*m["cpu_temp"]).unwrap(), 55.0);
         assert_eq!(f64::try_from(&*m["gpu_temp"]).unwrap(), 41.0);
         assert_eq!(u32::try_from(&*m["fan1_rpm"]).unwrap(), 2200);
+        assert_eq!(u8::try_from(&*m["cpu_fan_target_pct"]).unwrap(), 37);
     }
 }
