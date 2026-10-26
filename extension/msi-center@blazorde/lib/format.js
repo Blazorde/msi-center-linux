@@ -44,6 +44,42 @@ export function profileInfo(id) {
 }
 
 /**
+ * Fan profiles (docs/hardware/fan-safety.md, « Profils de ventilation »). `short` fits a compact menu chip;
+ * `label` is the full French name (accessibility, status line).
+ */
+export const FAN_PROFILES = [
+    {id: 'silent', label: 'Silencieux', short: 'Silence', icon: 'weather-clear-night-symbolic'},
+    {id: 'auto', label: 'Auto', short: 'Auto', icon: 'emblem-system-symbolic'},
+    {id: 'balanced', label: 'Équilibré', short: 'Équilibré', icon: 'weather-windy-symbolic'},
+    {id: 'turbo', label: 'Turbo', short: 'Turbo', icon: 'weather-tornado-symbolic'},
+    {id: 'custom', label: 'Personnalisé', short: 'Perso', icon: 'document-edit-symbolic'},
+];
+
+/**
+ * @param {string} id fan profile id
+ * @returns {{id: string, label: string, short: string, icon: string}|null}
+ */
+export function fanProfileInfo(id) {
+    return FAN_PROFILES.find(p => p.id === id) ?? null;
+}
+
+/**
+ * Status line fragment for the fans: the fan profile when the daemon reports it, else the raw fan mode.
+ *
+ * @param {string|undefined} fanProfile `FanProfile` property (absent with an older daemon)
+ * @param {string|undefined} fanMode `FanMode` property
+ * @returns {string} French fragment, empty when nothing is known
+ */
+export function fanStatusText(fanProfile, fanMode) {
+    const info = fanProfileInfo(fanProfile ?? '');
+    if (info)
+        return info.id === 'auto' ? 'ventilation Auto (courbe d’usine)' : `ventilation ${info.label}`;
+    if (!fanMode)
+        return '';
+    return fanMode === 'advanced' ? 'courbes actives' : `ventilos : ${fanMode}`;
+}
+
+/**
  * Next profile in quiet → fast order. Pure UI navigation: the daemon still validates the id.
  *
  * @param {string} current current profile id (unknown → starts from `balanced`)

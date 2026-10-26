@@ -15,6 +15,7 @@ if (!dir || !addr.includes(dir)) {
 
 const XML = `<node><interface name="org.blazorde.MsiCenter1">
   <method name="SetProfile"><arg type="s" direction="in"/></method>
+  <method name="SetFanProfile"><arg type="s" direction="in"/></method>
   <method name="SetAutoProfileOnPower"><arg type="b" direction="in"/></method>
   <method name="SetCoolerBoost"><arg type="b" direction="in"/></method>
   <method name="SetChargeLimit"><arg type="y" direction="in"/></method>
@@ -22,6 +23,8 @@ const XML = `<node><interface name="org.blazorde.MsiCenter1">
   <signal name="Telemetry"><arg type="a{sv}"/></signal>
   <signal name="SafetyEvent"><arg type="s"/><arg type="d"/><arg type="s"/></signal>
   <property name="Profile" type="s" access="read"/>
+  <property name="FanProfile" type="s" access="read"/>
+  <property name="DefaultFanProfile" type="s" access="read"/>
   <property name="AutoProfileOnPower" type="b" access="read"/>
   <property name="OnAcPower" type="b" access="read"/>
   <property name="FanMode" type="s" access="read"/>
@@ -36,17 +39,18 @@ const XML = `<node><interface name="org.blazorde.MsiCenter1">
 
 const readOnly = GLib.getenv('MOCK_READONLY') === '1';
 const state = {
-    Profile: 'balanced', AutoProfileOnPower: true, OnAcPower: true, FanMode: readOnly ? 'auto' : 'advanced',
+    Profile: 'balanced', FanProfile: 'balanced', DefaultFanProfile: 'balanced', AutoProfileOnPower: true, OnAcPower: true, FanMode: readOnly ? 'auto' : 'advanced',
     CoolerBoost: false, BoostForced: false, ChargeLimit: 80, GpuState: 'suspended',
     ReadOnly: readOnly, ReadOnlyReason: readOnly ? 'firmware 14K2EMS1.999 not supported (mock)' : '',
     FirmwareVersion: '14K2EMS1.110',
 };
 const TYPES = {
-    Profile: 's', AutoProfileOnPower: 'b', OnAcPower: 'b', FanMode: 's', CoolerBoost: 'b', BoostForced: 'b',
+    Profile: 's', FanProfile: 's', DefaultFanProfile: 's', AutoProfileOnPower: 'b', OnAcPower: 'b', FanMode: 's', CoolerBoost: 'b', BoostForced: 'b',
     ChargeLimit: 'y', GpuState: 's', ReadOnly: 'b', ReadOnlyReason: 's', FirmwareVersion: 's',
 };
 
 let exported = null;
+const fanChoice = {}; // remembered fan profile per profile, like the daemon
 const set = (k, v) => {
     state[k] = v;
     exported.emit_property_changed(k, new GLib.Variant(TYPES[k], v));
@@ -62,6 +66,8 @@ const guard = inv => {
 
 const impl = {
     get Profile() { return state.Profile; },
+    get FanProfile() { return state.FanProfile; },
+    get DefaultFanProfile() { return state.DefaultFanProfile; },
     get AutoProfileOnPower() { return state.AutoProfileOnPower; },
     get OnAcPower() { return state.OnAcPower; },
     get FanMode() { return state.FanMode; },
@@ -80,11 +86,27 @@ const impl = {
             return;
         }
         set('Profile', p);
+        const def = {eco: 'silent', balanced: 'balanced', gaming: 'turbo'}[p];
+        set('DefaultFanProfile', def);
+        set('FanProfile', fanChoice[p] ?? def);
+        set('FanMode', state.FanProfile === 'auto' ? 'auto' : 'advanced');
         set('GpuState', p === 'gaming' ? 'active' : 'suspended');
         if (p === 'eco' && GLib.getenv('MOCK_GPU_BUSY') === '1') {
             fail(inv, 'GpuBusy', 'dGPU held by processes');
             return;
         }
+        inv.return_value(null);
+    },
+    SetFanProfileAsync([fp], inv) {
+        if (!guard(inv))
+            return;
+        if (!['silent', 'auto', 'balanced', 'turbo', 'custom'].includes(fp)) {
+            fail(inv, 'InvalidArgument', `unknown fan profile ${fp}`);
+            return;
+        }
+        fanChoice[state.Profile] = fp;
+        set('FanProfile', fp);
+        set('FanMode', fp === 'auto' ? 'auto' : 'advanced');
         inv.return_value(null);
     },
     SetAutoProfileOnPowerAsync([on], inv) {
