@@ -10,8 +10,8 @@ Source de vérité détaillée : le [PRD](../../.claude/PRPs/prds/msi-center-lin
 | 4 | msi-core + msi-daemon | Courbe exponentielle, garde-fous, profils, limite de charge, D-Bus, CLI `msictl` — **MVP** | 3 | 🟡 msi-core fait |
 | 5 | Gestion GPU | RTD3, détection des process qui tiennent la 4070, retrait/remise PCI à chaud | 1 | 🟡 code fait, test réel à faire |
 | 6 | clip-core + clipd | Stockage, tags, recherche, purge au logout | 1 | ✅ backend |
-| 7 | Extension GNOME | Top bar configurable, menu profils, `Super+V` | 4, 5, 6 | ⚪ |
-| 8 | App msi-center | Onglets Ventilos · Performance/GPU · Batterie · Presse-papiers · Réglages | 4, 5, 6 | ⚪ |
+| 7 | Extension GNOME | Top bar configurable, menu profils, `Super+V` | 4, 5, 6 | 🟡 code fait (smoke test headless), test réel à faire |
+| 8 | App msi-center | Onglets Ventilos · Performance/GPU · Batterie · Presse-papiers · Réglages | 4, 5, 6 | 🟡 app faite, test propriétaire à faire |
 | 9 | Packaging | PKGBUILD, systemd, polkit, release `v0.1.0` | 7, 8 | ⚪ |
 
 Les phases 2, 5 et 6 peuvent avancer en parallèle ; 7 et 8 aussi.

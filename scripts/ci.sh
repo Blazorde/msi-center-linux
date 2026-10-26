@@ -16,6 +16,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 step "test"
 cargo test --workspace --locked
 
+step "extension GNOME"
+scripts/ext-check.sh
+
 step "deny"
 # Via cargo (not `command -v`): cargo also finds subcommands in ~/.cargo/bin, which is often not in PATH.
 if cargo deny --version >/dev/null 2>&1; then
