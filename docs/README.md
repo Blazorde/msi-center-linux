@@ -26,3 +26,4 @@
 
 ## 📖 Utilisateur
 - [Installation](user/installation.md)
+- [L'application MSI Center](user/app.md)

@@ -117,7 +117,7 @@ async fn status_profile_and_curves() {
     let c = d.fan_curve(Fan::Cpu).await.unwrap();
     assert_eq!(c.spec, CurveSpec::from_core(&CurvePreset::Silent.spec()));
     assert_eq!(c.generated.table.speeds, [0, 30, 33, 43, 57, 76, 100]);
-    assert!(c.generated.raised.is_empty());
+    assert_eq!(c.generated.raised, vec![]);
     assert!(!c.custom);
 }
 
@@ -140,7 +140,7 @@ async fn preview_apply_and_reset_report_raised_steps() {
     assert_eq!(preview.table.speeds, [30, 50, 50, 100, 100, 100, 100]);
     assert!(preview.is_raised(0));
     assert!(preview.raised[0].describe().contains("plancher"));
-    assert!(h.ec.state().writes.is_empty(), "preview writes nothing");
+    assert_eq!(h.ec.state().writes.len(), 0, "preview writes nothing");
 
     let applied = d.set_fan_curve(Fan::Gpu, &spec).await.unwrap();
     assert_eq!(applied, preview);

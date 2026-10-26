@@ -10,6 +10,7 @@ pub mod curve;
 pub mod dbus;
 pub mod errors;
 pub mod format;
+pub mod gpu_env;
 pub mod model;
 pub mod settings;
 
