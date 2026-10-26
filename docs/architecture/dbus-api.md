@@ -36,7 +36,7 @@ renvoyer `Internal`.
 | Type | Signature | Champs |
 |---|---|---|
 | spec | `(yyyyydayy)` | `idle` %, `t0` °C, `t1` °C, `min` %, `max` %, `k`, `up` (6 seuils °C), `hysteresis` °C |
-| table | `(ayayay)` | `speeds` (7 %), `up` (6 °C), `down` (6 °C) : la table écrite dans l'EC |
+| table | `(ayayay)` | `speeds` (7 %), `up` (6 °C), `down` (6 °C) : la table écrite dans l'EC. Pour `cpu` en pilotage hybride ([ADR-0010](../adr/0010-hybrid-cpu-fan-control.md)) : le **vecteur en vigueur**, seuils d'usine, paliers 0–3 à la consigne en direct (voir Sémantique) |
 | raised | `a(yyyyyy)` | par palier relevé par S2 : `step`, `entry_temp` (°C, 0 pour le palier 0), `curve_speed`, `applied_speed`, `floor_temp`, `floor_speed` |
 
 Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/fan-safety.md#du-modèle-à-la-table-ec-modèle-par-paliers-mesuré).
@@ -45,7 +45,7 @@ Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/
 
 | Signal | Signature | Sens |
 |---|---|---|
-| `Telemetry` | `a{sv} data` | ~1 Hz. Clés (absentes si inconnues) : `cpu_pct`, `ram_pct`, `igpu_pct`, `dgpu_pct`, `npu_pct`, `cpu_temp`, `gpu_temp`, `power_w` (`d`) ; `fan1_rpm`, `fan2_rpm` (`u`) ; `fan1_pct`, `fan2_pct` (`y`) ; `dgpu_state` (`s`) ; `cooler_boost` (`b`). Températures de l'EC (celles que suivent les ventilos), sinon hwmon/NVML. |
+| `Telemetry` | `a{sv} data` | ~1 Hz. Clés (absentes si inconnues) : `cpu_pct`, `ram_pct`, `igpu_pct`, `dgpu_pct`, `npu_pct`, `cpu_temp`, `gpu_temp`, `power_w` (`d`) ; `fan1_rpm`, `fan2_rpm` (`u`) ; `fan1_pct`, `fan2_pct` (`y`) ; `cpu_fan_target_pct` (`y`, consigne en direct du ventilo CPU = vitesse des paliers CPU 0–3 en vigueur, présente seulement pendant le pilotage hybride, ADR-0010 ; ajoutée le 2026-10-26) ; `dgpu_state` (`s`) ; `cooler_boost` (`b`). Températures de l'EC (celles que suivent les ventilos), sinon hwmon/NVML. |
 | `SafetyEvent` | `s kind, d value, s detail` | `kind` : `boost_forced` / `boost_released` (`value` = °C le plus chaud, 0 si capteur illisible), `readback_mismatch` / `write_failed` (EC remis sur ses tables d'usine en `auto`), `ec_reset` (tables perdues par l'EC, ré-appliquées), `fan_stalled` (S9, `value` = °C du capteur ; tables d'usine + `auto`, lecture seule jusqu'au redémarrage), `gpu_busy` (Éco : retrait du dGPU refusé, gardé en veille runtime ; `value` = 0, `detail` = raison avec les processus, ex. `dGPU is in use by nvidia-powerd (812), gnome-shell (3876); dGPU kept in runtime suspend`). `detail` : texte anglais. Les clients doivent ignorer un `kind` inconnu. |
 
 `PropertiesChanged` (`org.freedesktop.DBus.Properties`) est émis pour `Profile`, `AutoProfileOnPower`,
@@ -94,6 +94,15 @@ son contrôle polkit et ses erreurs typées.
 - **Courbes** : chaque profil a une courbe par ventilo, le preset du profil par défaut. `SetFanCurve` remplace
   celle du **profil choisi** pour ce ventilo (persistée), `ResetFanCurve` revient au preset. Les paliers relevés
   par les planchers S2 sont renvoyés dans `raised`, jamais cachés. `PreviewFanCurve` calcule sans rien écrire.
+- **Ventilo CPU piloté en direct** ([ADR-0010](../adr/0010-hybrid-cpu-fan-control.md), firmware dont les
+  tables d'usine sont connues, `.110`) : l'EC ignore les seuils CPU écrits. Le daemon garde les seuils d'usine
+  et réécrit `cpu/fan_curve_speeds` (≈ 1 Hz, seulement au changement) depuis la courbe `spec` évaluée sur la
+  température CPU filtrée ([fan-safety.md](../hardware/fan-safety.md#pilotage-hybride-du-ventilo-cpu-adr-0010)).
+  `FanCurve("cpu")` et `SetFanCurve("cpu", …)` renvoient le vecteur en vigueur (seuils d'usine, paliers 0–3 à la
+  consigne, paliers chauds relevés et signalés dans `raised`) ; il change avec la température. Les `up` de
+  `spec` ne s'appliquent qu'au GPU. `PreviewFanCurve` (sans ventilo) renvoie toujours la table par paliers de
+  la courbe, celle du GPU. Le pilotage s'arrête dès que l'EC n'est plus sur nos tables (`RestoreFactory`,
+  repli S7, S9, lecture seule). Compatible : signatures inchangées.
 - **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
   au choix du propriétaire.
 - **Persistance** : profil, `AutoProfileOnPower`, limite de charge et courbes personnalisées dans

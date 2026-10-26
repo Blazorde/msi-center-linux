@@ -5,6 +5,15 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 ## [Unreleased]
 
 ### Added
+- Ventilo CPU piloté en direct ([ADR-0010](docs/adr/0010-hybrid-cpu-fan-control.md), accepté) : l'EC ignore
+  les seuils CPU écrits, donc `msi-daemon` garde les seuils d'usine et module chaque seconde les vitesses des
+  paliers 0–3 depuis la courbe exponentielle du profil, sur une température CPU filtrée (médiane + moyenne,
+  pics ignorés), avec hystérésis d'arrêt, bande morte et montée/descente progressives ; paliers chauds
+  toujours ≥ 60 / 100 / 100 %. Silencieux : arrêté sous 46–50 °C, démarrage doux à 30 % dès 50 °C, 100 % à
+  82 °C. Seul `cpu/fan_curve_speeds` est écrit, au changement, relu (S7). `FanCurve("cpu")` renvoie le
+  vecteur en vigueur, nouvelle clé `cpu_fan_target_pct` dans `Telemetry` (compatible). L'app affiche le CPU
+  « piloté en direct » ; `msictl curve show cpu` aussi. Essai propriétaire :
+  `scripts/spike/hybrid-cpu-test.sh`.
 - Fondations du projet : workspace Cargo, documentation, ADR 0001–0007, workflow git.
 - CI locale : `scripts/ci.sh`, hooks `pre-push` et `commit-msg`, `scripts/release.sh` (pas de GitHub Actions).
 - `msi-core` : courbe ventilo exponentielle validée, échantillonnage sur la table EC (disposition provisoire de
