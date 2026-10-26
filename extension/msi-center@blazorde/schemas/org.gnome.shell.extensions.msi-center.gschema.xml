@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<schemalist gettext-domain="msi-center">
+  <schema id="org.gnome.shell.extensions.msi-center" path="/org/gnome/shell/extensions/msi-center/">
+
+    <!-- Top bar metrics (from the msi-daemon Telemetry signal) -->
+    <key name="show-cpu" type="b"><default>true</default><summary>Afficher la charge CPU</summary></key>
+    <key name="show-dgpu" type="b"><default>true</default><summary>Afficher la charge (ou l’état) du dGPU</summary></key>
+    <key name="show-igpu" type="b"><default>false</default><summary>Afficher la charge de l’iGPU</summary></key>
+    <key name="show-ram" type="b"><default>true</default><summary>Afficher l’occupation RAM</summary></key>
+    <key name="show-npu" type="b"><default>false</default><summary>Afficher la charge du NPU</summary></key>
+    <key name="show-cpu-temp" type="b"><default>true</default><summary>Afficher la température CPU</summary></key>
+    <key name="show-gpu-temp" type="b"><default>false</default><summary>Afficher la température GPU</summary></key>
+    <key name="show-fan" type="b"><default>false</default><summary>Afficher la vitesse des ventilateurs</summary></key>
+    <key name="metric-order" type="as">
+      <default>['cpu', 'dgpu', 'igpu', 'ram', 'npu', 'cpu-temp', 'gpu-temp', 'fan']</default>
+      <summary>Ordre des métriques dans la barre</summary>
+      <description>Identifiants : cpu, dgpu, igpu, ram, npu, cpu-temp, gpu-temp, fan. Inconnus ignorés, manquants ajoutés à la fin.</description>
+    </key>
+    <key name="icon-only" type="b"><default>false</default><summary>Icône seule dans la barre</summary></key>
+    <key name="show-sparkline" type="b"><default>true</default><summary>Mini-graphe CPU dans le menu</summary></key>
+
+    <!-- Top bar placement -->
+    <key name="main-indicator-box" type="s">
+      <choices><choice value="left"/><choice value="center"/><choice value="right"/></choices>
+      <default>'left'</default>
+      <summary>Zone de la barre pour l’indicateur principal (profil + métriques)</summary>
+    </key>
+    <key name="main-indicator-index" type="i">
+      <range min="0" max="20"/>
+      <default>1</default>
+      <summary>Position dans la zone (0 = premier ; 1 = juste après Activités à gauche)</summary>
+    </key>
+    <key name="show-clipboard-button" type="b"><default>true</default><summary>Bouton presse-papiers dans la barre</summary></key>
+    <key name="clipboard-button-box" type="s">
+      <choices><choice value="left"/><choice value="center"/><choice value="right"/></choices>
+      <default>'right'</default>
+      <summary>Zone de la barre pour le bouton presse-papiers</summary>
+    </key>
+    <key name="clipboard-button-index" type="i">
+      <range min="0" max="20"/>
+      <default>0</default>
+      <summary>Position du bouton presse-papiers dans sa zone (0 = premier)</summary>
+    </key>
+    <key name="clipboard-badge" type="b">
+      <default>true</default>
+      <summary>Pastille avec le nombre de clips de la session</summary>
+      <description>Clips non épinglés (effacés au logout).</description>
+    </key>
+
+    <!-- Profiles -->
+    <key name="scroll-cycles-profile" type="b">
+      <default>false</default>
+      <summary>Molette sur l’indicateur : changer de profil</summary>
+      <description>Vers le haut = plus performant, vers le bas = plus silencieux (sans boucler).</description>
+    </key>
+    <key name="profile-cycle-shortcut" type="as">
+      <default>[]</default>
+      <summary>Raccourci pour passer au profil suivant (Éco → Équilibré → Gaming → Éco)</summary>
+    </key>
+
+    <!-- Clipboard -->
+    <key name="clipboard-capture" type="b"><default>true</default><summary>Envoyer le presse-papiers à clipd</summary></key>
+    <key name="clipboard-shortcut" type="as">
+      <default>['&lt;Super&gt;v']</default>
+      <summary>Raccourci de l’historique du presse-papiers</summary>
+    </key>
+    <key name="paste-on-select" type="b">
+      <default>false</default>
+      <summary>Coller directement après la sélection (Entrée)</summary>
+      <description>Simule Ctrl+V dans la fenêtre précédente. Maj+Entrée inverse ce réglage.</description>
+    </key>
+    <key name="thumbnail-cache-mb" type="u">
+      <range min="4" max="512"/>
+      <default>32</default>
+      <summary>Taille max du cache de vignettes (Mio décodés)</summary>
+    </key>
+
+    <!-- Appearance -->
+    <key name="blur" type="b"><default>true</default><summary>Flou d’arrière-plan (verre dépoli)</summary></key>
+  </schema>
+</schemalist>

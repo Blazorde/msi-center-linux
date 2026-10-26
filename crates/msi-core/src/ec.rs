@@ -1,0 +1,431 @@
+//! EC register map, as typed data. No I/O: the daemon talks to the EC only through the msi-ec sysfs interface,
+//! these constants document what msi-ec writes and let the daemon check read-backs (S7) and firmware (S8).
+//!
+//! Source: upstream msi-ec `CONF_G2_5` (see `docs/hardware/stealth-14-a1vgg.md`); fan curve tables and
+//! firmware `14K2EMS1.110` from the spike (`docs/hardware/ec-map.md`).
+
+use crate::table::RawTables;
+
+/// A single bit of an EC register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EcBit {
+    /// Register address.
+    pub address: u8,
+    /// Bit index (0 = LSB).
+    pub bit: u8,
+}
+
+impl EcBit {
+    /// Mask of the bit inside its register.
+    #[must_use]
+    pub const fn mask(self) -> u8 {
+        1 << self.bit
+    }
+}
+
+/// A register field selected by a mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MaskedRegister {
+    /// Register address.
+    pub address: u8,
+    /// Mask of the field.
+    pub mask: u8,
+}
+
+/// EC performance ("shift") mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShiftMode {
+    /// Lowest power.
+    Eco,
+    /// Balanced.
+    Comfort,
+    /// Highest performance.
+    Turbo,
+}
+
+impl ShiftMode {
+    /// Name used by the msi-ec `shift_mode` sysfs attribute.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Eco => "eco",
+            Self::Comfort => "comfort",
+            Self::Turbo => "turbo",
+        }
+    }
+}
+
+/// EC fan mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FanMode {
+    /// Firmware curve. The safe fallback (S5, S7).
+    Auto,
+    /// Firmware silent curve.
+    Silent,
+    /// Custom curve tables.
+    Advanced,
+}
+
+impl FanMode {
+    /// Name used by the msi-ec `fan_mode` sysfs attribute.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Silent => "silent",
+            Self::Advanced => "advanced",
+        }
+    }
+}
+
+/// Shift mode register and its values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShiftModeMap {
+    /// Register address.
+    pub address: u8,
+    /// Value for [`ShiftMode::Eco`].
+    pub eco: u8,
+    /// Value for [`ShiftMode::Comfort`].
+    pub comfort: u8,
+    /// Value for [`ShiftMode::Turbo`].
+    pub turbo: u8,
+}
+
+impl ShiftModeMap {
+    /// Register value for `mode`.
+    #[must_use]
+    pub const fn value(&self, mode: ShiftMode) -> u8 {
+        match mode {
+            ShiftMode::Eco => self.eco,
+            ShiftMode::Comfort => self.comfort,
+            ShiftMode::Turbo => self.turbo,
+        }
+    }
+
+    /// Mode for a register value, `None` if unknown.
+    #[must_use]
+    pub fn mode(&self, value: u8) -> Option<ShiftMode> {
+        [ShiftMode::Eco, ShiftMode::Comfort, ShiftMode::Turbo]
+            .into_iter()
+            .find(|&m| self.value(m) == value)
+    }
+}
+
+/// Fan mode register and its values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FanModeMap {
+    /// Register address.
+    pub address: u8,
+    /// Value for [`FanMode::Auto`].
+    pub auto: u8,
+    /// Value for [`FanMode::Silent`].
+    pub silent: u8,
+    /// Value for [`FanMode::Advanced`].
+    pub advanced: u8,
+}
+
+impl FanModeMap {
+    /// Register value for `mode`.
+    #[must_use]
+    pub const fn value(&self, mode: FanMode) -> u8 {
+        match mode {
+            FanMode::Auto => self.auto,
+            FanMode::Silent => self.silent,
+            FanMode::Advanced => self.advanced,
+        }
+    }
+
+    /// Mode for a register value, `None` if unknown.
+    #[must_use]
+    pub fn mode(&self, value: u8) -> Option<FanMode> {
+        [FanMode::Auto, FanMode::Silent, FanMode::Advanced]
+            .into_iter()
+            .find(|&m| self.value(m) == value)
+    }
+}
+
+/// Real-time temperature and fan registers of one chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SensorMap {
+    /// Temperature register (°C).
+    pub temp: u8,
+    /// Fan speed register.
+    pub fan_speed: u8,
+}
+
+/// Fan curve tables of one fan: first address of each table (7 speeds, 6 up, 6 down thresholds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FanTableMap {
+    /// First speed register (7 consecutive bytes).
+    pub speeds: u8,
+    /// First up-threshold register (6 consecutive bytes).
+    pub up: u8,
+    /// First down-threshold register (6 consecutive bytes).
+    pub down: u8,
+}
+
+/// Factory fan curve tables of one firmware version, as read in fan mode `auto` on a cold EC.
+///
+/// The EC keeps a **single** copy of the tables, used by `auto` as well as `advanced`
+/// (`docs/hardware/ec-map.md`): handing control back to the firmware means writing these tables back
+/// before fan mode `auto` (S5, S7, S9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FactoryTables {
+    /// Firmware version (`fw_version`).
+    pub firmware: &'static str,
+    /// CPU fan tables.
+    pub cpu: RawTables,
+    /// GPU fan tables.
+    pub gpu: RawTables,
+}
+
+/// Factory tables of firmware `14K2EMS1.110` (measured by the phase 2 spike).
+pub const FACTORY_14K2EMS1_110: FactoryTables = FactoryTables {
+    firmware: "14K2EMS1.110",
+    cpu: RawTables {
+        speeds: [0, 36, 40, 50, 62, 80, 96],
+        up: [57, 62, 70, 77, 83, 90],
+        down: [53, 57, 65, 73, 80, 87],
+    },
+    gpu: RawTables {
+        speeds: [0, 36, 42, 50, 62, 80, 96],
+        up: [50, 60, 65, 70, 78, 83],
+        down: [45, 55, 63, 67, 75, 80],
+    },
+};
+
+/// Webcam switch registers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WebcamMap {
+    /// Enable bit.
+    pub enable: EcBit,
+    /// Hardware block bit.
+    pub block: EcBit,
+}
+
+/// One msi-ec configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EcConfig {
+    /// msi-ec configuration name.
+    pub name: &'static str,
+    /// EC firmware versions this configuration is known to be valid for (S8).
+    pub allowed_firmware: &'static [&'static str],
+    /// Known factory tables, per firmware version (a subset of [`EcConfig::allowed_firmware`]).
+    pub factory_tables: &'static [FactoryTables],
+    /// Shift mode.
+    pub shift_mode: ShiftModeMap,
+    /// Fan mode.
+    pub fan_mode: FanModeMap,
+    /// Cooler Boost (fans at full speed).
+    pub cooler_boost: EcBit,
+    /// Battery charge limit register.
+    pub charge_limit: u8,
+    /// Super battery field.
+    pub super_battery: MaskedRegister,
+    /// CPU sensors.
+    pub cpu: SensorMap,
+    /// GPU sensors.
+    pub gpu: SensorMap,
+    /// CPU fan curve tables.
+    pub cpu_table: FanTableMap,
+    /// GPU fan curve tables.
+    pub gpu_table: FanTableMap,
+    /// Webcam.
+    pub webcam: WebcamMap,
+    /// Fn ↔ Win key swap.
+    pub fn_win_swap: EcBit,
+}
+
+impl EcConfig {
+    /// `true` if `fw_version` (as read from msi-ec, surrounding whitespace ignored) is in
+    /// [`EcConfig::allowed_firmware`]. Anything else must leave the daemon read-only (S8).
+    #[must_use]
+    pub fn supports_firmware(&self, fw_version: &str) -> bool {
+        let fw = fw_version.trim();
+        self.allowed_firmware.contains(&fw)
+    }
+
+    /// Factory tables of `fw_version` (surrounding whitespace ignored), `None` if they were never measured: then
+    /// only fan mode `auto` can be restored.
+    #[must_use]
+    pub fn factory_tables(&self, fw_version: &str) -> Option<FactoryTables> {
+        let fw = fw_version.trim();
+        self.factory_tables.iter().find(|t| t.firmware == fw).copied()
+    }
+}
+
+/// msi-ec `CONF_G2_5`: MSI Stealth 14 AI Studio A1VGG / A1VFG.
+pub const CONF_G2_5: EcConfig = EcConfig {
+    name: "CONF_G2_5",
+    allowed_firmware: &[
+        "14K2EMS1.104",
+        "14K2EMS1.107",
+        "14K2EMS1.108",
+        "14K2EMS1.109",
+        "14K2EMS1.110",
+    ],
+    factory_tables: &[FACTORY_14K2EMS1_110],
+    shift_mode: ShiftModeMap {
+        address: 0xd2,
+        eco: 0xc2,
+        comfort: 0xc1,
+        turbo: 0xc4,
+    },
+    fan_mode: FanModeMap {
+        address: 0xd4,
+        auto: 0x0d,
+        silent: 0x1d,
+        advanced: 0x8d,
+    },
+    cooler_boost: EcBit {
+        address: 0x98,
+        bit: 7,
+    },
+    charge_limit: 0xd7,
+    super_battery: MaskedRegister {
+        address: 0xeb,
+        mask: 0x0f,
+    },
+    cpu: SensorMap {
+        temp: 0x68,
+        fan_speed: 0x71,
+    },
+    gpu: SensorMap {
+        temp: 0x80,
+        fan_speed: 0x89,
+    },
+    cpu_table: FanTableMap {
+        speeds: 0x72,
+        up: 0x6a,
+        down: 0x7a,
+    },
+    gpu_table: FanTableMap {
+        speeds: 0x8a,
+        up: 0x82,
+        down: 0x92,
+    },
+    webcam: WebcamMap {
+        enable: EcBit {
+            address: 0x2e,
+            bit: 1,
+        },
+        block: EcBit {
+            address: 0x2f,
+            bit: 1,
+        },
+    },
+    fn_win_swap: EcBit {
+        address: 0xe8,
+        bit: 4,
+    },
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conf_g2_5_matches_the_hardware_doc() {
+        let c = CONF_G2_5;
+        assert_eq!(c.shift_mode.address, 0xd2);
+        assert_eq!(c.shift_mode.value(ShiftMode::Turbo), 0xc4);
+        assert_eq!(c.shift_mode.value(ShiftMode::Eco), 0xc2);
+        assert_eq!(c.shift_mode.value(ShiftMode::Comfort), 0xc1);
+        assert_eq!(c.fan_mode.address, 0xd4);
+        assert_eq!(c.fan_mode.value(FanMode::Auto), 0x0d);
+        assert_eq!(c.fan_mode.value(FanMode::Silent), 0x1d);
+        assert_eq!(c.fan_mode.value(FanMode::Advanced), 0x8d);
+        assert_eq!(c.cooler_boost.address, 0x98);
+        assert_eq!(c.cooler_boost.mask(), 0x80);
+        assert_eq!(c.charge_limit, 0xd7);
+        assert_eq!(
+            c.super_battery,
+            MaskedRegister {
+                address: 0xeb,
+                mask: 0x0f
+            }
+        );
+        assert_eq!(
+            c.cpu,
+            SensorMap {
+                temp: 0x68,
+                fan_speed: 0x71
+            }
+        );
+        assert_eq!(
+            c.gpu,
+            SensorMap {
+                temp: 0x80,
+                fan_speed: 0x89
+            }
+        );
+        assert_eq!(
+            c.cpu_table,
+            FanTableMap {
+                speeds: 0x72,
+                up: 0x6a,
+                down: 0x7a
+            }
+        );
+        assert_eq!(
+            c.gpu_table,
+            FanTableMap {
+                speeds: 0x8a,
+                up: 0x82,
+                down: 0x92
+            }
+        );
+        assert_eq!(c.webcam.enable.mask(), 0x02);
+        assert_eq!(c.fn_win_swap.mask(), 0x10);
+    }
+
+    #[test]
+    fn mode_values_round_trip() {
+        for m in [ShiftMode::Eco, ShiftMode::Comfort, ShiftMode::Turbo] {
+            assert_eq!(CONF_G2_5.shift_mode.mode(CONF_G2_5.shift_mode.value(m)), Some(m));
+        }
+        for m in [FanMode::Auto, FanMode::Silent, FanMode::Advanced] {
+            assert_eq!(CONF_G2_5.fan_mode.mode(CONF_G2_5.fan_mode.value(m)), Some(m));
+        }
+        assert_eq!(CONF_G2_5.shift_mode.mode(0x00), None);
+        assert_eq!(CONF_G2_5.fan_mode.mode(0xff), None);
+    }
+
+    #[test]
+    fn s8_only_known_firmware_is_supported() {
+        assert!(CONF_G2_5.supports_firmware("14K2EMS1.109"));
+        assert!(CONF_G2_5.supports_firmware("14K2EMS1.104\n"));
+        assert!(CONF_G2_5.supports_firmware("14K2EMS1.110"));
+        assert!(!CONF_G2_5.supports_firmware("14K2EMS1.111"));
+        assert!(!CONF_G2_5.supports_firmware("14K2EMS1.10"));
+        assert!(!CONF_G2_5.supports_firmware(""));
+    }
+
+    #[test]
+    fn factory_tables_of_110_match_the_ec_map() {
+        let f = CONF_G2_5.factory_tables("14K2EMS1.110\n").unwrap();
+        assert_eq!(f.cpu.speeds, [0, 36, 40, 50, 62, 80, 96]);
+        assert_eq!(f.cpu.up, [57, 62, 70, 77, 83, 90]);
+        assert_eq!(f.cpu.down, [53, 57, 65, 73, 80, 87]);
+        assert_eq!(f.gpu.speeds, [0, 36, 42, 50, 62, 80, 96]);
+        assert_eq!(f.gpu.up, [50, 60, 65, 70, 78, 83]);
+        assert_eq!(f.gpu.down, [45, 55, 63, 67, 75, 80]);
+        assert_eq!(CONF_G2_5.factory_tables("14K2EMS1.109"), None);
+        assert_eq!(CONF_G2_5.factory_tables("14K2EMS1.111"), None);
+    }
+
+    #[test]
+    fn factory_tables_are_accepted_by_the_kernel_and_supported() {
+        for f in CONF_G2_5.factory_tables {
+            assert!(CONF_G2_5.supports_firmware(f.firmware), "{}", f.firmware);
+            assert_eq!(f.cpu.kernel_check(), Ok(()));
+            assert_eq!(f.gpu.kernel_check(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn sysfs_names() {
+        assert_eq!(ShiftMode::Comfort.as_str(), "comfort");
+        assert_eq!(FanMode::Auto.as_str(), "auto");
+    }
+}

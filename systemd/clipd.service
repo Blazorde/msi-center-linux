@@ -1,0 +1,52 @@
+# clipd: clipboard history (org.blazorde.Clipd1). User unit, installed to /usr/lib/systemd/user/.
+# Started by D-Bus activation (org.blazorde.Clipd1.service) or at login if enabled, stopped with the
+# graphical session. Unpinned clips live in %t/clipd (tmpfs, removed by logind at logout); pinned clips
+# in %h/.local/share/clipd. See docs/adr/0005-clipboard-storage-split.md.
+[Unit]
+Description=Clipboard history service
+Documentation=https://github.com/Blazorde/msi-center-linux/blob/main/docs/architecture/dbus-api.md
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.blazorde.Clipd1
+ExecStart=/usr/bin/clipd
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# Storage. The runtime directory survives restarts of clipd; logind still removes it at logout.
+RuntimeDirectory=clipd
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# Created outside the sandbox: ProtectSystem=strict below makes $HOME read-only except ReadWritePaths.
+ExecStartPre=+/usr/bin/mkdir -p -m 0700 %h/.local/share/clipd
+ReadWritePaths=%t/clipd %h/.local/share/clipd
+UMask=0077
+
+# Hardening (user manager: sandboxing relies on unprivileged user namespaces).
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+# The session bus is a path socket (%t/bus), which works without network access.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=graphical-session.target

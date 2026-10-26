@@ -24,3 +24,7 @@
 
 # Claude Code local state (PRPs are tracked)
 .claude/settings.local.json
+
+# GNOME extension build artefacts (scripts/ext-install.sh, scripts/ext-check.sh)
+/extension/msi-center@blazorde/schemas/gschemas.compiled
+/dist/

@@ -1,0 +1,7 @@
+# System bus activation for msi-daemon. Installed to /usr/share/dbus-1/system-services/ as
+# org.blazorde.MsiCenter1.service. The bus delegates to systemd; Exec is never run directly.
+[D-BUS Service]
+Name=org.blazorde.MsiCenter1
+Exec=/bin/false
+User=root
+SystemdService=msi-daemon.service

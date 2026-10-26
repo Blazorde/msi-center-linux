@@ -1,0 +1,650 @@
+/* MSI Center — "Liquid Glass" × "Golden Gate", light variant (base). Design brief: docs/design/app-liquid-glass.md
+ *
+ * One warm accent only: International Orange #C0362C and its sunset gradient #F28C38 → #C0362C, reserved for
+ * the active state, the live value and the primary action. Everything else is glass, bone white and bay navy.
+ *
+ * Glass is built in layers (GTK cannot blur what lies behind the window on Wayland; the in-app backdrop of
+ * src/ui/backdrop.rs shows through):
+ *   body      translucent fill + faint vertical gradient
+ *   specular  bright 1px inset line on top + white sheen over the first third
+ *   rim       1px inner light border (inset box-shadow)
+ *   edge      1px outer dark hairline (border)
+ *   depth     short contact shadow + long soft shadow tinted with the bay navy
+ *   glow      only on the active element: accent ring + coloured shadow
+ *
+ * Motion: explicit properties only (never `all`), strong ease-out cubic-bezier(0.23, 1, 0.32, 1), ≤ 220 ms.
+ * GTK drops every CSS transition when gtk-enable-animations is off (reduced motion).
+ * Dark overrides: style-dark.css. High contrast mode unloads both files (plain Adwaita).
+ */
+
+:root {
+  --accent-bg-color: #c0362c;
+  --accent-fg-color: #ffffff;
+  /* Accent used as text on light glass: darker than #C0362C to keep ≥ 4.5:1. */
+  --accent-color: #a12a22;
+  --sunset-orange: #f28c38;
+  --sunset-red: #c0362c;
+  --sunset-navy: #2b2d42;
+
+  --ink: #1d1e33;
+  --ink-dim: alpha(#1d1e33, 0.72);
+  --ink-faint: alpha(#1d1e33, 0.08);
+
+  --glass-body: alpha(#ffffff, 0.52);
+  --glass-body-hover: alpha(#ffffff, 0.64);
+  --glass-sheen: alpha(#ffffff, 0.55);
+  --glass-specular: alpha(#ffffff, 0.95);
+  --glass-rim: alpha(#ffffff, 0.55);
+  --glass-edge: alpha(#2b2d42, 0.10);
+  --glass-contact: alpha(#2b2d42, 0.10);
+  --glass-depth: alpha(#2b2d42, 0.16);
+  --glass-tint: alpha(#c0362c, 0.08);
+  --well: alpha(#2b2d42, 0.05);
+  --accent-glow: alpha(#c0362c, 0.38);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+window.msi-window {
+  background-color: #fbf1ea;
+  color: var(--ink);
+}
+
+/* Let the backdrop show through the chrome. */
+window.msi-window headerbar,
+window.msi-window .top-bar headerbar {
+  background: none;
+  box-shadow: none;
+  border: none;
+}
+
+window.msi-window toolbarview,
+window.msi-window navigation-view,
+window.msi-window .content-pane,
+window.msi-window stack.pages,
+window.msi-window scrolledwindow,
+window.msi-window viewport {
+  background: none;
+}
+
+/* ---------- Sidebar: one tall glass slab ---------- */
+
+window.msi-window .sidebar-pane {
+  background-color: alpha(#ffffff, 0.40);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.55), alpha(#ffffff, 0.10) 40%, alpha(#ffffff, 0.18));
+  border-right: 1px solid var(--glass-edge);
+  box-shadow: inset -1px 0 0 var(--glass-rim);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar {
+  background: none;
+  padding: 6px 10px;
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row {
+  border-radius: 12px;
+  padding: 9px 12px;
+  margin: 2px 0;
+  transition: background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row:hover {
+  background-color: alpha(#ffffff, 0.45);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row:selected {
+  background-color: alpha(#ffffff, 0.82);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.6), alpha(#ffffff, 0));
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    0 0 0 1px var(--glass-edge),
+    0 4px 12px -6px var(--glass-depth);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
+  color: var(--accent-color);
+}
+
+.brand-mark {
+  min-width: 32px;
+  min-height: 32px;
+  border-radius: 10px;
+  background-image: linear-gradient(135deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.5), inset 0 0 0 1px alpha(#ffffff, 0.12), 0 4px 12px -4px alpha(#c0362c, 0.6);
+  color: #ffffff;
+}
+
+.brand-title {
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.status-dot {
+  font-size: 9pt;
+}
+
+/* ---------- Typography ---------- */
+
+.page-header {
+  margin: 6px 4px 6px 4px;
+}
+
+.page-title {
+  font-size: 26pt;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.page-subtitle {
+  color: var(--ink-dim);
+}
+
+.section-title {
+  font-weight: 700;
+  font-size: 10.5pt;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  margin-left: 4px;
+}
+
+.card-heading {
+  font-size: 15pt;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.card-title {
+  font-weight: 700;
+}
+
+.card-icon {
+  color: var(--ink-dim);
+}
+
+.dim {
+  color: var(--ink-dim);
+}
+
+.numeric,
+.gauge-value,
+.big-value {
+  font-feature-settings: "tnum";
+}
+
+.gauge-value {
+  font-size: 17pt;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.big-value {
+  font-size: 36pt;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+/* ---------- Glass cards ---------- */
+
+.glass {
+  border-radius: 22px;
+  padding: 20px;
+  background-color: var(--glass-body);
+  background-image: linear-gradient(180deg, var(--glass-sheen), alpha(#ffffff, 0) 34%, alpha(#ffffff, 0.10));
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 0 0 1px var(--glass-rim),
+    0 1px 2px var(--glass-contact),
+    0 14px 34px -14px var(--glass-depth),
+    0 30px 60px -30px var(--glass-tint);
+  transition:
+    transform 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out),
+    background-color 200ms var(--ease-out);
+}
+
+.glass.compact {
+  padding: 14px 16px;
+  border-radius: 20px;
+}
+
+.glass.interactive:hover {
+  background-color: var(--glass-body-hover);
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 0 0 1px var(--glass-rim),
+    0 2px 4px var(--glass-contact),
+    0 20px 40px -16px alpha(#2b2d42, 0.24),
+    0 30px 60px -26px alpha(#c0362c, 0.16);
+}
+
+.glass.selected {
+  box-shadow:
+    0 0 0 2px var(--accent-bg-color),
+    inset 0 1px 0 var(--glass-specular),
+    0 14px 34px -14px var(--glass-depth);
+}
+
+.hero-card {
+  padding: 22px;
+  border-radius: 26px;
+}
+
+/* Decorative sunset strip (never behind text). */
+.sunset-strip {
+  min-height: 4px;
+  border-radius: 4px;
+  background-image: linear-gradient(90deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
+}
+
+/* Status chips: small glass pills, icon + word. */
+.chip {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 9.5pt;
+  font-weight: 600;
+  color: var(--ink-dim);
+  background-color: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+.chip image {
+  -gtk-icon-size: 14px;
+}
+
+/* ---------- Profile picker (hero + compact) ---------- */
+
+.profile-picker.hero {
+  padding: 6px;
+  border-radius: 24px;
+  background-color: var(--well);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.08), inset 0 0 0 1px var(--ink-faint), 0 1px 0 alpha(#ffffff, 0.8);
+}
+
+.profile-picker .profile-segment {
+  min-height: 0;
+  border: none;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--ink);
+  transition:
+    transform 160ms var(--ease-out),
+    background-color 220ms var(--ease-out),
+    box-shadow 220ms var(--ease-out),
+    color 220ms var(--ease-out);
+}
+
+.profile-picker.hero .profile-segment {
+  border-radius: 18px; /* concentric: 24 − 6 */
+  padding: 14px 16px 16px 16px;
+}
+
+.profile-picker .profile-segment:hover {
+  background-color: alpha(#ffffff, 0.45);
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.8), 0 2px 6px -3px var(--glass-depth);
+}
+
+.profile-picker .profile-segment:active {
+  transform: scale(0.97);
+}
+
+.profile-picker .profile-segment:checked {
+  background-color: alpha(#ffffff, 0.92);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.9), alpha(#ffffff, 0) 45%);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 0 0 1.5px alpha(#c0362c, 0.85),
+    0 6px 16px -6px var(--accent-glow),
+    0 18px 36px -18px alpha(#f28c38, 0.55);
+}
+
+.profile-picker .profile-segment.pending:checked {
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 0 0 1.5px alpha(#c0362c, 0.45),
+    0 6px 16px -8px var(--accent-glow);
+}
+
+.profile-picker .profile-segment:disabled {
+  opacity: 0.55;
+}
+
+.profile-picker .profile-segment:focus-visible {
+  outline: 2px solid alpha(#c0362c, 0.7);
+  outline-offset: 2px;
+}
+
+.profile-glyph {
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: 12px;
+  background-color: alpha(#2b2d42, 0.07);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+  color: var(--ink-dim);
+  transition: background-color 220ms var(--ease-out), color 220ms var(--ease-out), box-shadow 220ms var(--ease-out);
+}
+
+.profile-segment:checked .profile-glyph {
+  background-image: linear-gradient(135deg, var(--sunset-orange), var(--sunset-red) 70%);
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.45), 0 4px 10px -4px alpha(#c0362c, 0.7);
+}
+
+.profile-name {
+  font-size: 14pt;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.profile-tagline {
+  font-size: 9.5pt;
+  font-weight: 400;
+  color: var(--ink-dim);
+}
+
+.profile-state {
+  font-size: 9pt;
+  font-weight: 400;
+  font-weight: 700;
+  color: var(--accent-color);
+}
+
+/* Compact: a segmented control in the header bar. */
+.profile-picker.compact {
+  padding: 3px;
+  border-radius: 999px;
+  background-color: alpha(#ffffff, 0.40);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.10), inset 0 0 0 1px var(--ink-faint);
+}
+
+.profile-picker.compact .profile-segment {
+  border-radius: 999px;
+  padding: 4px 16px;
+  min-height: 26px;
+}
+
+.profile-picker.compact .profile-segment:checked {
+  background-color: var(--accent-bg-color);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.24), alpha(#ffffff, 0));
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.35), 0 4px 12px -5px var(--accent-glow);
+}
+
+/* Tiles: the five fan profiles, wrapping on narrow windows. */
+.profile-picker.tiles > flowboxchild {
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.profile-picker.tiles .profile-segment {
+  padding: 12px 12px 14px 12px;
+}
+
+.profile-picker.tiles .profile-name {
+  font-size: 12.5pt;
+}
+
+/* « Défaut » badge next to a tile's name: shape and word, colour only reinforces. */
+.default-badge {
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-dim);
+  background-color: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+/* Calm information well (Auto: factory curve driven by the EC). */
+.inline-note {
+  border-radius: 14px;
+  padding: 10px 12px;
+  background-color: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+.inline-note > image {
+  color: var(--ink-dim);
+}
+
+/* A chip that is a button (Accueil → Ventilateurs). Hit area ≥ 32 px high in a dense row. */
+button.chip.chip-button {
+  min-height: 0;
+  padding: 4px 8px 4px 10px;
+  background-image: none;
+  transition: background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+button.chip.chip-button:hover {
+  background-color: alpha(#ffffff, 0.55);
+  box-shadow: inset 0 0 0 1px alpha(#c0362c, 0.35);
+}
+
+button.chip.chip-button:active {
+  transform: scale(0.97);
+}
+
+button.chip.chip-button:focus-visible {
+  outline: 2px solid alpha(#c0362c, 0.7);
+  outline-offset: 2px;
+}
+
+/* GPU busy, inline in the hero card. */
+.inline-warning {
+  border-radius: 14px;
+  padding: 10px 12px;
+  background-color: alpha(#f28c38, 0.16);
+  box-shadow: inset 0 0 0 1px alpha(#c0362c, 0.25);
+  color: #6e2410;
+}
+
+.inline-warning image {
+  color: #a12a22;
+}
+
+/* ---------- Gauges ---------- */
+
+.gauge-card {
+  padding-bottom: 12px;
+}
+
+/* Level badges: always a word + icon, colour is only a reinforcement. */
+.level-badge {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 8.5pt;
+  font-weight: 700;
+}
+
+.level-badge.level-normal {
+  background-color: alpha(#2f7d4f, 0.14);
+  color: #1f5a37;
+}
+
+.level-badge.level-hot {
+  background-color: alpha(#f28c38, 0.24);
+  color: #7a3b06;
+}
+
+.level-badge.level-critical {
+  background-color: alpha(#c0362c, 0.20);
+  color: #8a1f18;
+}
+
+/* ---------- Fans ---------- */
+
+.raised-mark {
+  font-weight: 800;
+  color: var(--accent-color);
+}
+
+.step-cell {
+  padding: 5px 6px;
+  border-radius: 9px;
+  transition: background-color 200ms var(--ease-out), box-shadow 200ms var(--ease-out);
+}
+
+.step-cell.raised {
+  background-color: alpha(#c0362c, 0.12);
+}
+
+.step-cell.current {
+  background-color: alpha(#ffffff, 0.75);
+  box-shadow: inset 0 0 0 1.5px alpha(#2b2d42, 0.45), 0 2px 6px -3px var(--glass-depth);
+  font-weight: 700;
+}
+
+.warning-card {
+  border-color: alpha(#c0362c, 0.35);
+  background-color: alpha(#fff3ee, 0.80);
+}
+
+.legend {
+  font-size: 9pt;
+}
+
+.legend-item {
+  border-radius: 999px;
+  padding: 2px 9px;
+  background-color: var(--well);
+  color: var(--ink-dim);
+}
+
+/* Segmented toggle groups (fan selector, clipboard scope, theme). */
+.segmented {
+  border-radius: 999px;
+  padding: 3px;
+  background-color: var(--well);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.08), inset 0 0 0 1px var(--ink-faint);
+}
+
+.segmented toggle {
+  border-radius: 999px;
+  padding: 7px 18px;
+  transition: background-color 200ms var(--ease-out), box-shadow 200ms var(--ease-out), color 200ms var(--ease-out);
+}
+
+.segmented toggle:checked {
+  background-color: alpha(#ffffff, 0.95);
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 #ffffff, 0 0 0 1px var(--glass-edge), 0 3px 10px -4px var(--glass-depth);
+}
+
+/* ---------- Buttons ---------- */
+
+button.pill,
+button.suggested-action,
+button.destructive-action {
+  transition: transform 140ms var(--ease-out), box-shadow 200ms var(--ease-out), background-color 200ms var(--ease-out);
+}
+
+button.pill:active,
+button.suggested-action:active,
+button.destructive-action:active {
+  transform: scale(0.97);
+}
+
+button.pill.small {
+  padding: 4px 14px;
+  min-height: 28px;
+  font-size: 9.5pt;
+}
+
+button.pill.suggested-action,
+button.suggested-action {
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.20), alpha(#ffffff, 0));
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.32), 0 6px 18px -8px alpha(#c0362c, 0.8);
+}
+
+/* ---------- Clipboard ---------- */
+
+.clip-card {
+  border-radius: 18px;
+  padding: 12px;
+  min-width: 220px;
+}
+
+.clip-preview {
+  font-family: monospace;
+  font-size: 10pt;
+}
+
+.clip-thumb {
+  border-radius: 12px;
+  background-color: var(--well);
+  outline: 1px solid alpha(#000000, 0.10);
+  outline-offset: -1px;
+}
+
+.tag-chip {
+  border-radius: 999px;
+  padding: 2px 12px;
+  min-height: 26px;
+  background-color: alpha(#ffffff, 0.55);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+.tag-chip:checked {
+  background-color: var(--accent-bg-color);
+  color: #ffffff;
+}
+
+.tag-label {
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 9pt;
+  background-color: alpha(#2b2d42, 0.08);
+}
+
+/* ---------- Lists and preferences on glass ---------- */
+
+.glass list.boxed-list,
+.glass .boxed-list {
+  background-color: alpha(#ffffff, 0.55);
+  box-shadow: inset 0 0 0 1px var(--glass-rim);
+  border-radius: 14px;
+}
+
+preferencesgroup .boxed-list {
+  background-color: var(--glass-body);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.45), alpha(#ffffff, 0) 40%);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-specular),
+    inset 0 0 0 1px var(--glass-rim),
+    0 1px 2px var(--glass-contact),
+    0 12px 30px -16px var(--glass-depth);
+}
+
+preferencesgroup .boxed-list > row {
+  background: none;
+}
+
+preferencesgroup .boxed-list > row.accent .title {
+  color: var(--accent-color);
+  font-weight: 700;
+}
+
+banner > revealer > widget {
+  background-color: alpha(#c0362c, 0.14);
+}
+
+toast {
+  border-radius: 999px;
+  background-color: alpha(#1d1e33, 0.88);
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.12), 0 10px 30px -10px alpha(#000000, 0.5);
+}
+
+/* Text link in a card header (« Revenir au défaut »). */
+button.link-button {
+  color: var(--accent-color);
+  font-weight: 600;
+}

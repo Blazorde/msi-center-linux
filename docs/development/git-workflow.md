@@ -23,7 +23,7 @@ gitGraph
 |---|---|---|---|
 | `main` | Versions publiées uniquement, chaque commit = un tag | ✅ | merge commit depuis `release/*` ou `hotfix/*` |
 | `develop` | Intégration, toujours verte | ✅ | squash depuis les branches de travail |
-| `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`, `test/*` | Travail, vie courte | – | → `develop` |
+| `feat/*`, `fix/*`, `docs/*`, `chore/*`, `refactor/*`, `test/*`, `perf/*`, `ci/*` | Travail, vie courte | – | → `develop` |
 | `release/x.y.z` | Gel, bump version, changelog | – | → `main`, puis `main` → `develop` |
 | `hotfix/x.y.z` | Correctif urgent depuis `main` | – | → `main`, puis `main` → `develop` |
 
@@ -41,22 +41,29 @@ Nommage : `feat/<scope>-<description-courte>`, ex. `feat/clipd-tags`, `fix/daemo
 
 Types : `feat` `fix` `docs` `refactor` `test` `perf` `chore` `ci` `build`.
 Scopes : `core` `daemon` `clip` `clipd` `app` `ext` `kernel` `pkg` `ci` `docs`.
-Le titre de PR doit aussi respecter ce format (vérifié en CI), car il devient le message du squash.
+Le hook `commit-msg` refuse tout message non conforme. Le titre de PR doit aussi respecter ce format, car il
+devient le message du squash.
 
 ## Pull requests
 
 - Template obligatoire (`.github/pull_request_template.md`).
-- CI verte requise : fmt, clippy `-D warnings`, tests, audit des dépendances.
+- `scripts/ci.sh` vert avant d'ouvrir la PR (le hook `pre-push` le garantit).
 - Branche à jour avec `develop` avant merge.
 
-## CI (GitHub Actions)
+## CI — locale (pas de GitHub Actions)
 
-| Workflow | Déclencheur | Jobs |
+Le quota GitHub Actions n'est pas disponible : la CI tourne sur la machine de dev ([ADR-0007](../adr/0007-local-ci.md)).
+
+| Quoi | Quand | Fait |
 |---|---|---|
-| `ci.yml` | PR + push sur `main`/`develop` | `fmt`, `clippy`, `test`, `deny` (licences/vulnérabilités) |
-| `pr-title.yml` | PR | Vérifie le format Conventional Commits du titre |
-| `release.yml` | Tag `v*.*.*` | Build release, archive, release GitHub avec notes du CHANGELOG |
-| Dependabot | Hebdo | MAJ cargo + actions → PR sur `develop` |
+| `scripts/ci.sh` | à la main, et via le hook `pre-push` | `fmt`, `clippy -D warnings`, `test`, `cargo deny` (licences/vulnérabilités) |
+| `.githooks/commit-msg` | à chaque commit | Conventional Commits, ≤ 72 caractères |
+| `scripts/package.sh` | avant une release, ou pour installer | paquets Arch dans `dist/` (makepkg en dossier temporaire, n'installe rien) |
+| `scripts/release.sh x.y.z` | release depuis `main` | CI, build release, tag, release GitHub avec notes du CHANGELOG et paquets `dist/` |
+| Dependabot | hebdo | MAJ cargo → PR sur `develop` |
+
+Activer les hooks (une fois par clone) : `git config core.hooksPath .githooks`.
+`git push --no-verify` : urgences uniquement.
 
 ## Versionnage
 
@@ -65,18 +72,38 @@ Le titre de PR doit aussi respecter ce format (vérifié en CI), car il devient 
 
 ## Faire une release
 
+Checklist complète de la première : [release-checklist.md](../product/release-checklist.md).
+
 ```bash
+# 1. Branche de release depuis develop
 git switch develop && git pull
 git switch -c release/0.1.0
-# bump version dans Cargo.toml, déplacer [Unreleased] → [0.1.0] dans CHANGELOG.md
+
+# 2. Bump de version partout (même numéro)
+#    Cargo.toml                                    [workspace.package] version = "0.1.0"   (puis cargo check → Cargo.lock)
+#    extension/msi-center@blazorde/metadata.json   "version-name": "0.1.0"
+#    packaging/arch/PKGBUILD                       pkgver=0.1.0, pkgrel=1
+#    CHANGELOG.md                                  [Unreleased] → ## [0.1.0] - AAAA-MM-JJ (+ [Unreleased] vide)
+cargo check --workspace && scripts/ci.sh
 git commit -am "chore(release): 0.1.0"
+git push -u origin release/0.1.0
 gh pr create --base main --title "chore(release): 0.1.0"
-# après merge :
-git switch main && git pull && git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
-git switch develop && git merge main && git push
+
+# 3. Merge dans main en merge commit (pas de squash), puis depuis main à jour :
+git switch main && git pull
+scripts/package.sh                # dist/msi-center-linux-0.1.0-1-x86_64.pkg.tar.zst + msi-ec-blazorde-dkms-0.1.0-1-any…
+scripts/release.sh 0.1.0          # vérifie les versions, CI, build, tag v0.1.0, release GitHub
+                                  # (archive des binaires + paquets dist/*-0.1.0-*.pkg.tar.zst joints)
+
+# 4. Back-merge dans develop
+git switch develop && git pull && git merge main && git push   # via PR main → develop si le push direct est refusé
 ```
 
-## Protection des branches (à appliquer une fois le dépôt créé)
+`scripts/release.sh` refuse de publier si `Cargo.toml`, `metadata.json`, le `PKGBUILD` ou le `CHANGELOG.md` ne
+sont pas à la version demandée, et demande confirmation s'il ne trouve aucun paquet dans `dist/`.
 
-`main` et `develop` : PR obligatoire, checks `fmt`, `clippy`, `test`, `deny` requis, pas de force-push, pas de suppression.
-Commande `gh api` fournie dans le README de mise en place lors de la création du dépôt distant.
+## Protection des branches (en place)
+
+`main` et `develop` : PR obligatoire (0 approbation, revues obsolètes rejetées), discussions résolues avant merge,
+pas de force-push, pas de suppression. Pas de checks requis côté serveur (CI locale).
+Squash et merge commit autorisés, rebase désactivé, branche supprimée après merge.

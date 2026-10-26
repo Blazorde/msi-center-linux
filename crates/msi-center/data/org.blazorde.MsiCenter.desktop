@@ -1,0 +1,29 @@
+[Desktop Entry]
+Type=Application
+Name=MSI Center
+GenericName=Réglages de l'ordinateur portable
+Comment=Ventilateurs, profils, batterie, carte graphique et presse-papiers
+Exec=msi-center
+Icon=org.blazorde.MsiCenter
+Terminal=false
+Categories=Settings;HardwareSettings;GTK;
+Keywords=MSI;ventilateur;fan;profil;batterie;GPU;presse-papiers;clipboard;
+StartupNotify=true
+DBusActivatable=true
+X-GNOME-UsesNotifications=true
+Actions=profile-eco;profile-balanced;profile-gaming;
+
+[Desktop Action profile-eco]
+Name=Éco
+Icon=power-profile-power-saver-symbolic
+Exec=gapplication action org.blazorde.MsiCenter profile-eco
+
+[Desktop Action profile-balanced]
+Name=Équilibré
+Icon=power-profile-balanced-symbolic
+Exec=gapplication action org.blazorde.MsiCenter profile-balanced
+
+[Desktop Action profile-gaming]
+Name=Gaming
+Icon=power-profile-performance-symbolic
+Exec=gapplication action org.blazorde.MsiCenter profile-gaming

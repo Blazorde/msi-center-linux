@@ -13,7 +13,7 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 | Path | What | Lang |
 |---|---|---|
 | `crates/msi-core` | Pure logic: EC map, fan curve model, safety validation, profiles. No I/O. | Rust |
-| `crates/msi-daemon` | Root system service, D-Bus `org.blazorde.MsiCenter1`, sysfs I/O, GPU power | Rust |
+| `crates/msi-daemon` | Root system service, D-Bus `org.blazorde.MsiCenter1`, sysfs I/O, GPU power; `msictl` CLI (`src/bin/`) | Rust |
 | `crates/clip-core` | Pure logic: clip model, tags, dedup, retention | Rust |
 | `crates/clipd` | User service, D-Bus `org.blazorde.Clipd1`, storage | Rust |
 | `crates/msi-center` | GTK4/libadwaita app | Rust |
@@ -26,12 +26,18 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 ## Commands
 
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+scripts/ci.sh        # fmt --check, clippy -D warnings, test, extension checks, cargo deny
+scripts/ext-check.sh # GNOME extension only (offline, ~1 s)
+scripts/ext-smoke.sh # GNOME extension end-to-end in an isolated headless shell with a mock msi-daemon
+scripts/package.sh   # Arch packages → dist/ (makepkg in a temp dir, installs nothing)
 ```
 
-Run all three before declaring work done. CI runs the same (`.github/workflows/ci.yml`).
+Run it before declaring work done. There is **no GitHub Actions** (quota unavailable, ADR-0007): `scripts/ci.sh`
+is the CI, enforced by `.githooks/pre-push`; `.githooks/commit-msg` enforces Conventional Commits.
+Hooks need `git config core.hooksPath .githooks` once per clone. Never use `--no-verify`. Releases: `scripts/release.sh`.
+
+Never test the extension (or anything) against the real system bus: it can D-Bus-activate `msi-daemon`,
+which rewrites the EC. The extension itself never auto-starts the daemon (`NO_AUTO_START`).
 
 ## Hard rules (hardware safety)
 
@@ -40,7 +46,7 @@ Run all three before declaring work done. CI runs the same (`.github/workflows/c
    `scripts/spike/` may read EC, never write.
 3. Every value sent to the EC goes through `msi-core` validation (see `docs/hardware/fan-safety.md`). Safety
    invariants must have unit tests; never weaken them to make a test pass.
-4. Daemon shutdown/crash path must restore EC fan mode `auto`.
+4. Daemon shutdown/crash path must restore the EC factory tables, then fan mode `auto` (S5).
 5. Do not run commands that write to `/sys` on the owner's machine without explicit confirmation.
 
 ## Code rules
@@ -55,7 +61,7 @@ Run all three before declaring work done. CI runs the same (`.github/workflows/c
 ## Git workflow
 
 - `main` = released, `develop` = integration. Both protected, PR only.
-- Branch from `develop`: `feat/<scope>-<desc>`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`, `test/…`.
+- Branch from `develop`: `feat/<scope>-<desc>`, `fix/…`, `docs/…`, `chore/…`, `refactor/…`, `test/…`, `perf/…`, `ci/…`.
 - Conventional Commits: `feat(daemon): add fan curve sampling`. Scopes: `core`, `daemon`, `clip`, `clipd`,
   `app`, `ext`, `kernel`, `pkg`, `ci`, `docs`.
 - PR into `develop` (squash). Release: `release/x.y.z` → `main` (merge commit) + tag `vx.y.z` → back-merge to `develop`.

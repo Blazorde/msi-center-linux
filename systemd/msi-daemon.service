@@ -1,0 +1,60 @@
+# msi-daemon: EC fan curves, profiles, dGPU power, battery limit (org.blazorde.MsiCenter1, system bus).
+# Installed to /usr/lib/systemd/system/. Safety rules: docs/hardware/fan-safety.md (S5, S6).
+[Unit]
+Description=MSI Center daemon (fans, profiles, dGPU, battery)
+Documentation=https://github.com/Blazorde/msi-center-linux/blob/main/docs/architecture/dbus-api.md
+# msi-ec must be loaded (DKMS module from kernel/); without it the daemon runs read-only (S8).
+After=systemd-modules-load.service dbus.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/msi-daemon
+# S6: a frozen supervision loop stops sending WATCHDOG=1 (sent every second) → killed and restarted.
+WatchdogSec=15
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+# S5, last line of defence: after any stop (normal, crash, watchdog kill, panic=abort) hand the fans back to the
+# firmware: factory tables (the EC keeps a single copy, also used by `auto`), then fan mode auto. Minimal mode,
+# no D-Bus, idempotent. The daemon also does it itself on SIGTERM/SIGINT and in its panic hook. "-": never fails.
+ExecStopPost=-/usr/bin/msi-daemon --restore-factory
+
+# Settings: /var/lib/msi-center/state.toml
+StateDirectory=msi-center
+StateDirectoryMode=0755
+UMask=0022
+
+# Hardening, compatible with the sysfs writes the daemon needs (msi-ec attributes, power_supply charge limit,
+# PCI remove/rescan, power/control): /sys must stay writable, so no ProtectKernelTunables.
+# /proc/<pid>/fd of every process is read to find dGPU holders: CAP_DAC_READ_SEARCH + CAP_SYS_PTRACE.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# NVML (Gaming telemetry) opens /dev/nvidia*; everything else is denied.
+DevicePolicy=closed
+DeviceAllow=char-nvidia-frontend rw
+DeviceAllow=char-nvidia-uvm rw
+DeviceAllow=char-nvidia-caps rw
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
+Alias=dbus-org.blazorde.MsiCenter1.service

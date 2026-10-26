@@ -150,22 +150,22 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 
 | # | Phase | Description | Status | Parallel | Depends | PRP Plan |
 |---|-------|-------------|--------|----------|---------|----------|
-| 1 | Foundations | Repo, workspace, docs, CI, git workflow | in-progress | - | - | - |
-| 2 | EC spike | Install msi-ec, read fw version, dump & map fan curve registers (read-only) | pending | with 5, 6 | 1 | - |
-| 3 | msi-ec fork | Fan curve sysfs attributes + DKMS package | pending | - | 2 | - |
-| 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | pending | - | 3 | - |
-| 5 | GPU manager | RTD3 config, holder detection, PCI remove/rescan | pending | with 2, 6 | 1 | - |
-| 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | pending | with 2, 5 | 1 | - |
-| 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | pending | with 8 | 4, 5, 6 | - |
-| 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | pending | with 7 | 4, 5, 6 | - |
-| 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | pending | - | 7, 8 | - |
+| 1 | Foundations | Repo, workspace, docs, CI, git workflow | complete | - | - | - |
+| 2 | EC spike | Install msi-ec, read fw version, dump & map fan curve registers (read-only) | complete | with 5, 6 | 1 | #5 |
+| 3 | msi-ec fork | Fan curve sysfs attributes + DKMS package | complete | - | 2 | - |
+| 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | complete | - | 3 | #2 (msi-core) |
+| 5 | GPU manager | RTD3 config, holder detection, PCI remove/rescan | in-progress | with 2, 6 | 1 | #4 (code + probe; real remove untested) |
+| 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | complete | with 2, 5 | 1 | #3 |
+| 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | complete | with 8 | 4, 5, 6 | feat/ext-gnome (headless smoke-tested; owner session test pending) |
+| 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | complete | with 7 | 4, 5, 6 | feat/app-gtk (all pages; owner test pending) |
+| 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | complete | - | 7, 8 | feat/pkg-arch (split PKGBUILD + presets + autostart; owner install test pending) |
 
 ### Phase Details
 
 **Phase 1: Foundations**
 - **Goal**: A repo anyone (human or agent) can contribute to safely.
-- **Scope**: Cargo workspace skeleton, docs tree, ADRs, CLAUDE.md, CI, branch model, templates.
-- **Success signal**: CI green on `develop`, branches protected.
+- **Scope**: Cargo workspace skeleton, docs tree, ADRs, CLAUDE.md, local CI (no GitHub Actions, ADR-0007), branch model, templates.
+- **Success signal**: `scripts/ci.sh` green on `develop`, hooks active, branches protected.
 
 **Phase 2: EC spike**
 - **Goal**: Know exactly which EC bytes encode the fan curve on this firmware.
@@ -197,7 +197,7 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 - **Success signal**: Owner uses it daily instead of Windows MSI Center.
 
 **Phase 9: Packaging**
-- **Goal**: Reproducible install via `makepkg -si`.
+- **Goal**: Reproducible install via `scripts/package.sh` + `pacman -U` (split packages `msi-center-linux`, `msi-ec-blazorde-dkms`).
 - **Success signal**: Clean install on a fresh user, `v0.1.0` tagged on `main`.
 
 ### Parallelism Notes
@@ -221,6 +221,7 @@ Frontends (7, 8) only depend on the D-Bus contracts and can be built against moc
 | Packaging | PKGBUILD in repo | AUR, Flatpak | Private repo; Flatpak can't ship a root daemon/DKMS |
 | License | GPL-3.0-or-later | MIT, none | Compatible with msi-ec (GPL-2.0+) & GNOME extension ecosystem |
 | Workflow | main/develop + short-lived branches, Conventional Commits | Trunk-based | Owner request |
+| CI | Local: `scripts/ci.sh` + git hooks | GitHub Actions, self-hosted runner, public repo | Actions quota exhausted; owner refused alternatives (ADR-0007) |
 
 ---
 

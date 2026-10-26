@@ -7,9 +7,24 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 clip-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "signal", "sync"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "net", "time"] }
+zbus = { workspace = true, features = ["proxy", "p2p"] }
 
 [lints]
 workspace = true
