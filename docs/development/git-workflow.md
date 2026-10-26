@@ -58,7 +58,8 @@ Le quota GitHub Actions n'est pas disponible : la CI tourne sur la machine de de
 |---|---|---|
 | `scripts/ci.sh` | à la main, et via le hook `pre-push` | `fmt`, `clippy -D warnings`, `test`, `cargo deny` (licences/vulnérabilités) |
 | `.githooks/commit-msg` | à chaque commit | Conventional Commits, ≤ 72 caractères |
-| `scripts/release.sh x.y.z` | release depuis `main` | CI, build release, tag, release GitHub avec notes du CHANGELOG |
+| `scripts/package.sh` | avant une release, ou pour installer | paquets Arch dans `dist/` (makepkg en dossier temporaire, n'installe rien) |
+| `scripts/release.sh x.y.z` | release depuis `main` | CI, build release, tag, release GitHub avec notes du CHANGELOG et paquets `dist/` |
 | Dependabot | hebdo | MAJ cargo → PR sur `develop` |
 
 Activer les hooks (une fois par clone) : `git config core.hooksPath .githooks`.
@@ -71,17 +72,35 @@ Activer les hooks (une fois par clone) : `git config core.hooksPath .githooks`.
 
 ## Faire une release
 
+Checklist complète de la première : [release-checklist.md](../product/release-checklist.md).
+
 ```bash
+# 1. Branche de release depuis develop
 git switch develop && git pull
 git switch -c release/0.1.0
-# bump version dans Cargo.toml, déplacer [Unreleased] → [0.1.0] dans CHANGELOG.md
+
+# 2. Bump de version partout (même numéro)
+#    Cargo.toml                                    [workspace.package] version = "0.1.0"   (puis cargo check → Cargo.lock)
+#    extension/msi-center@blazorde/metadata.json   "version-name": "0.1.0"
+#    packaging/arch/PKGBUILD                       pkgver=0.1.0, pkgrel=1
+#    CHANGELOG.md                                  [Unreleased] → ## [0.1.0] - AAAA-MM-JJ (+ [Unreleased] vide)
+cargo check --workspace && scripts/ci.sh
 git commit -am "chore(release): 0.1.0"
+git push -u origin release/0.1.0
 gh pr create --base main --title "chore(release): 0.1.0"
-# après merge (merge commit) :
+
+# 3. Merge dans main en merge commit (pas de squash), puis depuis main à jour :
 git switch main && git pull
-scripts/release.sh 0.1.0          # CI, build, tag v0.1.0, release GitHub
-git switch develop && git merge main && git push   # via PR si develop refuse le push direct
+scripts/package.sh                # dist/msi-center-linux-0.1.0-1-x86_64.pkg.tar.zst + msi-ec-blazorde-dkms-0.1.0-1-any…
+scripts/release.sh 0.1.0          # vérifie les versions, CI, build, tag v0.1.0, release GitHub
+                                  # (archive des binaires + paquets dist/*-0.1.0-*.pkg.tar.zst joints)
+
+# 4. Back-merge dans develop
+git switch develop && git pull && git merge main && git push   # via PR main → develop si le push direct est refusé
 ```
+
+`scripts/release.sh` refuse de publier si `Cargo.toml`, `metadata.json`, le `PKGBUILD` ou le `CHANGELOG.md` ne
+sont pas à la version demandée, et demande confirmation s'il ne trouve aucun paquet dans `dist/`.
 
 ## Protection des branches (en place)
 

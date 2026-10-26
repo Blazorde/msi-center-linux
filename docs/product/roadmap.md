@@ -12,7 +12,7 @@ Source de vérité détaillée : le [PRD](../../.claude/PRPs/prds/msi-center-lin
 | 6 | clip-core + clipd | Stockage, tags, recherche, purge au logout | 1 | ✅ backend |
 | 7 | Extension GNOME | Top bar configurable, menu profils, `Super+V` | 4, 5, 6 | 🟡 code fait (smoke test headless), test réel à faire |
 | 8 | App msi-center | Onglets Ventilos · Performance/GPU · Batterie · Presse-papiers · Réglages | 4, 5, 6 | 🟡 app faite, test propriétaire à faire |
-| 9 | Packaging | PKGBUILD, systemd, polkit, release `v0.1.0` | 7, 8 | ⚪ |
+| 9 | Packaging | PKGBUILD, systemd, polkit, release `v0.1.0` | 7, 8 | 🟡 paquets faits, test propriétaire puis [release](release-checklist.md) |
 
 Les phases 2, 5 et 6 peuvent avancer en parallèle ; 7 et 8 aussi.
 
