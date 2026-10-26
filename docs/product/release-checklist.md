@@ -10,7 +10,7 @@ Les cases « propriétaire » se font sur la machine réelle ; personne d'autre 
 - [ ] Contenu vérifié sans installer :
       `tar -tf dist/msi-center-linux-*.pkg.tar.zst | sort` et `tar -tf dist/msi-ec-blazorde-dkms-*.pkg.tar.zst`
       (binaires `msi-daemon msictl clipd msi-center`, unités, presets, polkit, D-Bus, autostart,
-      extension avec `schemas/gschemas.compiled`, `/usr/src/msi-ec-blazorde-0.13-blazorde.1/dkms.conf`,
+      extension avec `schemas/gschemas.compiled`, `/usr/src/msi-ec-blazorde-0.13.1/dkms.conf`,
       `/usr/lib/modules-load.d/msi-ec.conf`).
 - [ ] `namcap` sur le PKGBUILD et les paquets si disponible (`sudo pacman -S namcap`), avertissements lus.
 

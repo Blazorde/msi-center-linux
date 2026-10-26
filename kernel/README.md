@@ -27,7 +27,7 @@ Test manuel par le propriétaire : [`TESTING.md`](TESTING.md).
 
 ## Installer via DKMS
 
-Paquet DKMS `msi-ec-blazorde`, version `0.13-blazorde.1` ; le module garde le nom `msi_ec`. Ne **pas** utiliser
+Paquet DKMS `msi-ec-blazorde`, version `0.13.1` (sans tiret : le hook pacman de DKMS coupe au dernier `-`), module `0.13-blazorde.1` ; le module garde le nom `msi_ec`. Ne **pas** utiliser
 les cibles `make install` / `make dkms-install` du `Makefile` upstream (elles visent le paquet upstream `msi_ec`).
 
 ```bash
@@ -36,8 +36,8 @@ dkms status | grep -i msi
 # sudo dkms remove msi-ec/<version> --all
 
 # 1. Installer
-sudo dkms add ./kernel/msi-ec                     # copie dans /usr/src/msi-ec-blazorde-0.13-blazorde.1
-sudo dkms install msi-ec-blazorde/0.13-blazorde.1 # build (LLVM=1 ajouté par dkms pour un noyau clang) + install
+sudo dkms add ./kernel/msi-ec                     # copie dans /usr/src/msi-ec-blazorde-0.13.1
+sudo dkms install msi-ec-blazorde/0.13.1 # build (LLVM=1 ajouté par dkms pour un noyau clang) + install
 modinfo -F version msi_ec                         # 0.13-blazorde.1 (le module DKMS dans updates/ prime)
 
 # 2. Charger (et au démarrage, facultatif)
@@ -52,8 +52,8 @@ Désinstaller :
 
 ```bash
 sudo modprobe -r msi_ec
-sudo dkms remove msi-ec-blazorde/0.13-blazorde.1 --all
-sudo rm -rf /usr/src/msi-ec-blazorde-0.13-blazorde.1
+sudo dkms remove msi-ec-blazorde/0.13.1 --all
+sudo rm -rf /usr/src/msi-ec-blazorde-0.13.1
 sudo rm -f /etc/modules-load.d/msi-ec.conf
 ```
 
