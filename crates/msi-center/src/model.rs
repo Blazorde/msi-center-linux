@@ -93,6 +93,10 @@ impl Telemetry {
 pub struct DaemonStatus {
     /// Selected profile name.
     pub profile: String,
+    /// Fan profile of the selected profile (`silent`, `auto`, …); empty with an older daemon.
+    pub fan_profile: String,
+    /// Default fan profile of the selected profile; empty with an older daemon.
+    pub default_fan_profile: String,
     /// Automatic profile on AC plug/unplug.
     pub auto_profile_on_power: bool,
     /// On AC power.
@@ -121,6 +125,8 @@ impl DaemonStatus {
     pub fn from_map(m: &HashMap<String, OwnedValue>) -> Self {
         Self {
             profile: get_str(m, "Profile").unwrap_or_default(),
+            fan_profile: get_str(m, "FanProfile").unwrap_or_default(),
+            default_fan_profile: get_str(m, "DefaultFanProfile").unwrap_or_default(),
             auto_profile_on_power: get(m, "AutoProfileOnPower").unwrap_or_default(),
             on_ac_power: get(m, "OnAcPower").unwrap_or_default(),
             fan_mode: get_str(m, "FanMode").unwrap_or_default(),
@@ -247,6 +253,64 @@ pub fn profile_description(p: msi_core::profile::Profile) -> String {
         GpuMode::Active => "RTX 4070 active",
     };
     format!("{curve} · {shift} · {gpu}")
+}
+
+/// Symbolic icon of a fan profile.
+#[must_use]
+pub const fn fan_profile_icon(fp: msi_core::fan_profile::FanProfile) -> &'static str {
+    use msi_core::fan_profile::FanProfile;
+    match fp {
+        FanProfile::Silent => "weather-clear-night-symbolic",
+        FanProfile::Auto => "emblem-system-symbolic",
+        FanProfile::Balanced => "weather-windy-symbolic",
+        FanProfile::Turbo => "weather-tornado-symbolic",
+        FanProfile::Custom => "document-edit-symbolic",
+    }
+}
+
+/// Name of the parameterised application action selecting a fan profile: `app.fan::turbo`.
+pub const FAN_PROFILE_ACTION: &str = "fan";
+
+/// Name of the parameterless application action selecting `fp` (`fan-silent`, …).
+#[must_use]
+pub fn fan_profile_action_name(fp: msi_core::fan_profile::FanProfile) -> String {
+    format!("{FAN_PROFILE_ACTION}-{}", fp.as_str())
+}
+
+/// The fan profile selected by activating `action` with `target`: `("fan", Some("auto"))` or
+/// `("fan-auto", None)`; a leading `app.` is accepted. Anything else is `None`.
+#[must_use]
+pub fn parse_fan_profile_action(
+    action: &str,
+    target: Option<&str>,
+) -> Option<msi_core::fan_profile::FanProfile> {
+    let action = action.strip_prefix("app.").unwrap_or(action);
+    let name = match (action, target) {
+        (FAN_PROFILE_ACTION, Some(t)) => t.trim(),
+        (a, None) => a.strip_prefix(FAN_PROFILE_ACTION)?.strip_prefix('-')?,
+        _ => return None,
+    };
+    name.parse().ok()
+}
+
+/// French label of a fan profile id (`Inconnu` for anything else, empty for an older daemon).
+#[must_use]
+pub fn fan_profile_label(id: &str) -> &'static str {
+    match id.parse::<msi_core::fan_profile::FanProfile>() {
+        Ok(fp) => fp.label(),
+        Err(_) if id.is_empty() => "",
+        Err(_) => "Inconnu",
+    }
+}
+
+/// Hint under the fan profile switch: which fan profile the performance profile uses by default.
+#[must_use]
+pub fn fan_profile_default_hint(profile: &str, default: &str) -> String {
+    let fp = fan_profile_label(default);
+    if fp.is_empty() {
+        return String::new();
+    }
+    format!("Par défaut pour {} : {fp}", profile_label(profile))
 }
 
 /// French label of a dGPU state.
@@ -577,6 +641,61 @@ mod tests {
             ("page", Some("eco")),
         ] {
             assert_eq!(parse_profile_action(a, t), None, "{a} {t:?}");
+        }
+    }
+
+    #[test]
+    fn decodes_the_fan_profile_and_tolerates_an_older_daemon() {
+        let m = map(vec![
+            ("Profile", Value::from("gaming")),
+            ("FanProfile", Value::from("auto")),
+            ("DefaultFanProfile", Value::from("turbo")),
+        ]);
+        let s = DaemonStatus::from_map(&m);
+        assert_eq!(
+            (s.fan_profile.as_str(), s.default_fan_profile.as_str()),
+            ("auto", "turbo")
+        );
+        let old = DaemonStatus::from_map(&map(vec![("Profile", Value::from("eco"))]));
+        assert_eq!(old.fan_profile, "");
+        assert_eq!(fan_profile_label(&old.fan_profile), "");
+    }
+
+    #[test]
+    fn fan_profile_labels_icons_and_hint() {
+        use msi_core::fan_profile::FanProfile;
+        assert_eq!(fan_profile_label("custom"), "Personnalisé");
+        assert_eq!(fan_profile_label("max"), "Inconnu");
+        for fp in FanProfile::ALL {
+            assert!(fan_profile_icon(fp).ends_with("-symbolic"));
+        }
+        assert_eq!(
+            fan_profile_default_hint("gaming", "turbo"),
+            "Par défaut pour Gaming : Turbo"
+        );
+        assert_eq!(fan_profile_default_hint("eco", ""), "");
+    }
+
+    #[test]
+    fn fan_profile_actions() {
+        use msi_core::fan_profile::FanProfile;
+        for fp in FanProfile::ALL {
+            let name = fan_profile_action_name(fp);
+            assert_eq!(parse_fan_profile_action(&name, None), Some(fp));
+            assert_eq!(parse_fan_profile_action(&format!("app.{name}"), None), Some(fp));
+            assert_eq!(
+                parse_fan_profile_action(FAN_PROFILE_ACTION, Some(fp.as_str())),
+                Some(fp)
+            );
+        }
+        for (a, t) in [
+            ("fan", None),
+            ("fan", Some("max")),
+            ("fan-auto", Some("auto")),
+            ("fanauto", None),
+            ("profile", Some("auto")),
+        ] {
+            assert_eq!(parse_fan_profile_action(a, t), None, "{a} {t:?}");
         }
     }
 

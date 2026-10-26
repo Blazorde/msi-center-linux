@@ -8,6 +8,7 @@ pub mod service;
 
 use std::collections::HashMap;
 
+use msi_core::fan_profile::FanProfile;
 use msi_core::profile::{GpuMode, Profile};
 use zbus::{OwnedVariant as OwnedValue, Variant as Value};
 
@@ -56,8 +57,10 @@ pub struct DemoState {
     pub gpu_state: &'static str,
     /// Tick until which [`BUSY_HOLDER`] holds the dGPU.
     pub busy_until: Option<u64>,
-    /// Fan mode (`advanced`, or `auto` after `RestoreFactory`).
+    /// Fan mode (`advanced`, or `auto` under the Auto fan profile and after `RestoreFactory`).
     pub fan_mode: &'static str,
+    /// Fan profile chosen per profile when it differs from the default.
+    pub fan_profiles: HashMap<Profile, FanProfile>,
 }
 
 impl Default for DemoState {
@@ -71,7 +74,18 @@ impl Default for DemoState {
             gpu_state: gpu_state_of(Profile::Balanced),
             busy_until: None,
             fan_mode: "advanced",
+            fan_profiles: HashMap::new(),
         }
+    }
+}
+
+/// EC fan mode under `fp`.
+#[must_use]
+pub fn fan_mode_of(fp: FanProfile) -> &'static str {
+    if fp == FanProfile::Auto {
+        "auto"
+    } else {
+        "advanced"
     }
 }
 
@@ -99,7 +113,7 @@ impl DemoState {
     pub fn set_profile(&mut self, p: Profile, now: u64) -> ProfileOutcome {
         let from_gaming = self.profile == Profile::Gaming;
         self.profile = p;
-        self.fan_mode = "advanced";
+        self.fan_mode = fan_mode_of(self.fan_profile());
         if p == Profile::Eco && from_gaming {
             self.busy_until = Some(now + BUSY_TICKS);
             self.gpu_state = "suspended";
@@ -111,6 +125,25 @@ impl DemoState {
         self.busy_until = None;
         self.gpu_state = gpu_state_of(p);
         ProfileOutcome::Applied
+    }
+
+    /// Fan profile of the selected profile.
+    #[must_use]
+    pub fn fan_profile(&self) -> FanProfile {
+        self.fan_profiles
+            .get(&self.profile)
+            .copied()
+            .unwrap_or_else(|| self.profile.default_fan_profile())
+    }
+
+    /// Selects `fp` for the selected profile (the default forgets the override).
+    pub fn set_fan_profile(&mut self, fp: FanProfile) {
+        if fp == self.profile.default_fan_profile() {
+            self.fan_profiles.remove(&self.profile);
+        } else {
+            self.fan_profiles.insert(self.profile, fp);
+        }
+        self.fan_mode = fan_mode_of(fp);
     }
 
     /// Advances to tick `now`; `true` if a property changed (the holder went away).
@@ -488,6 +521,20 @@ mod tests {
         assert_eq!(s.gpu_state, "removed");
         assert_eq!(s.holders(), Vec::new());
         assert_eq!(s.set_profile(Profile::Eco, 30), ProfileOutcome::Applied);
+    }
+
+    #[test]
+    fn fan_profiles_are_remembered_per_profile() {
+        let mut s = DemoState::default();
+        assert_eq!(s.fan_profile(), FanProfile::Balanced);
+        s.set_fan_profile(FanProfile::Auto);
+        assert_eq!(s.fan_mode, "auto");
+        s.set_profile(Profile::Gaming, 0);
+        assert_eq!((s.fan_profile(), s.fan_mode), (FanProfile::Turbo, "advanced"));
+        s.set_profile(Profile::Balanced, 1);
+        assert_eq!((s.fan_profile(), s.fan_mode), (FanProfile::Auto, "auto"));
+        s.set_fan_profile(FanProfile::Balanced);
+        assert!(s.fan_profiles.is_empty());
     }
 
     #[test]
