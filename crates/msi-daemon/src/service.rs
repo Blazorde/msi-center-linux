@@ -41,7 +41,8 @@ pub enum MsiError {
     Hardware(String),
     /// An EC write or readback failed: the EC was put back in fan mode `auto` (S7).
     SafetyFallback(String),
-    /// Éco could not remove the dGPU (held by processes, display connected…). The EC part is applied.
+    /// A dGPU sysfs write failed during a profile change. Kept for compatibility: a **refused** removal (dGPU
+    /// held) no longer fails `SetProfile` (the dGPU is kept in runtime suspend, `SafetyEvent("gpu_busy")`).
     GpuBusy(String),
     /// Internal failure (details in the journal).
     Internal(String),
@@ -294,6 +295,10 @@ impl MsiCenter {
         if old.gpu_state != new.gpu_state {
             res.push(self.gpu_state_changed(e).await);
         }
+        if old.read_only != new.read_only {
+            res.push(self.read_only_changed(e).await);
+            res.push(self.read_only_reason_changed(e).await);
+        }
         for r in res {
             if let Err(err) = r {
                 tracing::warn!(error = %err, "cannot emit PropertiesChanged");
@@ -336,8 +341,8 @@ impl MsiCenter {
 #[interface(name = "org.blazorde.MsiCenter1")]
 impl MsiCenter {
     /// Selects and applies a profile (`eco`, `balanced`, `gaming`). The EC part (curves, fan mode, shift mode)
-    /// is applied before the dGPU step; if the dGPU step is refused the call fails with `GpuBusy` but the EC
-    /// part and the selection stay.
+    /// is applied before the dGPU step. If Éco cannot remove the dGPU (held by processes…) the call still
+    /// succeeds: the dGPU is kept in runtime suspend and `SafetyEvent("gpu_busy", 0, reason)` is emitted.
     async fn set_profile(
         &self,
         profile: String,
@@ -435,6 +440,19 @@ impl MsiCenter {
         res.map_err(Into::into)
     }
 
+    /// Hands the fans back to the firmware: factory tables, then fan mode `auto`. Lasts until a profile or curve
+    /// is applied again (`SetProfile`, `SetFanCurve`, …); resume and the AC switch leave it alone.
+    async fn restore_factory(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), MsiError> {
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, events, status) = self.run(Controller::restore_factory).await?;
+        self.publish(&emitter, events, status).await;
+        res.map_err(Into::into)
+    }
+
     /// Battery charge limit, 50–100 %. Saved and re-applied at start.
     async fn set_charge_limit(
         &self,
@@ -467,7 +485,8 @@ impl MsiCenter {
     async fn telemetry(emitter: &SignalEmitter<'_>, data: HashMap<String, OwnedVariant>) -> zbus::Result<()>;
 
     /// Safety event: `kind` (`boost_forced`, `boost_released`, `readback_mismatch`, `write_failed`,
-    /// `ec_reset`), `value` (°C for boost events, else 0) and an English `detail`.
+    /// `ec_reset`, `fan_stalled`, `gpu_busy`), `value` (°C for boost and stall events, else 0) and an English
+    /// `detail`.
     #[zbus(signal)]
     async fn safety_event(
         emitter: &SignalEmitter<'_>,
@@ -525,7 +544,7 @@ impl MsiCenter {
         self.snapshot().gpu_state.as_str().to_owned()
     }
 
-    /// S8: `true` when the EC is not supported and nothing is ever written.
+    /// `true` when nothing is written: S8 (EC not supported) or S9 (fan stall, until the daemon restarts).
     #[zbus(property)]
     fn read_only(&self) -> bool {
         self.snapshot().read_only.is_some()
@@ -588,6 +607,7 @@ mod tests {
             cpu_temp: Some(55),
             gpu_temp: None,
             fan_pct: [Some(33), None],
+            fan_rpm: [Some(2200), None],
             cooler_boost: Some(false),
         };
         let m = telemetry_map(&r);

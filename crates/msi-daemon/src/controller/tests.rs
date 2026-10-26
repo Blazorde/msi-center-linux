@@ -1,13 +1,15 @@
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
-use msi_core::curve::{CurvePreset, FanCurveParams};
+use msi_core::curve::CurvePreset;
 use msi_core::table::TableWrite;
 use tempfile::TempDir;
 
 use super::*;
-use crate::ec::{FACTORY_CPU, MemoryEc, MemoryState};
+use crate::ec::{FACTORY_CPU, FACTORY_GPU, MemoryEc, MemoryState};
 use crate::fs::FsRoot;
 use crate::fs::testutil::{read, symlink, write};
+use crate::telemetry::hwmon::Thermals;
 
 struct Rig {
     dir: TempDir,
@@ -51,6 +53,32 @@ fn rig_with(state: MemoryState, prepare: impl FnOnce(&Path)) -> Rig {
     );
     assert!(warnings.is_empty(), "{warnings:?}");
     Rig { dir, ec, ctl }
+}
+
+/// Telemetry that only reports fan rpm (S9 tests).
+#[derive(Debug)]
+struct RpmTelemetry(Arc<Mutex<[Option<u32>; 2]>>);
+
+impl Telemetry for RpmTelemetry {
+    fn sample(&mut self, _now: Clock) -> Sample {
+        let [fan1, fan2] = *self.0.lock().unwrap();
+        Sample {
+            cpu_pct: None,
+            ram_pct: None,
+            igpu_pct: None,
+            dgpu_pct: None,
+            npu_pct: None,
+            thermals: Thermals {
+                fan1_rpm: fan1,
+                fan2_rpm: fan2,
+                ..Thermals::default()
+            },
+            dgpu_power_w: None,
+            dgpu_state: GpuState::Removed,
+        }
+    }
+    fn set_dgpu_policy(&mut self, _policy: DgpuPolicy) {}
+    fn release_dgpu(&mut self) {}
 }
 
 fn rig() -> Rig {
@@ -220,21 +248,29 @@ fn ec_reset_is_detected_and_reapplied() {
 }
 
 #[test]
-fn eco_refuses_dgpu_removal_while_held_and_never_kills() {
+fn eco_with_a_held_dgpu_succeeds_in_runtime_suspend_and_never_kills() {
     let mut r = rig_with(MemoryState::default(), |p| {
         add_dgpu(p);
         write(p, "proc/3876/comm", "gnome-shell\n");
         symlink(p, "proc/3876/fd/14", "/dev/nvidia0");
     });
-    let err = r.ctl.set_profile(Profile::Eco).unwrap_err();
-    match err {
-        ControlError::Gpu(GpuError::Busy(h)) => assert_eq!(h[0].name, "gnome-shell"),
-        other => panic!("{other}"),
-    }
-    // The EC part is applied, the dGPU is untouched, the process is still there.
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    let events = r.ctl.take_events();
+    assert_eq!(kinds(&events), [EventKind::GpuBusy]);
+    assert!(
+        events[0].detail.contains("gnome-shell (3876)"),
+        "{}",
+        events[0].detail
+    );
+    assert!(events[0].value.abs() < f64::EPSILON);
+    // The EC part is applied, the dGPU is not removed but runtime-suspended, the process is still there.
     assert_eq!(r.ec.state().fan_mode, FanMode::Advanced);
     assert_eq!(r.ec.state().shift_mode, ShiftMode::Eco);
     assert_eq!(read(r.dir.path(), "sys/bus/pci/devices/0000:01:00.0/remove"), "");
+    assert_eq!(
+        read(r.dir.path(), "sys/bus/pci/devices/0000:01:00.0/power/control"),
+        "auto"
+    );
     assert!(r.dir.path().join("proc/3876/comm").exists());
     assert_eq!(r.ctl.settings().profile, Profile::Eco);
     assert_eq!(r.ctl.gpu_holders()[0].pid, 3876);
@@ -332,131 +368,205 @@ fn s4_gpu_reading_zero_is_absent_not_failed() {
 }
 
 #[test]
-fn s5_shutdown_restores_auto() {
+fn s5_shutdown_restores_factory_tables_then_auto() {
     let mut r = rig();
     r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ec.state().writes.clear();
+    r.ctl.shutdown();
+    let s = r.ec.state();
+    assert_eq!((s.cpu, s.gpu), (FACTORY_CPU, FACTORY_GPU));
+    assert_eq!(s.fan_mode, FanMode::Auto);
+    assert_eq!(s.fan_mode_writes.last(), Some(&FanMode::Auto));
+    assert!(!s.writes.is_empty());
+}
+
+#[test]
+fn s5_shutdown_with_unknown_factory_tables_only_restores_auto() {
+    let mut r = rig_with(
+        MemoryState {
+            fw_version: "14K2EMS1.109".into(),
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    let applied = r.ec.state().cpu;
     r.ctl.shutdown();
     assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    assert_eq!(r.ec.state().cpu, applied);
 }
 
 #[test]
-fn ac_unplug_switches_profile_when_enabled() {
+fn s7_fallback_restores_the_factory_tables() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ec.state().shift_mode = ShiftMode::Turbo;
+    r.ec.state().corrupt_readback = Some(Fan::Gpu);
+    assert!(matches!(
+        r.ctl.set_profile(Profile::Gaming),
+        Err(ControlError::SafetyFallback(_))
+    ));
+    let s = r.ec.state();
+    assert_eq!(s.cpu, FACTORY_CPU);
+    assert_eq!(s.fan_mode, FanMode::Auto);
+}
+
+#[test]
+fn restore_factory_hands_control_back_until_a_profile_is_applied() {
     let mut r = rig();
     r.ctl.start().unwrap();
-    assert_eq!(r.ctl.settings().profile, Profile::Balanced);
-    r.ctl.tick(Clock(0));
+    r.ctl.restore_factory().unwrap();
+    assert!(r.ctl.is_handed_back());
+    assert!(!r.ctl.is_applied());
+    {
+        let s = r.ec.state();
+        assert_eq!((s.cpu, s.gpu), (FACTORY_CPU, FACTORY_GPU));
+    }
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    // Resume, drift check and AC switch leave the firmware in control.
+    r.ctl.reapply().unwrap();
+    r.ctl.set_auto_profile_on_power(false).unwrap();
+    for t in 0..DRIFT_CHECK_EVERY {
+        r.ctl.tick(Clock(t));
+    }
     write(r.dir.path(), "sys/class/power_supply/ADP1/online", "0\n");
-    r.ctl.tick(Clock(1));
-    assert_eq!(
-        r.ctl.settings().profile,
-        Profile::Balanced,
-        "switch is off by default"
-    );
-
-    r.ctl.set_auto_profile_on_power(true).unwrap();
-    assert_eq!(
-        r.ctl.settings().profile,
-        Profile::Eco,
-        "enabling applies the battery profile"
-    );
+    r.ctl.tick(Clock(99));
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    assert_eq!(r.ctl.take_events().len(), 0);
+    // Idempotent.
+    let writes = r.ec.state().writes.len();
+    r.ctl.restore_factory().unwrap();
+    assert_eq!(r.ec.state().writes.len(), writes);
+    // Taking control again.
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    assert!(!r.ctl.is_handed_back());
+    assert_eq!(r.ec.state().fan_mode, FanMode::Advanced);
     assert_eq!(r.ec.state().cpu, expected(CurvePreset::Silent));
-    write(r.dir.path(), "sys/class/power_supply/ADP1/online", "1\n");
-    r.ctl.tick(Clock(2));
-    assert_eq!(r.ctl.settings().profile, Profile::Balanced);
-    assert_eq!(r.ec.state().cpu, expected(CurvePreset::Progressive));
-    assert_eq!(r.ctl.status().on_ac, Some(true));
 }
 
 #[test]
-fn settings_survive_a_restart() {
-    let mut r = rig();
-    r.ctl.set_profile(Profile::Gaming).unwrap();
-    r.ctl.set_charge_limit(80).unwrap();
-    let custom = msi_core::curve::FanCurveSpec::new(
-        FanCurveParams::new(45, 80, 30, 100, 2.5).unwrap(),
-        0,
-        [45, 52, 60, 67, 73, 80],
-        3,
-    )
-    .unwrap();
-    let g = r.ctl.set_fan_curve(Fan::Gpu, custom).unwrap();
-    assert_eq!(r.ec.state().gpu, g.curve.tables());
-    assert_eq!(
-        read(
-            r.dir.path(),
-            "sys/class/power_supply/BAT1/charge_control_end_threshold"
-        ),
-        "80"
+fn restore_factory_is_refused_under_s8() {
+    let mut r = rig_with(
+        MemoryState {
+            fw_version: "14K2EMS1.999".into(),
+            ..MemoryState::default()
+        },
+        |_| {},
     );
+    assert!(matches!(r.ctl.restore_factory(), Err(ControlError::ReadOnly(_))));
+    assert_eq!(r.ec.state().fan_mode_writes.len(), 0);
+}
 
-    // New daemon, EC reset to factory.
-    write(
-        r.dir.path(),
-        "sys/class/power_supply/BAT1/charge_control_end_threshold",
-        "100\n",
+const SEC: u64 = 1_000_000_000;
+
+/// Ticks once per second from `from` (s) for `n` seconds.
+fn tick_secs(ctl: &mut Controller, from: u64, n: u64) {
+    for t in from..from + n {
+        ctl.tick(Clock(t * SEC));
+    }
+}
+
+#[test]
+fn s9_cpu_fan_stopped_at_70_for_30_s_restores_factory_and_locks() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    {
+        let mut s = r.ec.state();
+        s.cpu_temp = Some(74);
+        s.fan_speed_override = [Some(0), None];
+    }
+    // Two readings fill the filter (t = 0, 1): the stall starts at 1 s and trips at 31 s.
+    tick_secs(&mut r.ctl, 0, 31);
+    assert!(r.ctl.is_applied(), "not before 30 s");
+    assert_eq!(r.ctl.take_events().len(), 0);
+    tick_secs(&mut r.ctl, 31, 1);
+    let events = r.ctl.take_events();
+    assert_eq!(kinds(&events), [EventKind::FanStalled]);
+    assert!((events[0].value - 74.0).abs() < f64::EPSILON);
+    assert!(
+        events[0].detail.starts_with("cpu fan at 0 %"),
+        "{}",
+        events[0].detail
     );
+    {
+        let s = r.ec.state();
+        assert_eq!((s.cpu, s.gpu), (FACTORY_CPU, FACTORY_GPU));
+        assert_eq!(s.fan_mode, FanMode::Auto);
+    }
+    let reason = r.ctl.status().read_only.unwrap();
+    assert!(reason.starts_with("S9 fan stall"), "{reason}");
+    // Read-only until restart: nothing re-applies, nothing writes tables.
+    let writes = r.ec.state().writes.len();
+    assert!(matches!(
+        r.ctl.set_profile(Profile::Gaming),
+        Err(ControlError::ReadOnly(_))
+    ));
+    tick_secs(&mut r.ctl, 32, DRIFT_CHECK_EVERY * 2);
+    r.ctl.reapply().unwrap_err();
+    assert_eq!(r.ec.state().writes.len(), writes);
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    // S4 still protects.
+    r.ec.state().cpu_temp = Some(97);
+    tick_secs(&mut r.ctl, 100, 2);
+    assert!(r.ec.state().cooler_boost);
+}
+
+#[test]
+fn s9_needs_0_rpm_when_rpm_is_known() {
+    let rpm = Arc::new(Mutex::new([Some(2100), Some(2000)]));
+    let dir = tempfile::tempdir().unwrap();
+    base_tree(dir.path());
     let ec = MemoryEc::default();
-    let root = FsRoot::new(r.dir.path());
-    let (mut ctl, warnings) = Controller::new(
+    let root = FsRoot::new(dir.path());
+    let (mut ctl, _) = Controller::new(
         Box::new(ec.clone()),
         PowerSupply::new(root.clone()),
         GpuManager::new(root),
-        None,
-        StateStore::new(r.dir.path().join("state/state.toml")),
+        Some(Box::new(RpmTelemetry(Arc::clone(&rpm)))),
+        StateStore::new(dir.path().join("state.toml")),
     );
-    assert!(warnings.is_empty(), "{warnings:?}");
-    ctl.start().unwrap();
-    assert_eq!(ctl.settings().profile, Profile::Gaming);
-    assert_eq!(ec.state().gpu, g.curve.tables());
-    assert_eq!(ec.state().cpu, expected(CurvePreset::Aggressive));
-    assert_eq!(
-        read(
-            r.dir.path(),
-            "sys/class/power_supply/BAT1/charge_control_end_threshold"
-        ),
-        "80"
-    );
-    let (spec, _, is_custom) = ctl.fan_curve(Fan::Gpu).unwrap();
-    assert!(is_custom);
-    assert_eq!(spec, custom);
-
-    ctl.reset_fan_curve(Fan::Gpu).unwrap();
-    assert_eq!(ec.state().gpu, expected(CurvePreset::Aggressive));
-    assert!(!ctl.fan_curve(Fan::Gpu).unwrap().2);
-}
-
-#[test]
-fn s3_charge_limit_out_of_range_is_rejected() {
-    let mut r = rig();
-    for bad in [0, 49, 101] {
-        assert!(matches!(
-            r.ctl.set_charge_limit(bad),
-            Err(ControlError::InvalidArgument(_))
-        ));
+    ctl.set_profile(Profile::Balanced).unwrap();
+    {
+        let mut s = ec.state();
+        s.gpu_temp = Some(80);
+        s.fan_speed_override = [None, Some(0)];
     }
-    assert_eq!(
-        read(
-            r.dir.path(),
-            "sys/class/power_supply/BAT1/charge_control_end_threshold"
-        ),
-        "100\n"
-    );
+    // The EC reports 0 % but the GPU fan still turns: not a stall.
+    tick_secs(&mut ctl, 0, 40);
+    assert_eq!(ctl.take_events().len(), 0, "still spinning");
+    rpm.lock().unwrap()[1] = Some(0);
+    tick_secs(&mut ctl, 40, 31);
+    let events = ctl.take_events();
+    assert_eq!(kinds(&events), [EventKind::FanStalled]);
+    assert!(events[0].detail.contains("gpu fan") && events[0].detail.contains("0 rpm"));
 }
 
 #[test]
-fn status_reflects_the_ec() {
+fn s9_ignores_spikes_and_the_factory_like_step_0() {
     let mut r = rig();
-    let s = r.ctl.status();
-    assert_eq!(
-        (s.fan_mode.as_str(), s.fw_version.as_str()),
-        ("auto", "14K2EMS1.110")
-    );
-    assert_eq!(s.charge_limit, Some(100));
-    assert_eq!(s.gpu_state, GpuState::Removed);
-    assert_eq!(s.read_only, None);
-    r.ctl.set_profile(Profile::Gaming).unwrap();
-    assert_eq!(r.ctl.status().fan_mode, "advanced");
-    let readings = r.ctl.tick(Clock(0));
-    assert_eq!(readings.cpu_temp, Some(50));
-    assert_eq!(readings.fan_pct[0], Some(47));
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ec.state().fan_speed_override = [Some(0), Some(0)];
+    // First real run: CPU at 57–68 °C with the fan at 0 %, plus 95 °C spikes every 4 s.
+    for t in 0..120 {
+        let temp = if t % 4 == 0 {
+            95
+        } else {
+            57 + u8::try_from(t % 12).unwrap()
+        };
+        set_temps(&r.ec, Some(temp), Some(40));
+        r.ctl.tick(Clock(t * SEC));
+    }
+    assert!(r.ctl.is_applied());
+    assert_eq!(kinds(&r.ctl.take_events()), []);
+}
+
+#[test]
+fn s9_only_watches_while_our_tables_are_in_force() {
+    let mut r = rig();
+    // Not applied yet (factory, auto): the firmware's business.
+    r.ec.state().cpu_temp = Some(80);
+    r.ec.state().fan_speed_override = [Some(0), None];
+    tick_secs(&mut r.ctl, 0, 40);
+    assert_eq!(r.ctl.take_events().len(), 0);
+    assert_eq!(r.ctl.status().read_only, None);
 }

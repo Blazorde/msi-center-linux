@@ -2,7 +2,9 @@
 //! `systemd/msi-daemon.service`).
 //!
 //! - no argument: run the daemon (`--state PATH` overrides `/var/lib/msi-center/state.toml`);
-//! - `--probe`: **read-only** dump of the dGPU power state, its holders and a few telemetry samples.
+//! - `--probe`: **read-only** dump of the dGPU power state, its holders and a few telemetry samples;
+//! - `--restore-factory`: hands the fans back to the firmware (factory tables, then fan mode `auto`) and exits.
+//!   No D-Bus, idempotent. Run by systemd `ExecStopPost` after every stop (S5), including crashes.
 //!
 //! Log level: `MSI_DAEMON_LOG` (`EnvFilter` syntax, default `info`).
 
@@ -16,8 +18,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use futures_util::StreamExt as _;
+use msi_core::ec::{CONF_G2_5, FactoryTables};
 use msi_daemon::controller::Controller;
-use msi_daemon::ec::{SysfsEc, restore_auto_at};
+use msi_daemon::ec::{EcBackend as _, SysfsEc, restore_factory};
 use msi_daemon::fs::FsRoot;
 use msi_daemon::gpu::{Dgpu, GpuManager};
 use msi_daemon::notify::Notifier;
@@ -32,8 +35,10 @@ use tracing_subscriber::EnvFilter;
 
 const USAGE: &str = "usage: msi-daemon [--state PATH]
        msi-daemon --probe [--samples N] [--interval-ms MS] [--no-nvml]
+       msi-daemon --restore-factory
   (no option)      run the daemon (system bus, root, started by systemd)
   --state PATH     settings file (default /var/lib/msi-center/state.toml)
+  --restore-factory  factory fan tables then fan mode auto, and exit (systemd ExecStopPost)
   --probe          read-only dump of dGPU state, holders and telemetry (never writes)
   --samples N      telemetry samples to print (default 3)
   --interval-ms MS delay between samples (default 1000)
@@ -43,6 +48,7 @@ const USAGE: &str = "usage: msi-daemon [--state PATH]
 enum Command {
     Run { state: PathBuf },
     Probe(ProbeArgs),
+    RestoreFactory,
 }
 
 #[derive(Debug, PartialEq)]
@@ -60,6 +66,13 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
         interval: Duration::from_secs(1),
         nvml: true,
     };
+    if args.first().is_some_and(|a| a == "--restore-factory") {
+        return if args.len() == 1 {
+            Ok(Command::RestoreFactory)
+        } else {
+            Err("--restore-factory takes no other argument".into())
+        };
+    }
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -199,15 +212,51 @@ fn init_tracing() {
     }
 }
 
-/// S5 on panic: the release profile aborts on panic, so no destructor runs. The hook writes `auto` to
-/// `fan_mode` directly (no lock: the panic may hold one), then runs the default hook.
-fn install_panic_hook(fan_mode: PathBuf) {
+/// S5 on panic: the release profile aborts on panic, so no destructor runs. The hook restores the factory
+/// tables and fan mode `auto` through its own [`SysfsEc`] (no lock: the panic may hold the controller's; the
+/// kernel serialises curve writes), then runs the default hook.
+fn install_panic_hook(ec: SysfsEc, factory: Option<FactoryTables>) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let restored = restore_auto_at(&fan_mode).is_ok();
-        eprintln!("msi-daemon panicked; EC fan mode auto restored: {restored}");
+        let mut ec = ec.clone();
+        let restored = restore_factory(&mut ec, factory.as_ref());
+        eprintln!("msi-daemon panicked; EC factory tables + fan mode auto restored: {restored:?}");
         previous(info);
     }));
+}
+
+/// Factory tables for the EC under `ec`, if it is supported (S8) and they are known.
+fn factory_for(ec: &SysfsEc) -> Option<FactoryTables> {
+    let fw = ec.fw_version().ok()?;
+    if !CONF_G2_5.supports_firmware(&fw) || !ec.curve_supported() {
+        return None;
+    }
+    CONF_G2_5.factory_tables(&fw)
+}
+
+/// `--restore-factory` (systemd `ExecStopPost`): factory tables when they are known and the EC is supported,
+/// then fan mode `auto` in every case (as the former inline shell did). msi-ec absent → nothing to do.
+fn restore_factory_cli() -> ExitCode {
+    let mut ec = SysfsEc::new(&FsRoot::real());
+    if let Err(e) = ec.fw_version() {
+        println!("msi-ec not available ({e}): nothing to restore");
+        return ExitCode::SUCCESS;
+    }
+    let factory = factory_for(&ec);
+    match restore_factory(&mut ec, factory.as_ref()) {
+        Ok(()) if factory.is_some() => {
+            println!("EC back on its factory tables, fan mode auto");
+            ExitCode::SUCCESS
+        }
+        Ok(()) => {
+            println!("fan mode auto (factory tables unknown or EC unsupported: tables left as they are)");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("msi-daemon --restore-factory: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Waits for SIGTERM (systemd stop) or SIGINT (Ctrl+C).
@@ -277,7 +326,8 @@ async fn run(state: &Path) -> anyhow::Result<()> {
     init_tracing();
     let root = FsRoot::real();
     let ec = SysfsEc::new(&root);
-    let fan_mode = ec.fan_mode_path();
+    let hook_ec = ec.clone();
+    let factory = factory_for(&ec);
     let gpu = GpuManager::new(root.clone());
     let bus_id = gpu
         .discover()
@@ -295,7 +345,7 @@ async fn run(state: &Path) -> anyhow::Result<()> {
     }
     match ctl.status().read_only {
         Some(reason) => tracing::warn!(reason = %reason, "read-only mode (S8): the EC will not be written"),
-        None => install_panic_hook(fan_mode),
+        None => install_panic_hook(hook_ec, factory),
     }
     if let Err(e) = ctl.start() {
         tracing::warn!(error = %e, "initial profile not fully applied");
@@ -335,14 +385,14 @@ async fn run(state: &Path) -> anyhow::Result<()> {
     }
     ticker.abort();
     resume.abort();
-    // S5: back to the firmware curve. ExecStopPost does it again in case this fails.
+    // S5: back to the factory tables and the firmware curve. ExecStopPost does it again in case this fails.
     tokio::task::spawn_blocking(move || {
         ctl.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .shutdown();
     })
     .await
-    .context("restoring fan mode auto")?;
+    .context("restoring the factory tables and fan mode auto")?;
     conn.graceful_shutdown().await;
     tracing::info!("stopped");
     Ok(())
@@ -355,6 +405,7 @@ fn main() -> ExitCode {
             probe(&parsed);
             ExitCode::SUCCESS
         }
+        Ok(Command::RestoreFactory) => restore_factory_cli(),
         Ok(Command::Run { state }) => {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
             match runtime
@@ -421,6 +472,16 @@ mod tests {
                 state: PathBuf::from("/tmp/s.toml")
             }
         );
+    }
+
+    #[test]
+    fn parses_restore_factory() {
+        assert_eq!(
+            parse_args(&args(&["--restore-factory"])).unwrap(),
+            Command::RestoreFactory
+        );
+        assert!(parse_args(&args(&["--restore-factory", "--probe"])).is_err());
+        assert!(parse_args(&args(&["--probe", "--restore-factory"])).is_err());
     }
 
     #[test]

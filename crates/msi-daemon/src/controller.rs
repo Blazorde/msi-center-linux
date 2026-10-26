@@ -7,20 +7,22 @@
 //! | S2/S3 | every table comes from `msi_core::table::generate` (or is rejected before any write) |
 //! | Kernel order | `msi_core::table::write_plan`, one full table per write |
 //! | S4 | [`Controller::tick`] feeds `ThermalSupervisor` (spike filter) and forces Cooler Boost |
-//! | S5 | [`Controller::shutdown`] (+ panic hook and `ExecStopPost` in `main`/systemd) |
-//! | S7 | [`Controller::apply_profile`] reads back tables, fan mode and shift mode; mismatch → `auto` + event |
+//! | S5 | [`Controller::shutdown`]: factory tables then `auto` (+ panic hook and `msi-daemon --restore-factory` in `ExecStopPost`) |
+//! | S7 | [`Controller::apply_profile`] reads back tables, fan mode and shift mode; mismatch → factory + `auto` + event |
 //! | S8 | [`Controller::new`]: unknown firmware or missing curve files → read-only, no EC write at all |
+//! | S9 | [`Controller::tick`] feeds one `StallDetector` per fan (0 % at a filtered ≥ 70 °C for 30 s) → factory + `auto`, read-only until restart |
 
 use std::fmt;
 
 use msi_core::battery::ChargeLimit;
 use msi_core::curve::FanCurveSpec;
-use msi_core::ec::{CONF_G2_5, FanMode, ShiftMode};
+use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
 use msi_core::profile::{GpuMode, Profile};
+use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
 use msi_core::supervisor::{BoostDecision, SensorReading, ThermalSupervisor};
 use msi_core::table::{GeneratedCurve, StepCurve, generate, write_plan};
 
-use crate::ec::{EcBackend, Fan};
+use crate::ec::{EcBackend, Fan, restore_factory};
 use crate::gpu::{GpuError, GpuManager, GpuState, Holder, PowerControl};
 use crate::power::PowerSupply;
 use crate::state::{Settings, StateStore};
@@ -65,6 +67,12 @@ pub enum EventKind {
     WriteFailed,
     /// The EC lost our tables (resume, reset): re-applied.
     EcReset,
+    /// S9: a fan stayed stopped above its spin temperature → factory tables + `auto`, read-only until restart
+    /// (value: °C of that fan's sensor).
+    FanStalled,
+    /// Éco could not remove the dGPU (held, display connected…): kept in runtime suspend instead. Not a
+    /// failure of `SetProfile` (detail: the reason, with the holders).
+    GpuBusy,
 }
 
 impl EventKind {
@@ -77,6 +85,8 @@ impl EventKind {
             Self::ReadbackMismatch => "readback_mismatch",
             Self::WriteFailed => "write_failed",
             Self::EcReset => "ec_reset",
+            Self::FanStalled => "fan_stalled",
+            Self::GpuBusy => "gpu_busy",
         }
     }
 }
@@ -131,7 +141,7 @@ pub struct Status {
     pub charge_limit: Option<u8>,
     /// dGPU state.
     pub gpu_state: GpuState,
-    /// `Some(reason)` when read-only (S8).
+    /// `Some(reason)` when read-only: S8 (unsupported EC) or S9 (fan stall, until restart).
     pub read_only: Option<String>,
     /// EC firmware version (empty if unknown).
     pub fw_version: String,
@@ -148,6 +158,8 @@ pub struct Readings {
     pub gpu_temp: Option<u8>,
     /// EC fan speeds (%), CPU then GPU.
     pub fan_pct: [Option<u8>; 2],
+    /// Fan rpm (hwmon), CPU then GPU.
+    pub fan_rpm: [Option<u32>; 2],
     /// Cooler Boost as read.
     pub cooler_boost: Option<bool>,
 }
@@ -162,8 +174,12 @@ pub struct Controller {
     store: StateStore,
     settings: Settings,
     read_only: Option<String>,
+    tripped: Option<String>,
+    factory: Option<FactoryTables>,
+    handed_back: bool,
     fw_version: String,
     applied: bool,
+    stall: [StallDetector; 2],
     supervisor: ThermalSupervisor,
     boost_forced: bool,
     user_boost: bool,
@@ -204,6 +220,7 @@ impl Controller {
             Ok(fw) => (fw, None),
         };
         let user_boost = read_only.is_none() && ec.cooler_boost().unwrap_or(false);
+        let factory = CONF_G2_5.factory_tables(&fw_version);
         (
             Self {
                 ec,
@@ -213,8 +230,12 @@ impl Controller {
                 store,
                 settings,
                 read_only,
+                tripped: None,
+                factory,
+                handed_back: false,
                 fw_version,
                 applied: false,
+                stall: [StallDetector::new(); 2],
                 supervisor: ThermalSupervisor::new(),
                 boost_forced: false,
                 user_boost,
@@ -244,10 +265,33 @@ impl Controller {
     }
 
     fn writable(&self) -> Result<(), ControlError> {
-        match &self.read_only {
+        match self.read_only.as_ref().or(self.tripped.as_ref()) {
             Some(reason) => Err(ControlError::ReadOnly(reason.clone())),
             None => Ok(()),
         }
+    }
+
+    /// `true` after [`Self::restore_factory`]: the firmware drives the fans until a profile or curve is applied
+    /// again (resume, AC switch and drift check leave it alone).
+    #[must_use]
+    pub fn is_handed_back(&self) -> bool {
+        self.handed_back
+    }
+
+    /// Factory tables (when known for this firmware) then fan mode `auto`. Never fails silently: errors are
+    /// logged and returned.
+    fn hand_back(&mut self) -> Result<(), String> {
+        self.applied = false;
+        for d in &mut self.stall {
+            d.reset();
+        }
+        if self.factory.is_none() {
+            tracing::warn!(fw = %self.fw_version, "factory tables unknown for this firmware: only fan mode auto restored");
+        }
+        restore_factory(self.ec.as_mut(), self.factory.as_ref()).map_err(|e| {
+            tracing::error!(error = %e, "factory restore incomplete");
+            e.to_string()
+        })
     }
 
     fn save(&self) {
@@ -261,12 +305,9 @@ impl Controller {
         self.events.push(SafetyEvent { kind, value, detail });
     }
 
-    /// Puts the EC back in fan mode `auto` after a failure and records the event.
+    /// Puts the EC back on its factory tables in fan mode `auto` after a failure (S7) and records the event.
     fn fallback(&mut self, kind: EventKind, detail: String) -> ControlError {
-        if let Err(e) = self.ec.set_fan_mode(FanMode::Auto) {
-            tracing::error!(error = %e, "cannot restore fan mode auto");
-        }
-        self.applied = false;
+        let _ = self.hand_back();
         self.event(kind, 0.0, detail.clone());
         ControlError::SafetyFallback(detail)
     }
@@ -296,6 +337,7 @@ impl Controller {
     /// As [`Self::apply_profile`]. The profile is saved as selected even if the dGPU step is refused.
     pub fn set_profile(&mut self, profile: Profile) -> Result<(), ControlError> {
         self.writable()?;
+        self.handed_back = false;
         self.settings.profile = profile;
         self.save();
         self.apply_profile(profile)
@@ -308,14 +350,35 @@ impl Controller {
     /// As [`Self::apply_profile`].
     pub fn reapply(&mut self) -> Result<(), ControlError> {
         self.writable()?;
+        if self.handed_back {
+            return Ok(());
+        }
         self.apply_profile(self.settings.profile)
+    }
+
+    /// Hands the fans back to the firmware (D-Bus `RestoreFactory`): factory tables then fan mode `auto`. Stays
+    /// so until a profile or curve is applied again. Allowed after S9 (it is what S9 did).
+    ///
+    /// # Errors
+    /// [`ControlError::ReadOnly`] under S8 (nothing is ever written), [`ControlError::SafetyFallback`] if a step
+    /// failed (fan mode `auto` is always attempted).
+    pub fn restore_factory(&mut self) -> Result<(), ControlError> {
+        if let Some(reason) = &self.read_only {
+            return Err(ControlError::ReadOnly(reason.clone()));
+        }
+        self.handed_back = true;
+        let res = self.hand_back();
+        tracing::info!("control handed back to the EC (factory tables, fan mode auto)");
+        res.map_err(ControlError::SafetyFallback)
     }
 
     /// Applies `profile`: curves (ordered writes) → fan mode `advanced` → shift mode → readback (S7) → dGPU.
     ///
     /// # Errors
     /// [`ControlError::ReadOnly`] (S8), [`ControlError::SafetyFallback`] if an EC write or readback failed (the
-    /// EC is back in `auto`), [`ControlError::Gpu`] if the dGPU step is refused (the EC part stays applied).
+    /// EC is back on its factory tables in `auto`), [`ControlError::Gpu`] if a dGPU sysfs write fails (the EC
+    /// part stays applied). A **refused** dGPU removal (Éco, dGPU held) is not an error: the dGPU is kept in
+    /// runtime suspend and a `gpu_busy` event is recorded.
     pub fn apply_profile(&mut self, profile: Profile) -> Result<(), ControlError> {
         self.writable()?;
         let target = profile.target();
@@ -336,6 +399,9 @@ impl Controller {
         }
         self.verify(&curves, target.shift_mode)?;
         self.applied = true;
+        for d in &mut self.stall {
+            d.reset();
+        }
         tracing::info!(profile = %profile, "profile applied to the EC");
         let policy = if target.gpu == GpuMode::Active {
             DgpuPolicy::WhenActive
@@ -419,7 +485,19 @@ impl Controller {
                 if let Some(t) = self.telemetry.as_mut() {
                     t.release_dgpu();
                 }
-                return self.gpu.remove().map_err(ControlError::Gpu);
+                match self.gpu.remove() {
+                    Ok(()) => return Ok(()),
+                    Err(e @ GpuError::Io { .. }) => return Err(ControlError::Gpu(e)),
+                    Err(refused) => {
+                        // Never kill anything (ADR-0008): fall back to runtime suspend (D3cold when idle).
+                        self.event(
+                            EventKind::GpuBusy,
+                            0.0,
+                            format!("{refused}; dGPU kept in runtime suspend"),
+                        );
+                        PowerControl::Auto
+                    }
+                }
             }
             GpuMode::RuntimeSuspend => PowerControl::Auto,
             GpuMode::Active => PowerControl::On,
@@ -439,6 +517,9 @@ impl Controller {
     /// As [`Self::apply_profile`] when enabling switches the profile.
     pub fn set_auto_profile_on_power(&mut self, enabled: bool) -> Result<(), ControlError> {
         self.writable()?;
+        if enabled {
+            self.handed_back = false;
+        }
         self.settings.auto_profile_on_power = enabled;
         self.save();
         match (enabled, self.power.ac_online()) {
@@ -549,18 +630,22 @@ impl Controller {
             boost_forced: self.boost_forced,
             charge_limit: self.power.charge_limit(),
             gpu_state: self.gpu.state(),
-            read_only: self.read_only.clone(),
+            read_only: self.read_only.clone().or_else(|| self.tripped.clone()),
             fw_version: self.fw_version.clone(),
         }
     }
 
-    /// One supervision step (~1 Hz): S4, AC auto-switch, EC drift check, telemetry.
+    /// One supervision step (~1 Hz): S4, S9, AC auto-switch, EC drift check, telemetry.
     pub fn tick(&mut self, now: Clock) -> Readings {
         self.ticks += 1;
+        let sample = self.telemetry.as_mut().map(|t| t.sample(now));
         let cpu_temp = self.ec.temperature(Fan::Cpu);
         let gpu_temp = self.ec.temperature(Fan::Gpu);
         let readings = Readings {
-            sample: None,
+            fan_rpm: sample
+                .as_ref()
+                .map_or([None; 2], |s| [s.thermals.fan1_rpm, s.thermals.fan2_rpm]),
+            sample,
             cpu_temp: cpu_temp.as_ref().ok().copied(),
             gpu_temp: gpu_temp.as_ref().ok().copied().filter(|&t| t > 0),
             fan_pct: [self.ec.fan_speed(Fan::Cpu).ok(), self.ec.fan_speed(Fan::Gpu).ok()],
@@ -572,13 +657,49 @@ impl Controller {
                 .supervisor
                 .update(reading(&cpu_temp, false), reading(&gpu_temp, true));
             self.enforce_boost(decision, &readings);
+            if self.applied {
+                self.check_stall(now, &readings);
+            }
             self.auto_switch();
             if self.applied && self.ticks % DRIFT_CHECK_EVERY == 0 {
                 self.check_drift();
             }
         }
-        let sample = self.telemetry.as_mut().map(|t| t.sample(now));
-        Readings { sample, ..readings }
+        readings
+    }
+
+    /// S9: a fan stopped at a filtered ≥ 70 °C for 30 s → factory tables + `auto`, read-only until restart.
+    fn check_stall(&mut self, now: Clock, r: &Readings) {
+        let now_ms = now.0 / 1_000_000;
+        for (i, fan) in Fan::ALL.into_iter().enumerate() {
+            let sample = FanSample {
+                temp: [r.cpu_temp, r.gpu_temp][i],
+                speed_pct: r.fan_pct[i],
+                rpm: r.fan_rpm[i],
+            };
+            if self.stall[i].update(now_ms, sample) {
+                self.trip_stall(fan, sample);
+                return;
+            }
+        }
+    }
+
+    fn trip_stall(&mut self, fan: Fan, s: FanSample) {
+        let temp = s.temp.unwrap_or(0);
+        let rpm = s.rpm.map_or_else(String::new, |r| format!(", {r} rpm"));
+        let detail = format!(
+            "{fan} fan at {} %{rpm} for {} s at {temp} °C (≥ {STALL_TEMP} °C)",
+            s.speed_pct.unwrap_or(0),
+            STALL_DURATION_MS / 1000,
+        );
+        let restored = match self.hand_back() {
+            Ok(()) => "factory curve restored, fan mode auto".to_owned(),
+            Err(e) => format!("factory restore incomplete ({e})"),
+        };
+        self.tripped = Some(format!(
+            "S9 fan stall: {detail}; {restored}. Check the fan, then restart msi-daemon to take control again"
+        ));
+        self.event(EventKind::FanStalled, f64::from(temp), detail);
     }
 
     fn enforce_boost(&mut self, decision: BoostDecision, r: &Readings) {
@@ -621,7 +742,8 @@ impl Controller {
     fn auto_switch(&mut self) {
         let ac = self.power.ac_online();
         let previous = std::mem::replace(&mut self.last_ac, ac);
-        if !self.settings.auto_profile_on_power {
+        // Control handed back to the EC (RestoreFactory, S9): the firmware keeps it.
+        if !self.settings.auto_profile_on_power || self.handed_back || self.tripped.is_some() {
             return;
         }
         if let (Some(before), Some(now)) = (previous, ac) {
@@ -649,16 +771,15 @@ impl Controller {
         }
     }
 
-    /// S5: puts the EC back in fan mode `auto` (normal exit, signal). Cooler Boost is left on if S4 forces it.
+    /// S5: puts the EC back on its factory tables in fan mode `auto` (normal exit, signal). Cooler Boost is left
+    /// on if S4 forces it. Nothing is written under S8.
     pub fn shutdown(&mut self) {
         if self.read_only.is_some() {
             return;
         }
-        match self.ec.set_fan_mode(FanMode::Auto) {
-            Ok(()) => tracing::info!("EC fan mode restored to auto"),
-            Err(e) => tracing::error!(error = %e, "cannot restore fan mode auto"),
+        if self.hand_back().is_ok() {
+            tracing::info!("EC back on its factory tables, fan mode auto");
         }
-        self.applied = false;
     }
 }
 
