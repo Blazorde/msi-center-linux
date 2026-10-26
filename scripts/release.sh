@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Publishes a release from main: ./scripts/release.sh 0.1.0
 # Prerequisite: release/<version> merged into main (see docs/development/git-workflow.md).
+# Attaches the Arch packages dist/*-<version>-*.pkg.tar.zst when present (build them first from main:
+# scripts/package.sh); without them, asks before publishing the binaries archive alone.
 set -euo pipefail
 
 version=${1:?usage: scripts/release.sh <x.y.z>}
@@ -14,6 +16,19 @@ git fetch --quiet origin
 [[ $(git rev-parse HEAD) == $(git rev-parse origin/main) ]] || { echo "main n'est pas à jour avec origin." >&2; exit 1; }
 grep -q "^version = \"$version\"" Cargo.toml || { echo "Cargo.toml n'est pas en version $version." >&2; exit 1; }
 grep -q "^## \[$version\]" CHANGELOG.md || { echo "CHANGELOG.md n'a pas de section [$version]." >&2; exit 1; }
+grep -q "^pkgver=$version$" packaging/arch/PKGBUILD || { echo "PKGBUILD n'est pas en pkgver=$version." >&2; exit 1; }
+grep -q "\"version-name\": \"$version\"" extension/msi-center@blazorde/metadata.json ||
+    { echo "metadata.json de l'extension n'est pas en version-name $version." >&2; exit 1; }
+
+shopt -s nullglob
+packages=(dist/*-"$version"-*.pkg.tar.zst)
+shopt -u nullglob
+if ((${#packages[@]})); then
+    echo "Paquets Arch joints : ${packages[*]}"
+else
+    read -rp "Aucun paquet dist/*-$version-*.pkg.tar.zst (scripts/package.sh). Publier sans ? [o/N] " answer
+    [[ $answer == [oOyY] ]] || exit 1
+fi
 
 scripts/ci.sh
 cargo build --workspace --release --locked
@@ -21,11 +36,11 @@ cargo build --workspace --release --locked
 dist=$(mktemp -d)
 trap 'rm -rf "$dist"' EXIT
 archive="$dist/msi-center-linux-$tag-x86_64.tar.gz"
-tar -C target/release -czf "$archive" msi-daemon clipd msi-center
+tar -C target/release -czf "$archive" msi-daemon msictl clipd msi-center
 awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {p=1; next} /^## \[/ {p=0} p' CHANGELOG.md > "$dist/notes.md"
 
 git tag -a "$tag" -m "$tag"
 git push origin "$tag"
-gh release create "$tag" "$archive" --notes-file "$dist/notes.md" --verify-tag
+gh release create "$tag" "$archive" "${packages[@]}" --notes-file "$dist/notes.md" --verify-tag
 
 echo "✓ $tag publiée. Pense à : git switch develop && git merge main && git push"

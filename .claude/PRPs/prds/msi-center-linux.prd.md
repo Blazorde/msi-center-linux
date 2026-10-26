@@ -158,7 +158,7 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 | 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | complete | with 2, 5 | 1 | #3 |
 | 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | in-progress | with 8 | 4, 5, 6 | feat/ext-gnome (headless smoke-tested; owner session test pending) |
 | 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | in-progress | with 7 | 4, 5, 6 | feat/app-gtk (all pages; owner test pending) |
-| 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | pending | - | 7, 8 | - |
+| 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | in-progress | - | 7, 8 | feat/pkg-arch (split PKGBUILD + presets + autostart; owner install test pending) |
 
 ### Phase Details
 
@@ -197,7 +197,7 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 - **Success signal**: Owner uses it daily instead of Windows MSI Center.
 
 **Phase 9: Packaging**
-- **Goal**: Reproducible install via `makepkg -si`.
+- **Goal**: Reproducible install via `scripts/package.sh` + `pacman -U` (split packages `msi-center-linux`, `msi-ec-blazorde-dkms`).
 - **Success signal**: Clean install on a fresh user, `v0.1.0` tagged on `main`.
 
 ### Parallelism Notes

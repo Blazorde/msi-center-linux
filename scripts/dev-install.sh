@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Development install of msi-daemon + msictl (+ clipd), until the phase 9 package exists.
+# Development install of msi-daemon + msictl (+ clipd), without the Arch package (scripts/package.sh).
+# Never together with the package: uninstall one before installing the other (docs/user/installation.md).
 # Build first as your user, then install as root:
 #
 #   cargo build --release -p msi-daemon -p clipd
@@ -125,6 +126,9 @@ dkms_install() {
 }
 
 mode=install
+if [[ ${1:-} != --uninstall ]] && pacman -Qq msi-center-linux >/dev/null 2>&1; then
+    die "le paquet msi-center-linux est installé : pas d'installation de dev par-dessus (sudo pacman -R msi-center-linux d'abord)"
+fi
 case ${1:-} in
     "") ;;
     --enable) mode=enable ;;
