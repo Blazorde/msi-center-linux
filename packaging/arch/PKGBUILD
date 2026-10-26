@@ -15,7 +15,7 @@
 pkgbase=msi-center-linux
 pkgname=(msi-center-linux msi-ec-blazorde-dkms)
 pkgver=0.0.1
-pkgrel=2
+pkgrel=3
 pkgdesc="MSI Center replacement for the MSI Stealth 14 AI Studio A1VGG: fans, profiles, dGPU, battery, clipboard"
 arch=(x86_64)
 url="https://github.com/Blazorde/msi-center-linux"
