@@ -575,15 +575,15 @@ mod tests {
         let expected = [
             (
                 CurvePreset::Silent,
-                [0, 30, 33, 43, 57, 76, 100],
-                [50, 57, 64, 70, 76, 82],
-                [46, 53, 60, 66, 72, 78],
+                [0, 30, 32, 38, 53, 78, 100],
+                [52, 60, 67, 75, 83, 85],
+                [48, 56, 63, 71, 79, 81],
             ),
             (
                 CurvePreset::Progressive,
-                [0, 30, 34, 45, 60, 78, 100],
-                [42, 50, 58, 65, 72, 79],
-                [38, 46, 54, 61, 68, 75],
+                [0, 30, 32, 41, 55, 77, 100],
+                [48, 56, 64, 71, 79, 85],
+                [44, 52, 60, 67, 75, 81],
             ),
             (
                 CurvePreset::Aggressive,
@@ -599,16 +599,27 @@ mod tests {
                 (speeds, up, down),
                 "{preset:?}"
             );
-            assert!(g.report.is_clean(), "{preset:?}: {:?}", g.report);
+            let raised: Vec<(usize, u8, u8, u8)> = g
+                .report
+                .raised
+                .iter()
+                .map(|p| (p.index, p.curve_speed, p.applied_speed, p.floor.temp))
+                .collect();
+            // Silent reaches 100 % at T1 = 88 °C, above the 85 °C floor: S2 raises step 6 (entered at 85 °C).
+            let expected_raised: &[(usize, u8, u8, u8)] = match preset {
+                CurvePreset::Silent => &[(6, 86, 100, 85)],
+                CurvePreset::Progressive | CurvePreset::Aggressive => &[],
+            };
+            assert_eq!(raised, expected_raised, "{preset:?}");
         }
     }
 
     #[test]
     fn silent_preset_meets_the_owner_goals() {
         let c = generate(&CurvePreset::Silent.spec()).unwrap().curve;
-        // Off at idle up to 49 °C, starts gently (30 %) before 55 °C.
-        assert_eq!(c.min_speed_at(49), 0);
-        assert_eq!(c.min_speed_at(50), 30);
+        // Off at idle up to 51 °C, starts gently (30 %) at 52 °C.
+        assert_eq!(c.min_speed_at(51), 0);
+        assert_eq!(c.min_speed_at(52), 30);
         // No step larger than 25 points: no "off then full blast".
         assert!(c.speeds()[1..].windows(2).all(|w| w[1] - w[0] <= 25), "{c:?}");
     }

@@ -303,9 +303,9 @@ impl FanCurveSpec {
 /// Curve presets, documented with their rationale in `docs/hardware/fan-safety.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CurvePreset {
-    /// Silencieux (Éco): off below 50 °C, gentle start at 30 %, 100 % from 82 °C.
+    /// Silencieux (Éco): off below 52 °C, gentle start at 30 %, 100 % from 88 °C (85 °C on the EC table, S2).
     Silent,
-    /// Progressif (Balanced): starts at 42 °C, 100 % from 79 °C.
+    /// Progressif (Balanced): off below 48 °C, starts at 30 %, 100 % from 85 °C.
     Progressive,
     /// Agressif (Gaming): never off (30 %), 100 % from 74 °C.
     Aggressive,
@@ -329,8 +329,8 @@ impl CurvePreset {
     #[must_use]
     pub const fn spec(self) -> FanCurveSpec {
         let (t0, t1, min, max, k, idle, up, hysteresis) = match self {
-            Self::Silent => (50, 82, 30, 100, 2.0, 0, [50, 57, 64, 70, 76, 82], 4),
-            Self::Progressive => (42, 79, 30, 100, 1.8, 0, [42, 50, 58, 65, 72, 79], 4),
+            Self::Silent => (52, 88, 30, 100, 2.5, 0, [52, 60, 67, 75, 83, 85], 4),
+            Self::Progressive => (48, 85, 30, 100, 2.2, 0, [48, 56, 64, 71, 79, 85], 4),
             Self::Aggressive => (40, 74, 40, 100, 1.4, 30, [40, 47, 54, 61, 68, 74], 3),
         };
         FanCurveSpec {

@@ -35,14 +35,21 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
 
 ### Changed
+- Presets plus silencieux (retour sur la machine réelle) : la température CPU filtrée du pilotage hybride se
+  tient 5 à 8 °C au-dessus de la température lissée de l'EC, si bien qu'Équilibré/Progressif au repos
+  (57–61 °C lus) tournait à 44–50 % (≈ 2900 tr/min) contre 36 % (≈ 2200 tr/min) à l'usine. **Silencieux** :
+  T0 52, T1 88, k 2,5 (arrêt sous 48–52 °C, ≈ 32 % à 60 °C, 42 % à 70 °C, 67 % à 80 °C) ; sa table GPU
+  voit son palier 6 (85 °C) relevé de 86 à 100 % par S2, signalé. **Progressif** : T0 48, T1 85, k 2,2
+  (≈ 36 % à 60 °C, 52 % à 70 °C, 81 % à 80 °C, 100 % à 85 °C). Agressif inchangé. Détails et tables dans
+  [fan-safety.md](docs/hardware/fan-safety.md).
 - App : le profil `balanced` s'affiche « Équilibré » ; les événements `gpu_busy` et `fan_stalled` ont un
   message en français ; en liste, les cartes du presse-papiers prennent la hauteur de leur contenu.
 - Ventilo CPU piloté en direct ([ADR-0010](docs/adr/0010-hybrid-cpu-fan-control.md), accepté) : l'EC ignore
   les seuils CPU écrits, donc `msi-daemon` garde les seuils d'usine et module chaque seconde les vitesses des
   paliers 0–3 depuis la courbe exponentielle du profil, sur une température CPU filtrée (médiane + moyenne,
   pics ignorés), avec hystérésis d'arrêt, bande morte et montée/descente progressives ; paliers chauds
-  toujours ≥ 60 / 100 / 100 %. Silencieux : arrêté sous 46–50 °C, démarrage doux à 30 % dès 50 °C, 100 % à
-  82 °C. Seul `cpu/fan_curve_speeds` est écrit, au changement, relu (S7). `FanCurve("cpu")` renvoie le
+  toujours ≥ 60 / 100 / 100 %. Silencieux : arrêté sous 48–52 °C, démarrage doux à 30 % dès 52 °C, 100 % à
+  88 °C. Seul `cpu/fan_curve_speeds` est écrit, au changement, relu (S7). `FanCurve("cpu")` renvoie le
   vecteur en vigueur, nouvelle clé `cpu_fan_target_pct` dans `Telemetry` (compatible). L'app affiche le CPU
   « piloté en direct » ; `msictl curve show cpu` aussi. Essai propriétaire :
   `scripts/spike/hybrid-cpu-test.sh`.

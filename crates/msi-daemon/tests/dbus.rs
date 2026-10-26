@@ -130,19 +130,28 @@ async fn set_profile_applies_the_curves_and_updates_properties() {
     // ADR-0010: the CPU keeps the factory thresholds; steps 0–3 at the live target (start speed 30 % until
     // the temperature filter is ready), hot steps floored.
     let cpu = h.ec.state().cpu;
-    assert_eq!(cpu.speeds, [30, 30, 30, 50, 80, 100, 100]);
+    assert_eq!(cpu.speeds, [30, 30, 30, 50, 60, 100, 100]);
     assert_eq!((cpu.up, cpu.down), (FACTORY_CPU.up, FACTORY_CPU.down));
     let (spec, table, raised, custom) = p.fan_curve("cpu").await.unwrap();
     assert_eq!(spec, spec_to_wire(&CurvePreset::Silent.spec()));
     assert_eq!(table.0, cpu.speeds.to_vec());
     assert_eq!(table.1, cpu.up.to_vec());
     assert_eq!(table.2, cpu.down.to_vec());
-    // Step 3 raised by the S2 floor of 50 % at 75 °C.
-    assert_eq!(raised, [(3, 70, 30, 50, 75, 50)]);
+    // Step 3 raised by the S2 floor of 50 % at 75 °C, step 4 by its hot floor (curve 58 % at 77 °C), step 5
+    // by the S2 floor of 100 % at 85 °C (curve 78 % at 83 °C).
+    assert_eq!(
+        raised,
+        [
+            (3, 70, 30, 50, 75, 50),
+            (4, 77, 58, 60, 77, 60),
+            (5, 83, 78, 100, 85, 100)
+        ]
+    );
     assert!(!custom);
     let (_, table, raised, _) = p.fan_curve("gpu").await.unwrap();
     assert_eq!(table.0, silent.speeds.to_vec());
-    assert_eq!(raised.len(), 0);
+    // Silent reaches 100 % at 88 °C: S2 raises step 6 (entered at 85 °C) from 86 to 100 %.
+    assert_eq!(raised, [(6, 85, 86, 100, 85, 100)]);
 }
 
 #[tokio::test]
