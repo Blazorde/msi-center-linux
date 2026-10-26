@@ -166,6 +166,10 @@ pub struct Readings {
 
 /// The daemon state. See the module documentation.
 #[derive(Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags: curve applied, S4 forcing, owner's boost choice, control handed back"
+)]
 pub struct Controller {
     ec: Box<dyn EcBackend>,
     power: PowerSupply,

@@ -377,7 +377,7 @@ fn s5_shutdown_restores_factory_tables_then_auto() {
     assert_eq!((s.cpu, s.gpu), (FACTORY_CPU, FACTORY_GPU));
     assert_eq!(s.fan_mode, FanMode::Auto);
     assert_eq!(s.fan_mode_writes.last(), Some(&FanMode::Auto));
-    assert!(!s.writes.is_empty());
+    assert_ne!(s.writes.len(), 0);
 }
 
 #[test]
