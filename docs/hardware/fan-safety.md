@@ -164,7 +164,7 @@ et turbo ». Chaque profil de performance (Éco, Équilibré, Gaming) a un **pro
 celui de la colonne « défaut », que le propriétaire peut changer. Le choix est **retenu par profil de
 performance** (`state.toml`, `[fan_profiles]`) et ré-appliqué à chaque changement de profil, au démarrage et
 après la veille. Le shift mode et le dGPU restent ceux du profil de performance. Code :
-`msi_core::fan_profile::FanProfile`, appliqué par `msi-daemon` (`Controller::apply_profile`).
+`msi_core::fan_profile::FanProfile`, appliqué par `msi-daemon` (`Controller::apply_profile`), [ADR-0012](../adr/0012-fan-profiles.md).
 
 | Profil de ventilation | Id | Courbe | Défaut pour |
 |---|---|---|---|
