@@ -37,6 +37,8 @@ pub struct Telemetry {
     pub dgpu_state: Option<String>,
     /// Cooler Boost on.
     pub cooler_boost: Option<bool>,
+    /// Live CPU fan target % (ADR-0010), present only while the daemon drives the CPU fan live.
+    pub cpu_fan_target: Option<u8>,
 }
 
 fn get<'a, T>(m: &'a HashMap<String, OwnedValue>, key: &str) -> Option<T>
@@ -71,6 +73,7 @@ impl Telemetry {
             fan2_pct: get(m, "fan2_pct"),
             dgpu_state: get_str(m, "dgpu_state"),
             cooler_boost: get(m, "cooler_boost"),
+            cpu_fan_target: get(m, "cpu_fan_target_pct"),
         }
     }
 
@@ -434,6 +437,7 @@ mod tests {
             ("cpu_temp", Value::F64(61.5)),
             ("fan1_rpm", Value::U32(2070)),
             ("fan1_pct", Value::U8(30)),
+            ("cpu_fan_target_pct", Value::U8(37)),
             ("dgpu_state", Value::from("removed")),
             ("cooler_boost", Value::Bool(false)),
             ("gpu_temp", Value::from("hot")),
@@ -442,6 +446,7 @@ mod tests {
         assert_eq!(t.cpu_temp, Some(61.5));
         assert_eq!(t.fan1_rpm, Some(2070));
         assert_eq!(t.fan1_pct, Some(30));
+        assert_eq!(t.cpu_fan_target, Some(37));
         assert_eq!(t.dgpu_state.as_deref(), Some("removed"));
         assert_eq!(t.cooler_boost, Some(false));
         assert_eq!(t.gpu_temp, None);

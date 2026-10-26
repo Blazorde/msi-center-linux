@@ -196,6 +196,24 @@ impl Table {
     pub fn ascending_step(&self, temp: f64) -> usize {
         self.up.iter().filter(|&&u| f64::from(u) <= temp).count()
     }
+
+    /// `true` for a CPU table driven live by the daemon (ADR-0010): it keeps the factory CPU thresholds, which
+    /// the EC uses whatever is written, and its steps 0–3 follow the filtered CPU temperature.
+    #[must_use]
+    pub fn is_live_cpu(&self) -> bool {
+        let factory = msi_core::ec::FACTORY_14K2EMS1_110.cpu;
+        self.up == factory.up && self.down == factory.down
+    }
+}
+
+/// French note shown for a CPU curve driven live (ADR-0010). `target`: current target %, if known.
+#[must_use]
+pub fn live_cpu_note(target: Option<u8>) -> String {
+    let now = target.map_or_else(String::new, |t| format!(" (consigne actuelle {t}{NNBSP}%)"));
+    format!(
+        "Piloté en direct : l'EC ignore les seuils CPU, les paliers 0 à 3 suivent votre courbe sur la \
+         température CPU filtrée{now} ; les paliers chauds restent sécurisés en permanence."
+    )
 }
 
 /// A step raised by an S2 floor.
@@ -429,6 +447,26 @@ mod tests {
 
     fn silent() -> CurveSpec {
         CurveSpec::from_core(&CurvePreset::Silent.spec())
+    }
+
+    #[test]
+    fn live_cpu_tables_are_recognised() {
+        let f = msi_core::ec::FACTORY_14K2EMS1_110.cpu;
+        let live = Table {
+            speeds: [37, 37, 37, 50, 80, 100, 100],
+            up: f.up,
+            down: f.down,
+        };
+        assert!(live.is_live_cpu());
+        let g = generate(&CurvePreset::Silent.spec()).unwrap().curve;
+        let generated = Table {
+            speeds: g.speeds(),
+            up: g.up(),
+            down: g.down(),
+        };
+        assert!(!generated.is_live_cpu());
+        assert!(live_cpu_note(Some(37)).contains("consigne actuelle 37"));
+        assert!(!live_cpu_note(None).contains("consigne"));
     }
 
     #[test]
