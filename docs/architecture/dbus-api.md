@@ -18,8 +18,10 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 |---|---|---|---|---|
 | `SetProfile` | `s profile` (`eco` · `balanced` · `gaming`) | – | `set-profile` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy` (écriture sysfs dGPU en échec), `Hardware` |
 | `SetAutoProfileOnPower` | `b enabled` | – | `set-profile` | idem |
+| `SetFanProfile` | `s fan_profile` (`silent` · `auto` · `balanced` · `turbo` · `custom`) | – | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
+| `CustomFanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
 | `FanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised, b custom` | – | `InvalidArgument` |
-| `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` |
+| `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
 | `ResetFanCurve` | `s fan` | – | `set-fan-curve` | idem |
 | `PreviewFanCurve` | `(yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
 | `SetCoolerBoost` | `b enabled` | – | `set-fan-curve` | `InvalidArgument` (forcé par S4), `ReadOnly`, `SafetyFallback` |
@@ -48,7 +50,7 @@ Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/
 | `Telemetry` | `a{sv} data` | ~1 Hz. Clés (absentes si inconnues) : `cpu_pct`, `ram_pct`, `igpu_pct`, `dgpu_pct`, `npu_pct`, `cpu_temp`, `gpu_temp`, `power_w` (`d`) ; `fan1_rpm`, `fan2_rpm` (`u`) ; `fan1_pct`, `fan2_pct` (`y`) ; `cpu_fan_target_pct` (`y`, consigne en direct du ventilo CPU = vitesse des paliers CPU 0–3 en vigueur, présente seulement pendant le pilotage hybride, ADR-0010 ; ajoutée le 2026-10-26) ; `dgpu_state` (`s`) ; `cooler_boost` (`b`). Températures de l'EC (celles que suivent les ventilos), sinon hwmon/NVML. |
 | `SafetyEvent` | `s kind, d value, s detail` | `kind` : `boost_forced` / `boost_released` (`value` = °C le plus chaud, 0 si capteur illisible), `readback_mismatch` / `write_failed` (EC remis sur ses tables d'usine en `auto`), `ec_reset` (tables perdues par l'EC, ré-appliquées), `fan_stalled` (S9, `value` = °C du capteur ; tables d'usine + `auto`, lecture seule jusqu'au redémarrage), `gpu_busy` (Éco : retrait du dGPU refusé, gardé en veille runtime ; `value` = 0, `detail` = raison avec les processus, ex. `dGPU is in use by nvidia-powerd (812), gnome-shell (3876); dGPU kept in runtime suspend`). `detail` : texte anglais. Les clients doivent ignorer un `kind` inconnu. |
 
-`PropertiesChanged` (`org.freedesktop.DBus.Properties`) est émis pour `Profile`, `AutoProfileOnPower`,
+`PropertiesChanged` (`org.freedesktop.DBus.Properties`) est émis pour `Profile`, `FanProfile`, `DefaultFanProfile`, `AutoProfileOnPower`,
 `OnAcPower`, `FanMode`, `CoolerBoost`, `BoostForced`, `ChargeLimit`, `GpuState`, `ReadOnly`, `ReadOnlyReason` quand ils changent (après un
 appel ou à la boucle de 1 s).
 
@@ -57,6 +59,8 @@ appel ou à la boucle de 1 s).
 | Propriété | Type | Sens |
 |---|---|---|
 | `Profile` | `s` | Profil choisi |
+| `FanProfile` | `s` | Profil de ventilation du profil choisi : `silent` · `auto` · `balanced` · `turbo` · `custom` (ajouté le 2026-10-26) |
+| `DefaultFanProfile` | `s` | Profil de ventilation par défaut du profil choisi (`eco` → `silent`, `balanced` → `balanced`, `gaming` → `turbo`) |
 | `AutoProfileOnPower` | `b` | Profil automatique au branchement/débranchement secteur (secteur : `balanced`, batterie : `eco` par défaut) |
 | `OnAcPower` | `b` | Sur secteur (`false` aussi si inconnu) |
 | `FanMode` | `s` | Fan mode lu dans l'EC : `advanced` = nos courbes s'appliquent ; `auto` = courbe usine (démarrage, repli, lecture seule) ; `unknown` |
@@ -82,18 +86,38 @@ son contrôle polkit et ses erreurs typées.
   2026-10-26 l'appel renvoyait `GpuBusy` dans ce cas ; l'erreur n'est plus renvoyée que si une écriture sysfs
   du dGPU échoue (compatible : un client qui la traitait la verra simplement moins). Aucun processus n'est
   jamais tué. Idempotent.
+- **Profils de ventilation** (ajoutés le 2026-10-26, compatibles : méthodes et propriétés nouvelles, signatures
+  existantes inchangées ; [fan-safety.md](../hardware/fan-safety.md#profils-de-ventilation)) : chaque profil
+  de performance a un profil de ventilation, par défaut `DefaultFanProfile` ; `SetFanProfile` choisit celui
+  du **profil choisi**, le retient pour ce profil (persisté) et l'applique. `SetProfile` applique le profil de
+  ventilation retenu du nouveau profil. Choisir le profil par défaut efface la préférence.
+  - `silent` / `balanced` / `turbo` : presets Silencieux / Progressif / Agressif (GPU : table complète ; CPU :
+    pilotage hybride avec cette courbe).
+  - `custom` : la courbe personnalisée de chaque ventilo pour ce profil (`CustomFanCurve`) ; un ventilo jamais
+    édité suit le preset du profil de ventilation par défaut.
+  - `auto` : tables d'usine des deux ventilos (ordre sûr) puis `fan_mode=auto`, puis `shift_mode`, relecture
+    (S7), dGPU. Pas de pilotage hybride, `cpu_fan_target_pct` absent, S9 non surveillé (courbe du firmware), S4
+    actif. Contrairement à `RestoreFactory`, c'est un mode **choisi et persisté** : ré-appliqué au démarrage, à
+    la sortie de veille et par le contrôle de dérive. `FanCurve` renvoie alors la table d'usine, `raised` vide,
+    `custom` faux, et `spec` = preset du profil de ventilation par défaut (non appliqué). `FanMode` vaut `auto`.
+- **`SetFanCurve`** = édition du profil **Personnalisé** : enregistre la courbe du ventilo pour le profil
+  choisi, **passe ce profil en `custom`** et l'applique (même effet qu'avant pour un ancien client : la courbe
+  personnalisée remplace le preset). Spec invalide → `InvalidArgument`, rien n'est écrit ni modifié.
+  **`ResetFanCurve`** supprime la courbe de ce ventilo ; s'il n'en reste aucune et que le profil était en
+  `custom`, il revient à son profil de ventilation par défaut. **`CustomFanCurve`** renvoie la courbe
+  personnalisée (enregistrée, sinon le preset du profil de ventilation par défaut) avec sa table par paliers et
+  ses relèvements S2 (comme `PreviewFanCurve`), qu'elle soit en vigueur ou non : c'est la source de l'éditeur.
 - **`RestoreFactory`** : rend la main à l'EC : tables d'usine (ordre sûr, relues) puis `fan_mode=auto`
   ([fan-safety.md](../hardware/fan-safety.md#restitution-à-lec-tables-dusine)). Dure jusqu'au prochain
-  `SetProfile`, `SetFanCurve`, `ResetFanCurve` ou `SetAutoProfileOnPower(true)` ; la sortie de veille, le
+  `SetProfile`, `SetFanProfile`, `SetFanCurve`, `ResetFanCurve` ou `SetAutoProfileOnPower(true)` ; la sortie de veille, le
   contrôle de dérive et le profil automatique secteur n'y touchent pas. Non persisté : au redémarrage le daemon
   ré-applique le profil enregistré. Idempotent. `msictl factory`.
 - **Arrêt** (S5) : le daemon, son hook de panic et `ExecStopPost` (`msi-daemon --restore-factory`, sans D-Bus)
   restituent les tables d'usine puis `auto`.
 - **S9** : ventilo à 0 % sur puce ≥ 70 °C (filtrée) pendant 30 s → tables d'usine + `auto`, `fan_stalled`,
   `ReadOnly=true` jusqu'au redémarrage (`systemctl restart msi-daemon`).
-- **Courbes** : chaque profil a une courbe par ventilo, le preset du profil par défaut. `SetFanCurve` remplace
-  celle du **profil choisi** pour ce ventilo (persistée), `ResetFanCurve` revient au preset. Les paliers relevés
-  par les planchers S2 sont renvoyés dans `raised`, jamais cachés. `PreviewFanCurve` calcule sans rien écrire.
+- **Courbes** : la courbe d'un ventilo est celle du profil de ventilation du profil choisi (voir ci-dessus).
+  Les paliers relevés par les planchers S2 sont renvoyés dans `raised`, jamais cachés. `PreviewFanCurve` calcule sans rien écrire.
 - **Ventilo CPU piloté en direct** ([ADR-0010](../adr/0010-hybrid-cpu-fan-control.md), firmware dont les
   tables d'usine sont connues, `.110`) : l'EC ignore les seuils CPU écrits. Le daemon garde les seuils d'usine
   et réécrit `cpu/fan_curve_speeds` (≈ 1 Hz, seulement au changement) depuis la courbe `spec` évaluée sur la
@@ -105,8 +129,9 @@ son contrôle polkit et ses erreurs typées.
   repli S7, S9, lecture seule). Compatible : signatures inchangées.
 - **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
   au choix du propriétaire.
-- **Persistance** : profil, `AutoProfileOnPower`, limite de charge et courbes personnalisées dans
-  `/var/lib/msi-center/state.toml`, ré-appliqués au démarrage, après la sortie de veille et quand l'EC a perdu
+- **Persistance** : profil, `AutoProfileOnPower`, limite de charge, profil de ventilation par profil
+  (`[fan_profiles]`) et courbes personnalisées dans `/var/lib/msi-center/state.toml` (version 2 ; un fichier
+  version 1 est migré : un profil qui avait une courbe personnalisée passe en `custom`), ré-appliqués au démarrage, après la sortie de veille et quand l'EC a perdu
   les tables (vérifié toutes les 10 s).
 - **Lecture seule** : S8 (firmware absent de la liste ou attributs de courbe absents) → toutes les méthodes qui
   écrivent renvoient `ReadOnly`, l'EC reste en courbe usine. Après S9 : idem jusqu'au redémarrage (sauf
