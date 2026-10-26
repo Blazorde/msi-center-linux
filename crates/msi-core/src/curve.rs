@@ -127,15 +127,36 @@ impl FanCurveParams {
     /// Exact curve value (%) at `temp` °C, before rounding and before the safety floors.
     #[must_use]
     pub fn speed_at(&self, temp: u8) -> f64 {
+        self.speed_at_celsius(f64::from(temp))
+    }
+
+    /// Exact curve value (%) at a fractional temperature (a filtered reading, ADR-0010). A non-finite `temp`
+    /// gives `max` (the safe side).
+    #[must_use]
+    pub fn speed_at_celsius(&self, temp: f64) -> f64 {
         let (min, max) = (f64::from(self.min), f64::from(self.max));
-        if temp <= self.t0 {
-            return min;
-        }
-        if temp >= self.t1 {
+        let (t0, t1) = (f64::from(self.t0), f64::from(self.t1));
+        if !temp.is_finite() || temp >= t1 {
             return max;
         }
-        let x = f64::from(temp - self.t0) / f64::from(self.t1 - self.t0);
+        if temp <= t0 {
+            return min;
+        }
+        let x = (temp - t0) / (t1 - t0);
         (max - min).mul_add(x.powf(self.k), min).clamp(min, max)
+    }
+
+    /// Curve value at a fractional temperature rounded to the nearest whole percent.
+    #[must_use]
+    pub fn speed_percent_celsius(&self, temp: f64) -> u8 {
+        let rounded = self
+            .speed_at_celsius(temp)
+            .round()
+            .clamp(0.0, f64::from(MAX_SPEED));
+        // In 0..=100 after the clamp: the cast cannot truncate nor lose the sign.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let speed = rounded as u8;
+        speed
     }
 
     /// Curve value at `temp` rounded to the nearest whole percent.
@@ -415,6 +436,21 @@ mod tests {
         // 20 + 80 · (20/40)^2.5 ≈ 34.142
         assert!((p.speed_at(70) - 34.142_135_6).abs() < 1e-6);
         assert_eq!(p.speed_percent(70), 34);
+    }
+
+    #[test]
+    fn fractional_temperatures_follow_the_same_curve() {
+        let p = FanCurveParams::new(50, 90, 20, 100, 2.5).unwrap();
+        for t in 20..=100u8 {
+            assert!(
+                (p.speed_at_celsius(f64::from(t)) - p.speed_at(t)).abs() < 1e-9,
+                "{t}"
+            );
+            assert_eq!(p.speed_percent_celsius(f64::from(t)), p.speed_percent(t));
+        }
+        assert!(p.speed_at_celsius(60.5) > p.speed_at(60) && p.speed_at_celsius(60.5) < p.speed_at(61));
+        assert!((p.speed_at_celsius(f64::NAN) - 100.0).abs() < 1e-9);
+        assert!((p.speed_at_celsius(-5.0) - 20.0).abs() < 1e-9);
     }
 
     #[test]

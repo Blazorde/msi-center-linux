@@ -4,7 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
-use msi_core::ec::CONF_G2_5;
+use msi_core::ec::{CONF_G2_5, FACTORY_14K2EMS1_110};
+use msi_core::hybrid::{
+    CpuFanPilot, FIRST_HOT_STEP, HOT_STEP_FLOORS, SLEW_DOWN_PCT, SLEW_UP_PCT, TempFilter, hybrid_cpu_table,
+};
 use msi_core::supervisor::{BOOST_ON_TEMP, BoostDecision, SensorReading, ThermalSupervisor};
 use msi_core::table::{RawTables, SPEED_FLOORS, StepCurve, generate, write_plan, write_plan_raw};
 use proptest::prelude::*;
@@ -182,6 +185,70 @@ proptest! {
                 sup.update(SensorReading::Celsius(cpu), SensorReading::Absent),
                 BoostDecision::Released
             );
+        }
+    }
+
+    #[test]
+    fn hybrid_cpu_vector_is_always_valid_and_safe(spec in valid_spec(), target in 0u8..=100) {
+        let factory = FACTORY_14K2EMS1_110.cpu;
+        let target = target.clamp(spec.idle(), spec.params().max());
+        let g = hybrid_cpu_table(&spec, &factory, target).expect("every target in idle..=max is writable");
+        let c = g.curve;
+        // Factory thresholds kept, kernel rules, S1–S3, S2 on the ascending step at every temperature.
+        prop_assert_eq!((c.up(), c.down()), (factory.up, factory.down));
+        assert_safe(&c);
+        let s = c.speeds();
+        prop_assert!(s[6] >= 80);
+        // Steps 0–3 follow the target (raised only by S2), hot steps never below max(curve, 60/80/100).
+        prop_assert_eq!(s[0], target);
+        prop_assert!(s[1..FIRST_HOT_STEP].iter().all(|&v| v >= target));
+        for (h, &floor) in HOT_STEP_FLOORS.iter().enumerate() {
+            let i = FIRST_HOT_STEP + h;
+            prop_assert!(s[i] >= floor.max(spec.params().speed_percent(factory.up[i - 1])).max(target));
+        }
+        // S2 for the ascending step under the factory thresholds.
+        for floor in SPEED_FLOORS {
+            prop_assert!(c.min_speed_at(floor.temp) >= floor.speed);
+        }
+    }
+
+    #[test]
+    fn hybrid_pilot_output_stays_in_range_and_moves_gently(
+        spec in valid_spec(),
+        temps in proptest::collection::vec(proptest::option::of(0u8..=120), 1..200),
+    ) {
+        let mut filter = TempFilter::new();
+        let mut pilot = CpuFanPilot::new();
+        let factory = FACTORY_14K2EMS1_110.cpu;
+        let (idle, min, max) = (spec.idle(), spec.params().min(), spec.params().max());
+        let mut prev: Option<u8> = None;
+        for (i, t) in temps.into_iter().enumerate() {
+            let out = pilot.update(&spec, filter.update(t), i as u64 * 1000);
+            prop_assert!((idle..=max).contains(&out), "{} not in {}..={}", out, idle, max);
+            prop_assert!(hybrid_cpu_table(&spec, &factory, out).is_ok());
+            if let Some(p) = prev {
+                // Only two jumps are allowed: stopping (to idle) and starting (from idle to the start speed).
+                let gentle = out <= p.saturating_add(SLEW_UP_PCT.max(min.saturating_sub(p)))
+                    && (out >= p.saturating_sub(SLEW_DOWN_PCT) || out == idle);
+                prop_assert!(gentle, "{} -> {}", p, out);
+            }
+            prev = Some(out);
+        }
+    }
+
+    #[test]
+    fn hybrid_filter_ignores_isolated_spikes(
+        base in 30u8..=80,
+        spike in 0u8..=120,
+        every in 3usize..8,
+        n in 10usize..60,
+    ) {
+        let mut f = TempFilter::new();
+        for i in 0..n {
+            let t = if i % every == every - 1 { spike } else { base };
+            if let Some(v) = f.update(Some(t)) {
+                prop_assert!((v - f64::from(base)).abs() < 1e-9, "{} vs {}", v, base);
+            }
         }
     }
 }
