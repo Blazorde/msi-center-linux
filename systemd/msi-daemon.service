@@ -15,9 +15,10 @@ WatchdogSec=15
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10
-# S5, last line of defence: after any stop (normal, crash, watchdog kill, panic=abort) put the EC back in
-# fan mode auto. The daemon also does it itself on SIGTERM/SIGINT and in its panic hook. "-": never fails.
-ExecStopPost=-/bin/sh -c 'f=/sys/devices/platform/msi-ec/fan_mode; [ -w "$f" ] && echo auto > "$f"; exit 0'
+# S5, last line of defence: after any stop (normal, crash, watchdog kill, panic=abort) hand the fans back to the
+# firmware: factory tables (the EC keeps a single copy, also used by `auto`), then fan mode auto. Minimal mode,
+# no D-Bus, idempotent. The daemon also does it itself on SIGTERM/SIGINT and in its panic hook. "-": never fails.
+ExecStopPost=-/usr/bin/msi-daemon --restore-factory
 
 # Settings: /var/lib/msi-center/state.toml
 StateDirectory=msi-center
