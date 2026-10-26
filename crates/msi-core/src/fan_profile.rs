@@ -78,14 +78,14 @@ impl FanProfile {
         }
     }
 
-    /// One-line French description.
+    /// One-line French description (narrow no-break spaces before `%` and `°C`).
     #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
             Self::Silent => "Arrêté au repos, montée lente et tardive",
             Self::Auto => "Courbe d'usine MSI gérée par le contrôleur",
-            Self::Balanced => "Démarrage doux, 100 % dès 85 °C",
-            Self::Turbo => "Réagit tôt et fort, 100 % dès 74 °C",
+            Self::Balanced => "Démarrage doux, 100\u{202f}% dès 85\u{202f}°C",
+            Self::Turbo => "Réagit tôt et fort, 100\u{202f}% dès 74\u{202f}°C",
             Self::Custom => "Votre courbe, planchers de sécurité inclus",
         }
     }
