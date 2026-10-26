@@ -1,5 +1,9 @@
 //! Login autostart through an XDG autostart entry (`~/.config/autostart/org.blazorde.MsiCenter.desktop`).
 //!
+//! The Arch package also ships a system-wide entry (`/etc/xdg/autostart/`, any `$XDG_CONFIG_DIRS`). Per the XDG
+//! autostart spec a user entry with the same name replaces it, so turning autostart off while a system entry
+//! exists writes a user entry with `Hidden=true` instead of deleting the user file.
+//!
 //! The content and the parsing are pure; [`enable`] / [`disable`] / [`read`] are thin I/O wrappers.
 
 use std::io;
@@ -80,6 +84,24 @@ pub fn path_in(config_dir: &Path) -> PathBuf {
     config_dir.join("autostart").join(FILE_NAME)
 }
 
+/// Paths of the system-wide entries, most important first, from the value of `$XDG_CONFIG_DIRS`
+/// (`/etc/xdg` when unset or empty). Relative directories are ignored, as the spec requires.
+#[must_use]
+pub fn system_paths(config_dirs: Option<&str>) -> Vec<PathBuf> {
+    let dirs = config_dirs.filter(|d| !d.is_empty()).unwrap_or("/etc/xdg");
+    dirs.split(':')
+        .map(Path::new)
+        .filter(|d| d.is_absolute())
+        .map(path_in)
+        .collect()
+}
+
+/// Content of a user entry that hides a system-wide one (`Hidden=true`).
+#[must_use]
+pub fn hidden_entry(exec: &str, background: bool) -> String {
+    format!("{}Hidden=true\n", entry(exec, background))
+}
+
 /// State read from disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct State {
@@ -89,42 +111,65 @@ pub struct State {
     pub background: bool,
 }
 
-/// Reads the entry at `path`. A missing file means disabled.
-///
-/// # Errors
-/// I/O errors other than "not found".
-pub fn read(path: &Path) -> io::Result<State> {
+fn read_opt(path: &Path) -> io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
-        Ok(c) => Ok(State {
-            enabled: is_active(&c),
-            background: starts_in_background(&c),
-        }),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(State {
-            enabled: false,
-            background: true,
-        }),
+        Ok(c) => Ok(Some(c)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-/// Writes the entry (creating `autostart/`), atomically through a temporary file.
+/// Reads the effective entry: the user entry at `path` if it exists, else the first existing system-wide
+/// entry of `system`. No entry at all means disabled.
 ///
 /// # Errors
-/// I/O errors.
-pub fn enable(path: &Path, exec: &str, background: bool) -> io::Result<()> {
+/// I/O errors other than "not found".
+pub fn read(path: &Path, system: &[PathBuf]) -> io::Result<State> {
+    let mut content = read_opt(path)?;
+    for p in system {
+        if content.is_some() {
+            break;
+        }
+        content = read_opt(p)?;
+    }
+    Ok(content.map_or(
+        State {
+            enabled: false,
+            background: true,
+        },
+        |c| State {
+            enabled: is_active(&c),
+            background: starts_in_background(&c),
+        },
+    ))
+}
+
+fn write_atomic(path: &Path, content: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("desktop.tmp");
-    std::fs::write(&tmp, entry(exec, background))?;
+    std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)
 }
 
-/// Removes the entry (no error if it is already gone).
+/// Writes the user entry (creating `autostart/`), atomically through a temporary file.
+///
+/// # Errors
+/// I/O errors.
+pub fn enable(path: &Path, exec: &str, background: bool) -> io::Result<()> {
+    write_atomic(path, &entry(exec, background))
+}
+
+/// Turns autostart off: removes the user entry (no error if it is already gone) or, when one of the
+/// `system` entries exists, replaces it with a `Hidden=true` user entry so the system one is not run.
 ///
 /// # Errors
 /// I/O errors other than "not found".
-pub fn disable(path: &Path) -> io::Result<()> {
+pub fn disable(path: &Path, system: &[PathBuf], exec: &str, background: bool) -> io::Result<()> {
+    if system.iter().any(|p| p.is_file()) {
+        return write_atomic(path, &hidden_entry(exec, background));
+    }
     match std::fs::remove_file(path) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
@@ -173,19 +218,67 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = path_in(dir.path());
         assert!(p.ends_with("autostart/org.blazorde.MsiCenter.desktop"));
-        assert!(!read(&p).unwrap().enabled);
+        assert!(!read(&p, &[]).unwrap().enabled);
         enable(&p, "msi-center", true).unwrap();
         assert_eq!(
-            read(&p).unwrap(),
+            read(&p, &[]).unwrap(),
             State {
                 enabled: true,
                 background: true
             }
         );
         enable(&p, "msi-center", false).unwrap();
-        assert!(!read(&p).unwrap().background);
-        disable(&p).unwrap();
-        disable(&p).unwrap();
-        assert!(!read(&p).unwrap().enabled);
+        assert!(!read(&p, &[]).unwrap().background);
+        disable(&p, &[], "msi-center", false).unwrap();
+        disable(&p, &[], "msi-center", false).unwrap();
+        assert!(!p.exists());
+        assert!(!read(&p, &[]).unwrap().enabled);
+    }
+
+    #[test]
+    fn system_paths_follow_xdg_config_dirs() {
+        assert_eq!(
+            system_paths(None),
+            vec![PathBuf::from("/etc/xdg/autostart/org.blazorde.MsiCenter.desktop")]
+        );
+        assert_eq!(system_paths(Some("")), system_paths(None));
+        assert_eq!(
+            system_paths(Some("/a:rel:/b")),
+            vec![path_in(Path::new("/a")), path_in(Path::new("/b"))]
+        );
+    }
+
+    #[test]
+    fn system_entry_is_shadowed_by_a_hidden_user_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = path_in(&dir.path().join("user"));
+        let system = vec![
+            path_in(&dir.path().join("missing")),
+            path_in(&dir.path().join("sys")),
+        ];
+        // Packaged entry only: autostart is on, in the background.
+        write_atomic(&system[1], &entry("msi-center", true)).unwrap();
+        assert_eq!(
+            read(&user, &system).unwrap(),
+            State {
+                enabled: true,
+                background: true
+            }
+        );
+        // Turning it off keeps a user entry that hides the system one.
+        disable(&user, &system, "/usr/bin/msi-center", true).unwrap();
+        let content = std::fs::read_to_string(&user).unwrap();
+        assert!(content.ends_with("Hidden=true\n"));
+        assert!(!read(&user, &system).unwrap().enabled);
+        assert!(read(&user, &system).unwrap().background);
+        // Back on: the user entry is active again.
+        enable(&user, "/usr/bin/msi-center", false).unwrap();
+        assert_eq!(
+            read(&user, &system).unwrap(),
+            State {
+                enabled: true,
+                background: false
+            }
+        );
     }
 }

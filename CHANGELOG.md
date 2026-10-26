@@ -68,6 +68,14 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   (`msictl status` : `SAFETY STOP (S9)`).
 - `RestoreFactory()` (D-Bus, polkit `set-fan-curve`) et `msictl factory` : rendre la main à l'EC (tables d'usine
   puis `auto`) jusqu'au prochain profil. `msi-daemon --restore-factory` (sans D-Bus, idempotent).
+- Paquets Arch (phase 9) : `packaging/arch/PKGBUILD` scindé en `msi-center-linux` (daemon, `msictl`, `clipd`,
+  app, unités, presets systemd, D-Bus, polkit, autostart `/etc/xdg/autostart`, extension GNOME avec schéma
+  compilé) et `msi-ec-blazorde-dkms` (sources DKMS, `/usr/lib/modules-load.d/msi-ec.conf`, en conflit avec les
+  paquets `msi-ec` upstream). `msi-daemon` (démarrage) et `clipd` (chaque session) activés à l'installation par
+  presets ; arrêt du daemon (tables d'usine, `auto`) avant désinstallation. `scripts/package.sh` construit dans
+  `dist/` sans rien installer ; `scripts/release.sh` joint ces paquets à la release et vérifie les versions
+  (`Cargo.toml`, `PKGBUILD`, `metadata.json`). Docs : [installation](docs/user/installation.md) (installation en
+  une fois, migration depuis `dev-install.sh`), [checklist v0.1.0](docs/product/release-checklist.md).
 - `scripts/dev-install.sh --enable` : démarrage automatique (DKMS `msi-ec-blazorde`, `modules-load.d`,
   `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
 
@@ -78,7 +86,10 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 - `SetProfile("eco")` réussit quand le dGPU est tenu : profil appliqué, dGPU gardé en veille runtime,
   `SafetyEvent("gpu_busy")` ; `msictl profile eco` affiche un avertissement (processus, règle udev ADR-0008,
   `nvidia-powerd`) au lieu d'échouer.
-- Activation D-Bus système de `msi-daemon` : installée seulement par `dev-install.sh --enable`.
+- Activation D-Bus système de `msi-daemon` : installée seulement par `dev-install.sh --enable` (jamais par le
+  paquet).
+- App : l'interrupteur « Lancer à l'ouverture de session » tient compte de l'entrée système
+  `/etc/xdg/autostart` du paquet (l'éteindre écrit une entrée utilisateur `Hidden=true`).
 - `msi-core` : la table EC suit le modèle mesuré par paliers (7 vitesses, 6 seuils de montée, 6 de descente)
   au lieu de la disposition provisoire de 7 points ; nouveaux presets **Silencieux** (ventilo arrêté sous 50 °C,
   démarrage doux à 30 %), **Progressif** et **Agressif** ; filtre anti-pics pour S4 (2 lectures consécutives) ;

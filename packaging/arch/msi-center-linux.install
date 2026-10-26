@@ -1,0 +1,81 @@
+# pacman scriptlets of msi-center-linux (messages in French, like the user docs).
+# Autostart = systemd presets shipped by the package (an admin preset in /etc/systemd/*-preset wins):
+#   msi-daemon.service  system, multi-user.target          → systemctl preset
+#   clipd.service       user, every graphical session      → systemctl --global preset
+# Nothing is started here: msi-daemon rewrites the EC, and msi_ec must first be the DKMS module. A reboot loads
+# msi_ec (modules-load.d), starts msi-daemon, then clipd, the app (/etc/xdg/autostart) and the extension at login.
+
+_ext=msi-center@blazorde
+
+_presets() {
+  systemctl preset msi-daemon.service >/dev/null 2>&1 || echo "⚠ systemctl preset msi-daemon.service a échoué"
+  systemctl --global preset clipd.service >/dev/null 2>&1 || echo "⚠ systemctl --global preset clipd.service a échoué"
+}
+
+_ext_hint() {
+  cat <<EOF
+  Extension GNOME (une fois par utilisateur, en session, sans sudo ; puis chargée à chaque connexion) :
+      gnome-extensions enable $_ext
+  (Wayland : se déconnecter / reconnecter d'abord si GNOME ne la voit pas encore.)
+EOF
+}
+
+post_install() {
+  _presets
+  cat <<EOF
+
+==> msi-center-linux installé. Démarrage automatique :
+    - msi_ec (DKMS msi-ec-blazorde)  au démarrage     /usr/lib/modules-load.d/msi-ec.conf
+    - msi-daemon                     au démarrage     $(systemctl is-enabled msi-daemon.service 2>/dev/null)
+    - clipd                          à chaque session $(systemctl --global is-enabled clipd.service 2>/dev/null)
+    - application msi-center         à chaque session /etc/xdg/autostart/org.blazorde.MsiCenter.desktop (en arrière-plan)
+$(_ext_hint)
+
+  Le plus simple : redémarrer. Sans redémarrer :
+      modinfo -n msi_ec                       # doit contenir updates/dkms (sinon : en-têtes du noyau manquants)
+      sudo modprobe -r msi_ec && sudo modprobe msi_ec
+      sudo systemctl start msi-daemon
+      systemctl --user start clipd
+      msictl status
+
+  Désactiver l'app au démarrage : MSI Center → Réglages → « Lancer à l'ouverture de session ».
+  Doc : /usr/share/doc/msi-center-linux/ · https://github.com/Blazorde/msi-center-linux/blob/main/docs/user/installation.md
+EOF
+}
+
+post_upgrade() {
+  # Re-apply the presets: a new unit is enabled, an admin's explicit disable (preset in /etc) is respected.
+  _presets
+  cat <<EOF
+
+==> msi-center-linux mis à jour vers $1.
+  Les programmes en cours tournent encore dans l'ancienne version. Redémarrer, ou :
+      sudo systemctl restart msi-daemon       # à l'arrêt : tables d'usine puis mode auto, puis ré-application
+      systemctl --user restart clipd
+      pkill -x msi-center; msi-center --background &
+  Si msi-ec-blazorde-dkms a changé : sudo modprobe -r msi_ec && sudo modprobe msi_ec (daemon arrêté), ou redémarrer.
+  Extension GNOME : se déconnecter / reconnecter pour charger la nouvelle version.
+EOF
+}
+
+pre_remove() {
+  # Stop while the binary still exists: ExecStopPost (msi-daemon --restore-factory) writes the factory tables
+  # back and puts the EC in fan mode auto (S5).
+  systemctl disable --now msi-daemon.service >/dev/null 2>&1 || true
+  systemctl --global disable clipd.service >/dev/null 2>&1 || true
+  echo "==> msi-daemon arrêté : EC remis en tables d'usine et mode auto."
+}
+
+post_remove() {
+  cat <<EOF
+
+==> msi-center-linux désinstallé.
+  Encore en mémoire jusqu'à la déconnexion : systemctl --user stop clipd ; pkill -x msi-center
+  Extension : gnome-extensions disable $_ext
+  Données conservées (à supprimer à la main si voulu) :
+      /var/lib/msi-center/              (réglages du daemon, root)
+      ~/.local/share/clipd/             (clips épinglés)
+      ~/.config/msi-center/             (réglages de l'app)
+      ~/.config/autostart/org.blazorde.MsiCenter.desktop (si l'interrupteur de démarrage a été modifié)
+EOF
+}

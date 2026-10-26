@@ -29,6 +29,7 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 scripts/ci.sh        # fmt --check, clippy -D warnings, test, extension checks, cargo deny
 scripts/ext-check.sh # GNOME extension only (offline, ~1 s)
 scripts/ext-smoke.sh # GNOME extension end-to-end in an isolated headless shell with a mock msi-daemon
+scripts/package.sh   # Arch packages → dist/ (makepkg in a temp dir, installs nothing)
 ```
 
 Run it before declaring work done. There is **no GitHub Actions** (quota unavailable, ADR-0007): `scripts/ci.sh`

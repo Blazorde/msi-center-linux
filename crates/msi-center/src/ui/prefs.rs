@@ -122,10 +122,15 @@ impl Prefs {
         autostart::path_in(&self.ctx.app.config_dir)
     }
 
+    /// System-wide entries (the package installs `/etc/xdg/autostart/org.blazorde.MsiCenter.desktop`).
+    fn system_paths() -> Vec<std::path::PathBuf> {
+        autostart::system_paths(std::env::var("XDG_CONFIG_DIRS").ok().as_deref())
+    }
+
     /// Reads the autostart entry and the settings into the widgets.
     pub fn sync(&self) {
         let settings = *self.ctx.app.settings.borrow();
-        let state = autostart::read(&self.path()).unwrap_or(autostart::State {
+        let state = autostart::read(&self.path(), &Self::system_paths()).unwrap_or(autostart::State {
             enabled: false,
             background: settings.start_minimised,
         });
@@ -145,7 +150,12 @@ impl Prefs {
         let res = if self.login.is_active() {
             autostart::enable(&path, &exec_path(), self.background.is_active())
         } else {
-            autostart::disable(&path)
+            autostart::disable(
+                &path,
+                &Self::system_paths(),
+                &exec_path(),
+                self.background.is_active(),
+            )
         };
         match res {
             Ok(()) if self.login.is_active() => {

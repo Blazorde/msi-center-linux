@@ -1,0 +1,145 @@
+# Maintainer: Blazorde <https://github.com/Blazorde>
+#
+# Split package for msi-center-linux (MSI Stealth 14 AI Studio A1VGG, CachyOS / GNOME):
+#   msi-center-linux      msi-daemon, msictl, clipd, msi-center (GTK app), systemd units + presets,
+#                         D-Bus / polkit files, desktop entries, icons, GNOME Shell extension
+#   msi-ec-blazorde-dkms  fork of the msi-ec kernel module (DKMS sources) + /usr/lib/modules-load.d/msi-ec.conf
+#
+# Builds from a git checkout, never from the working tree (uncommitted changes are ignored):
+#   scripts/package.sh                         # HEAD of the local clone → dist/*.pkg.tar.zst
+#   scripts/package.sh --ref tag=v0.1.0        # a tag (or commit=<sha>, branch=<name>)
+#   cd packaging/arch && makepkg               # same as the first line, sources next to the PKGBUILD
+# MSI_CENTER_REPO (path or URL of the repository) and MSI_CENTER_REF (makepkg git fragment) override the source.
+# See docs/user/installation.md.
+
+pkgbase=msi-center-linux
+pkgname=(msi-center-linux msi-ec-blazorde-dkms)
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="MSI Center replacement for the MSI Stealth 14 AI Studio A1VGG: fans, profiles, dGPU, battery, clipboard"
+arch=(x86_64)
+url="https://github.com/Blazorde/msi-center-linux"
+license=(GPL-3.0-or-later)
+makedepends=(cargo git glib2 gtk4 libadwaita sqlite)
+# Cargo already builds with fat LTO and strips (Cargo.toml [profile.release]); makepkg's own LTO flags
+# (-flto=auto in LDFLAGS) would only get in the way, and a -debug package would be empty.
+options=(!lto !debug)
+
+# DKMS package version comes from kernel/msi-ec/dkms.conf (directory name under /usr/src must match it).
+_dkms_name=msi-ec-blazorde
+_dkms_ver=0.13-blazorde.1
+
+_repo=${MSI_CENTER_REPO:-$(realpath "$startdir/../..")}
+_ref=${MSI_CENTER_REF:+#$MSI_CENTER_REF}
+source=("$pkgbase::git+file://${_repo}${_ref}")
+[[ $_repo == *://* || $_repo == git@* ]] && source=("$pkgbase::git+${_repo}${_ref}")
+sha256sums=(SKIP)
+
+_target() { rustc -vV | sed -n 's/^host: //p'; }
+
+prepare() {
+  cd "$pkgbase"
+  # rustup users: rust-toolchain.toml says stable; pin it so no other toolchain is picked up.
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(_target)"
+
+  local ver
+  ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+  [[ $ver == "$pkgver" ]] || { error "Cargo.toml version $ver ≠ pkgver $pkgver"; return 1; }
+  ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' kernel/msi-ec/dkms.conf)
+  [[ $ver == "$_dkms_ver" ]] || { error "dkms.conf PACKAGE_VERSION $ver ≠ _dkms_ver $_dkms_ver"; return 1; }
+}
+
+build() {
+  cd "$pkgbase"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --release --locked --frozen --workspace
+
+  # GNOME Shell extension: copy the sources, compile the settings schema next to them.
+  rm -rf ext && mkdir ext
+  cp -r extension/msi-center@blazorde ext/
+  glib-compile-schemas --strict ext/msi-center@blazorde/schemas
+}
+
+check() {
+  cd "$pkgbase"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # Pure logic only: msi-center's D-Bus tests need a session bus, the daemon is never started here.
+  cargo test --release --locked --frozen -p msi-core -p clip-core
+}
+
+package_msi-center-linux() {
+  pkgdesc="MSI Center replacement for the MSI Stealth 14 AI Studio A1VGG: daemon, CLI, clipboard service, GTK app, GNOME extension"
+  license=(GPL-3.0-or-later)
+  depends=(
+    "msi-ec-blazorde-dkms=$pkgver"  # fan curve sysfs; without it msi-daemon is read-only (S8)
+    cairo dbus gcc-libs glib2 glibc graphene gtk4 libadwaita pango polkit sqlite systemd
+  )
+  optdepends=(
+    'gnome-shell: top bar extension and Super+V clipboard popup (GNOME 51)'
+    'nvidia-utils: RTX 4070 telemetry in Gaming (NVML, loaded at run time)'
+  )
+  backup=(etc/xdg/autostart/org.blazorde.MsiCenter.desktop)
+  install=msi-center-linux.install
+
+  cd "$pkgbase"
+  local data=crates/msi-center/data app=org.blazorde.MsiCenter
+
+  # Binaries
+  install -Dm755 -t "$pkgdir/usr/bin" target/release/{msi-daemon,msictl,clipd,msi-center}
+
+  # System service (enabled through the preset, see msi-center-linux.install). The system D-Bus activation file
+  # (systemd/org.blazorde.MsiCenter1.system.service) is deliberately NOT shipped: msi-daemon starts at boot, and a
+  # stopped daemon must stay stopped instead of being restarted by the first D-Bus call (it rewrites the EC).
+  install -Dm644 systemd/msi-daemon.service "$pkgdir/usr/lib/systemd/system/msi-daemon.service"
+  install -Dm644 systemd/org.blazorde.MsiCenter1.conf "$pkgdir/usr/share/dbus-1/system.d/org.blazorde.MsiCenter1.conf"
+  install -Dm644 systemd/org.blazorde.msicenter.policy \
+    "$pkgdir/usr/share/polkit-1/actions/org.blazorde.msicenter.policy"
+
+  # User service clipd (every graphical session) + session D-Bus activation
+  install -Dm644 systemd/clipd.service "$pkgdir/usr/lib/systemd/user/clipd.service"
+  install -Dm644 systemd/org.blazorde.Clipd1.service "$pkgdir/usr/share/dbus-1/services/org.blazorde.Clipd1.service"
+
+  # Presets: applied by post_install (`systemctl preset`, `systemctl --global preset`); an admin preset in /etc wins.
+  install -dm755 "$pkgdir/usr/lib/systemd/system-preset" "$pkgdir/usr/lib/systemd/user-preset"
+  echo 'enable msi-daemon.service' > "$pkgdir/usr/lib/systemd/system-preset/80-msi-center-linux.preset"
+  echo 'enable clipd.service' > "$pkgdir/usr/lib/systemd/user-preset/80-msi-center-linux.preset"
+
+  # GTK app: menu entry, D-Bus activation (DBusActivatable=true), icons, login autostart for every user
+  install -Dm644 "$data/$app.desktop" "$pkgdir/usr/share/applications/$app.desktop"
+  sed 's|@bindir@|/usr/bin|' "$data/$app.service" | install -Dm644 /dev/stdin "$pkgdir/usr/share/dbus-1/services/$app.service"
+  install -Dm644 "$data/icons/hicolor/scalable/apps/$app.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/$app.svg"
+  install -Dm644 "$data/icons/hicolor/symbolic/apps/$app-symbolic.svg" \
+    "$pkgdir/usr/share/icons/hicolor/symbolic/apps/$app-symbolic.svg"
+  install -Dm644 "$data/$app-autostart.desktop" "$pkgdir/etc/xdg/autostart/$app.desktop"
+
+  # GNOME Shell extension (system-wide; each user enables it once, see msi-center-linux.install)
+  install -dm755 "$pkgdir/usr/share/gnome-shell/extensions"
+  cp -r --no-preserve=ownership ext/msi-center@blazorde "$pkgdir/usr/share/gnome-shell/extensions/"
+  find "$pkgdir/usr/share/gnome-shell/extensions" -type d -exec chmod 755 {} + -o -type f -exec chmod 644 {} +
+
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md CHANGELOG.md
+}
+
+package_msi-ec-blazorde-dkms() {
+  pkgdesc="msi-ec kernel module with fan curve sysfs (msi-center-linux fork, DKMS)"
+  license=(GPL-2.0-or-later)
+  arch=(any)
+  # The headers of every installed kernel are needed too (linux-cachyos-headers, linux-headers…): the dkms
+  # pacman hook builds the module for each kernel and skips the ones without headers.
+  depends=(dkms)
+  provides=(msi-ec)
+  conflicts=(msi-ec msi-ec-dkms msi-ec-git msi-ec-dkms-git)
+
+  cd "$pkgbase/kernel/msi-ec"
+  local dest="$pkgdir/usr/src/$_dkms_name-$_dkms_ver"
+  install -Dm644 -t "$dest" dkms.conf Makefile Makefile.vars msi-ec.c ec_memory_configuration.h
+  # Not blacklisted on purpose: in-tree and DKMS modules share the name msi_ec; depmod prefers updates/dkms.
+  install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/msi-ec.conf" <<'EOF'
+# msi-ec-blazorde-dkms: load msi_ec at boot (the module has no modalias).
+msi_ec
+EOF
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

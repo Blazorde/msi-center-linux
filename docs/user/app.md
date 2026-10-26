@@ -6,6 +6,9 @@ appliqué par le service, avec les garde-fous de [sécurité ventilateurs](../ha
 
 ## Installer (utilisateur, sans sudo)
 
+Le [paquet Arch](installation.md) installe l'app dans `/usr` avec son lancement automatique ; le script
+ci-dessous sert au développement (ne pas mélanger les deux).
+
 ```bash
 scripts/app-install.sh            # compile en release si besoin, puis installe
 scripts/app-install.sh --uninstall
@@ -36,6 +39,8 @@ démarrée en arrière-plan ; **Menu → Quitter** (`Ctrl+Q`) l'arrête.
 Dans **Réglages** :
 
 - **Lancer à l'ouverture de session** : crée ou supprime `~/.config/autostart/org.blazorde.MsiCenter.desktop`.
+  Avec le paquet Arch, l'entrée système `/etc/xdg/autostart/org.blazorde.MsiCenter.desktop` lance l'app pour
+  tous les utilisateurs : l'éteindre écrit alors une entrée utilisateur `Hidden=true` qui la masque.
   Si GNOME Tweaks l'a désactivé (`Hidden=true`), l'interrupteur apparaît éteint.
 - **Démarrer en arrière-plan** : avec ou sans fenêtre à l'ouverture de session.
 - **Thème** : Système, Clair ou Sombre (enregistré dans `~/.config/msi-center/settings.ini`).
