@@ -1,0 +1,308 @@
+/* MSI Center — "Liquid Glass" / "Golden Gate" theme, light variant (base).
+ *
+ * Palette: International Orange #C0362C (accent), sunset #F28C38 → #C0362C → #2B2D42.
+ * GTK cannot blur what lies behind the window (no backdrop-filter, Wayland gives no access to the desktop
+ * pixels), so the "frosted" look comes from an in-app backdrop (blurred sunset blobs, bridge silhouette,
+ * grain noise — see src/ui/backdrop.rs) seen through translucent cards. Dark overrides: style-dark.css.
+ * High contrast mode unloads both files (plain Adwaita).
+ */
+
+:root {
+  --accent-bg-color: #c0362c;
+  --accent-fg-color: #ffffff;
+  /* Accent used as text on light glass: darker than #C0362C to keep ≥ 4.5:1. */
+  --accent-color: #a12a22;
+  --sunset-orange: #f28c38;
+  --sunset-red: #c0362c;
+  --sunset-navy: #2b2d42;
+  --glass-bg: alpha(#ffffff, 0.56);
+  --glass-hi: alpha(#ffffff, 0.92);
+  --glass-border: alpha(#ffffff, 0.72);
+  --glass-shade: alpha(#2b2d42, 0.16);
+  --glass-tint: alpha(#c0362c, 0.10);
+  --ink: #23243a;
+  --ink-dim: alpha(#23243a, 0.72);
+}
+
+window.msi-window {
+  background-color: #fbf1ea;
+  color: var(--ink);
+}
+
+/* Let the backdrop show through the chrome. */
+window.msi-window headerbar,
+window.msi-window .top-bar headerbar {
+  background: none;
+  box-shadow: none;
+  border: none;
+}
+
+window.msi-window toolbarview,
+window.msi-window navigation-view,
+window.msi-window .content-pane,
+window.msi-window stack.pages,
+window.msi-window scrolledwindow,
+window.msi-window viewport {
+  background: none;
+}
+
+/* Sidebar: one big glass slab. */
+window.msi-window .sidebar-pane {
+  background-color: alpha(#ffffff, 0.38);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.50), alpha(#ffffff, 0.12));
+  border-right: 1px solid var(--glass-border);
+  box-shadow: inset -1px 0 0 alpha(#ffffff, 0.6);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar {
+  background: none;
+  padding: 6px 8px;
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row {
+  border-radius: 14px;
+  padding: 10px 12px;
+  margin: 2px 0;
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row:hover {
+  background-color: alpha(#ffffff, 0.45);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row:selected {
+  background-color: alpha(#ffffff, 0.75);
+  color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--sunset-red), 0 4px 14px -6px var(--glass-shade);
+}
+
+window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
+  color: var(--accent-color);
+}
+
+.brand-mark {
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 11px;
+  background-image: linear-gradient(135deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.45), 0 4px 12px -4px alpha(#c0362c, 0.6);
+  color: #ffffff;
+}
+
+.brand-title {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* Glass cards. */
+.glass {
+  border-radius: 20px;
+  padding: 18px;
+  background-color: var(--glass-bg);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.50), alpha(#ffffff, 0.08) 55%, alpha(#ffffff, 0.22));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -1px 0 alpha(#2b2d42, 0.04),
+    0 1px 2px alpha(#2b2d42, 0.08),
+    0 12px 32px -10px var(--glass-shade),
+    0 30px 60px -28px var(--glass-tint);
+  transition: box-shadow 260ms ease, background-color 260ms ease;
+}
+
+.glass.compact {
+  padding: 12px 14px;
+  border-radius: 18px;
+}
+
+.glass.interactive:hover {
+  background-color: alpha(#ffffff, 0.66);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    0 2px 4px alpha(#2b2d42, 0.08),
+    0 18px 40px -12px alpha(#2b2d42, 0.22),
+    0 30px 60px -24px alpha(#c0362c, 0.18);
+}
+
+.glass.selected {
+  box-shadow:
+    0 0 0 2px var(--accent-bg-color),
+    inset 0 1px 0 var(--glass-hi),
+    0 12px 32px -10px var(--glass-shade);
+}
+
+/* Decorative sunset strip on hero cards (never behind text). */
+.sunset-strip {
+  min-height: 4px;
+  border-radius: 4px;
+  background-image: linear-gradient(90deg, var(--sunset-orange), var(--sunset-red) 55%, var(--sunset-navy));
+}
+
+.page-title {
+  font-size: 22pt;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.section-title {
+  font-weight: 700;
+  font-size: 11pt;
+  color: var(--ink-dim);
+  letter-spacing: 0.04em;
+}
+
+.card-title {
+  font-weight: 700;
+}
+
+.dim {
+  color: var(--ink-dim);
+}
+
+.gauge-value {
+  font-size: 17pt;
+  font-weight: 800;
+  font-feature-settings: "tnum";
+}
+
+.big-value {
+  font-size: 34pt;
+  font-weight: 800;
+  font-feature-settings: "tnum";
+}
+
+.numeric {
+  font-feature-settings: "tnum";
+}
+
+/* Level badges: always a word + icon, colour is only a reinforcement. */
+.level-badge {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 9pt;
+  font-weight: 700;
+}
+
+.level-badge.level-normal {
+  background-color: alpha(#2f7d4f, 0.16);
+  color: #1f5a37;
+}
+
+.level-badge.level-hot {
+  background-color: alpha(#f28c38, 0.24);
+  color: #7a3b06;
+}
+
+.level-badge.level-critical {
+  background-color: alpha(#c0362c, 0.20);
+  color: #8a1f18;
+}
+
+.raised-mark {
+  font-weight: 800;
+  color: var(--accent-color);
+}
+
+.step-cell {
+  padding: 4px 6px;
+  border-radius: 8px;
+}
+
+.step-cell.raised {
+  background-color: alpha(#c0362c, 0.12);
+}
+
+.step-cell.current {
+  box-shadow: inset 0 0 0 2px alpha(#2b2d42, 0.45);
+}
+
+.warning-card {
+  border-color: alpha(#c0362c, 0.45);
+  background-color: alpha(#fff3ee, 0.78);
+}
+
+/* Profile switch: a liquid pill. */
+.profile-switch {
+  border-radius: 999px;
+  padding: 3px;
+  background-color: alpha(#ffffff, 0.45);
+  box-shadow: inset 0 1px 2px alpha(#2b2d42, 0.10), 0 1px 0 alpha(#ffffff, 0.8);
+}
+
+.profile-switch toggle {
+  border-radius: 999px;
+  padding: 8px 18px;
+  transition: background-color 220ms ease, box-shadow 220ms ease, color 220ms ease;
+}
+
+.profile-switch toggle:checked {
+  background-color: var(--accent-bg-color);
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.22), alpha(#ffffff, 0));
+  color: #ffffff;
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.35), 0 6px 16px -6px alpha(#c0362c, 0.7);
+}
+
+/* Clipboard. */
+.clip-card {
+  border-radius: 16px;
+  padding: 12px;
+  min-width: 220px;
+}
+
+.clip-preview {
+  font-family: monospace;
+  font-size: 10pt;
+}
+
+.clip-thumb {
+  border-radius: 12px;
+  background-color: alpha(#2b2d42, 0.06);
+}
+
+.tag-chip {
+  border-radius: 999px;
+  padding: 2px 12px;
+  min-height: 26px;
+  background-color: alpha(#ffffff, 0.55);
+  box-shadow: inset 0 0 0 1px alpha(#2b2d42, 0.10);
+}
+
+.tag-chip:checked {
+  background-color: var(--accent-bg-color);
+  color: #ffffff;
+}
+
+.tag-label {
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 9pt;
+  background-color: alpha(#2b2d42, 0.08);
+}
+
+.status-dot {
+  font-size: 9pt;
+}
+
+button.pill.suggested-action {
+  background-image: linear-gradient(180deg, alpha(#ffffff, 0.18), alpha(#ffffff, 0));
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.3), 0 6px 18px -8px alpha(#c0362c, 0.8);
+}
+
+/* Lists inside glass: let the glass be the surface. */
+.glass list.boxed-list,
+.glass .boxed-list {
+  background-color: alpha(#ffffff, 0.55);
+  box-shadow: inset 0 0 0 1px alpha(#ffffff, 0.7);
+  border-radius: 14px;
+}
+
+preferencesgroup .boxed-list {
+  background-color: alpha(#ffffff, 0.58);
+  box-shadow: inset 0 1px 0 alpha(#ffffff, 0.9), 0 8px 24px -12px alpha(#2b2d42, 0.2);
+  border: 1px solid alpha(#ffffff, 0.7);
+  border-radius: 16px;
+}
+
+banner > revealer > widget {
+  background-color: alpha(#c0362c, 0.14);
+}

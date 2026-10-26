@@ -33,6 +33,15 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 - `msictl` : `status`, `profile`, `curve show`, `charge-limit`, `telemetry --watch`.
 - `systemd/` : `msi-daemon.service` (`Type=notify`, `WatchdogSec`, `ExecStopPost`), politique et activation
   D-Bus système, politique polkit. ADR 0009.
+- App `msi-center` (phase 8, GTK 4 / libadwaita) : pages Accueil (profils, jauges en direct), Ventilateurs
+  (graphique des 7 paliers avec la température actuelle, paliers relevés par S2 signalés, réglage de la
+  courbe avec aperçu `PreviewFanCurve`, Cooler Boost), Performance & GPU (processus qui tiennent la RTX 4070,
+  profil automatique secteur), Batterie (limite de charge), Presse-papiers (recherche, tags, liste/grille,
+  miniatures, épingles, sélection multiple) et Réglages (lancement à l'ouverture de session, arrière-plan,
+  thème). Style « Liquid Glass » aux couleurs du Golden Gate, clair et sombre. Lancement automatique en
+  arrière-plan à chaque session avec notifications des alertes de sécurité ; installation utilisateur par
+  `scripts/app-install.sh`. Erreurs D-Bus traduites, services absents gérés (réessai). L'app dessine sur
+  l'iGPU et ne réveille jamais la RTX 4070. Docs : [l'application](docs/user/app.md), ADR 0011.
 - Extension GNOME Shell `msi-center@blazorde` (phase 7, GNOME 51) : métriques dans la barre supérieure poussées
   par `Telemetry` (CPU, dGPU ou son état, iGPU, RAM, NPU, températures, ventilos ; chacune activable, ordre
   réglable, mode icône seule), menu (profils Éco / Équilibré / Gaming, Cooler Boost, profil auto secteur,
