@@ -9,17 +9,23 @@ import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {ensureActorVisibleInScrollView} from 'resource:///org/gnome/shell/misc/animationUtils.js';
+import {EventEmitter} from 'resource:///org/gnome/shell/misc/signals.js';
 
 import {formatRelative, formatSize, parseTags} from './format.js';
 import {ThumbCache} from './thumbs.js';
 
 const LIST_LIMIT = 200;
 const SEARCH_DEBOUNCE_MS = 120;
-const OPEN_MS = 170;
-const CLOSE_MS = 120;
+// Motion: opened from the top bar button it grows out of the button (origin-aware); opened with the keyboard
+// shortcut (many times a day) it only fades, fast. Closing is always quicker than opening, never ease-in.
+const OPEN_MS = 180;
+const KEY_OPEN_MS = 90;
+const CLOSE_MS = 110;
+const ANCHOR_GAP = 6; // px between the top bar and the card
 const PASTE_DELAY_MS = 180; // let the previously focused window regain focus before Ctrl+V
 
-export class ClipPopup {
+/** Events: `open-state-changed` (bool). */
+export class ClipPopup extends EventEmitter {
     /**
      * @param {object} deps
      * @param {import('./clipd.js').ClipdClient} deps.clipd
@@ -27,6 +33,8 @@ export class ClipPopup {
      * @param {import('./theme.js').ThemeWatcher} deps.theme
      */
     constructor({clipd, settings, theme}) {
+        super();
+        this._anchor = null;
         this._clipd = clipd;
         this._settings = settings;
         this._theme = theme;
@@ -51,11 +59,12 @@ export class ClipPopup {
         return this._grab !== null;
     }
 
-    toggle() {
+    /** @param {{anchor?: Clutter.Actor}} [opts] see open() */
+    toggle(opts = {}) {
         if (this.isOpen)
             this.close();
         else
-            this.open();
+            this.open(opts);
     }
 
     // ── Build ──────────────────────────────────────────────────────────────
@@ -75,6 +84,13 @@ export class ClipPopup {
         click.connect('recognize', () => this.close());
         this._backdrop.add_action(click);
         this._root.add_child(this._backdrop);
+        // Anchored mode leaves the top bar crisp (the button stays visible, highlighted); this transparent
+        // shield over it closes the popup on click, like the backdrop does elsewhere.
+        this._shield = new St.Widget({reactive: true, visible: false});
+        const shieldClick = new Clutter.ClickGesture();
+        shieldClick.connect('recognize', () => this.close());
+        this._shield.add_action(shieldClick);
+        this._root.add_child(this._shield);
 
         this._card = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -111,7 +127,7 @@ export class ClipPopup {
         this._tagBox = new St.BoxLayout({style_class: 'msi-chips'});
         this._tagScroll = new St.ScrollView({
             style_class: 'msi-chips-scroll',
-            hscrollbar_policy: St.PolicyType.AUTOMATIC,
+            hscrollbar_policy: St.PolicyType.EXTERNAL, // scrollable (wheel, focus) without a bar under the chips
             vscrollbar_policy: St.PolicyType.NEVER,
             overlay_scrollbars: true,
             child: this._tagBox,
@@ -177,15 +193,33 @@ export class ClipPopup {
 
     // ── Open / close ───────────────────────────────────────────────────────
 
-    open() {
+    /**
+     * @param {object} [opts]
+     * @param {Clutter.Actor} [opts.anchor] top bar button: the card drops down under it instead of centering
+     */
+    open({anchor = null} = {}) {
         if (this.isOpen)
             return;
         if (!this._root)
             this._build();
-        const mon = Main.layoutManager.currentMonitor;
+        this._anchor?.disconnectObject(this);
+        this._anchor = anchor?.get_stage() ? anchor : null;
+        this._anchor?.connectObject('destroy', () => {
+            this._anchor = null;
+        }, this);
+        const lm = Main.layoutManager;
+        const mon = this._anchor ? lm.monitors[lm.findIndexForActor(this._anchor)] ?? lm.currentMonitor : lm.currentMonitor;
         this._root.set_position(mon.x, mon.y);
         this._root.set_size(mon.width, mon.height);
-        this._backdrop.set_size(mon.width, mon.height);
+        let top = 0;
+        if (this._anchor) {
+            const [, ay] = this._anchor.get_transformed_position();
+            top = Math.max(0, Math.round(ay + this._anchor.height - mon.y));
+        }
+        this._backdrop.set_position(0, top);
+        this._backdrop.set_size(mon.width, mon.height - top);
+        this._shield.set_size(mon.width, top);
+        this._shield.visible = top > 0;
         this._card.style = `max-height: ${Math.round(mon.height * 0.72)}px;`;
         this._placeCard();
         this._syncBlur();
@@ -205,18 +239,43 @@ export class ClipPopup {
         this._tagEntry.hide();
         this._syncScope();
         this._root.show();
+        this._root.remove_all_transitions();
+        this._card.remove_all_transitions();
         this._root.opacity = 0;
-        this._card.set_pivot_point(0.5, 0);
-        this._card.scale_x = this._card.scale_y = 0.96;
-        this._root.ease({opacity: 255, duration: OPEN_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
-        this._card.ease({scale_x: 1, scale_y: 1, duration: OPEN_MS + 60, mode: Clutter.AnimationMode.EASE_OUT_BACK});
+        const ease = Clutter.AnimationMode.EASE_OUT_QUINT;
+        if (this._anchor) {
+            this._card.scale_x = this._card.scale_y = 0.94;
+            this._card.translation_y = -8;
+            this._root.ease({opacity: 255, duration: OPEN_MS, mode: ease});
+            this._card.ease({scale_x: 1, scale_y: 1, translation_y: 0, duration: OPEN_MS, mode: ease});
+        } else {
+            this._card.scale_x = this._card.scale_y = 1;
+            this._card.translation_y = 0;
+            this._root.ease({opacity: 255, duration: KEY_OPEN_MS, mode: ease});
+        }
         this._search.grab_key_focus();
+        this.emit('open-state-changed', true);
         this._reload();
     }
 
     _placeCard() {
         const w = this._root.width;
-        this._card.set_position(Math.round((w - this._card.width) / 2), Math.round(this._root.height * 0.12));
+        const cw = this._card.width;
+        if (!this._anchor) {
+            this._card.set_pivot_point(0.5, 0);
+            this._card.set_position(Math.round((w - cw) / 2), Math.round(this._root.height * 0.12));
+            return;
+        }
+        // Under the button, centered on it, clamped to the monitor with a 12 px margin.
+        const [ax, ay] = this._anchor.get_transformed_position();
+        const [aw, ah] = this._anchor.get_transformed_size();
+        const [rx, ry] = this._root.get_position();
+        const center = ax - rx + aw / 2;
+        const x = Math.round(Math.min(Math.max(12, center - cw / 2), Math.max(12, w - cw - 12)));
+        const y = Math.round(ay - ry + ah + ANCHOR_GAP);
+        this._card.set_position(x, y);
+        // Grow from the button, not from the card's center.
+        this._card.set_pivot_point(cw > 0 ? Math.min(1, Math.max(0, (center - x) / cw)) : 0.5, 0);
     }
 
     close() {
@@ -224,13 +283,16 @@ export class ClipPopup {
             return;
         Main.popModal(this._grab);
         this._grab = null;
+        const ease = Clutter.AnimationMode.EASE_OUT_QUAD;
         this._root.ease({
             opacity: 0,
             duration: CLOSE_MS,
-            mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            mode: ease,
             onStopped: () => this._root?.hide(),
         });
-        this._card.ease({scale_x: 0.98, scale_y: 0.98, duration: CLOSE_MS, mode: Clutter.AnimationMode.EASE_IN_QUAD});
+        if (this._anchor)
+            this._card.ease({scale_x: 0.97, scale_y: 0.97, translation_y: -4, duration: CLOSE_MS, mode: ease});
+        this.emit('open-state-changed', false);
     }
 
     // ── Data ───────────────────────────────────────────────────────────────
@@ -669,6 +731,8 @@ export class ClipPopup {
         }
         this._searchTimeout = this._pasteTimeout = 0;
         this._clipd.disconnectObject(this);
+        this._anchor?.disconnectObject(this);
+        this._anchor = null;
         this._thumbs.destroy();
         this._vkbd = null;
         if (this._card)

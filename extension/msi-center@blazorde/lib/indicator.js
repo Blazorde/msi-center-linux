@@ -9,13 +9,15 @@ import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 
+import * as Animation from 'resource:///org/gnome/shell/ui/animation.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Slider from 'resource:///org/gnome/shell/ui/slider.js';
 
 import {
-    PROFILES, daemonErrorText, formatMetric, normalizeOrder, profileLabel, pushSample, safetyEventText,
+    PROFILES, cycleProfile, daemonErrorText, formatAccel, formatMetric, normalizeOrder, profileInfo, pushSample,
+    safetyEventText,
 } from './format.js';
 import {MenuGlassBlur} from './glassblur.js';
 import {Sparkline} from './sparkline.js';
@@ -26,6 +28,12 @@ const APP_OBJECT_PATH = '/org/blazorde/MsiCenter';
 const CHARGE_MIN = 50;
 const CHARGE_MAX = 100;
 const CHARGE_DEBOUNCE_MS = 700; // keyboard / scroll changes have no "release": apply after a pause
+const CONFIRM_MS = 1500; // keep the optimistic highlight until PropertiesChanged(Profile) lands
+const SCROLL_COOLDOWN_MS = 350; // one profile step per wheel gesture
+// Motion (Clutter has no CSS transforms): press feedback and error nudge, all ease-out, all < 200 ms.
+const PRESS_SCALE = 0.96;
+const PRESS_MS = 90;
+const RELEASE_MS = 160;
 
 export const MsiIndicator = GObject.registerClass(
 class MsiIndicator extends PanelMenu.Button {
@@ -51,6 +59,11 @@ class MsiIndicator extends PanelMenu.Button {
         this._error = null; // last failed call, French text
         this._chargeTimeout = 0;
         this._chargeDragging = false;
+        this._pending = null; // profile id being applied (optimistic)
+        this._confirm = null; // applied, waiting for the Profile property to catch up
+        this._confirmTimeout = 0;
+        this._scrollAcc = 0;
+        this._scrollLock = 0;
 
         this.add_style_class_name('msi-panel-button');
         this._buildPanel();
@@ -68,7 +81,10 @@ class MsiIndicator extends PanelMenu.Button {
                 this._buildMetrics();
             if (key === 'show-sparkline')
                 this._sparkItem.visible = this._settings.get_boolean('show-sparkline');
+            if (key === 'show-clipboard-button')
+                this._clipItem.visible = !this._settings.get_boolean('show-clipboard-button');
         }, this);
+        this.connect('scroll-event', (_a, event) => this._onScroll(event));
 
         this._sync();
     }
@@ -77,13 +93,16 @@ class MsiIndicator extends PanelMenu.Button {
 
     _buildPanel() {
         this._panelBox = new St.BoxLayout({style_class: 'msi-panel-box', y_align: Clutter.ActorAlign.CENTER});
+        // Profile chip: per-profile glyph + tint, short name. Offline: muted MSI logo, no name.
+        this._chip = new St.BoxLayout({style_class: 'msi-chip-panel', y_align: Clutter.ActorAlign.CENTER});
         const iconFile = this._ext.dir.get_child('icons').get_child('msi-center-symbolic.svg');
-        this._icon = new St.Icon({
-            gicon: new Gio.FileIcon({file: iconFile}),
-            style_class: 'system-status-icon msi-panel-icon',
-        });
+        this._logo = new Gio.FileIcon({file: iconFile});
+        this._icon = new St.Icon({gicon: this._logo, style_class: 'system-status-icon msi-panel-icon'});
+        this._chipLabel = new St.Label({style_class: 'msi-chip-label', y_align: Clutter.ActorAlign.CENTER});
+        this._chip.add_child(this._icon);
+        this._chip.add_child(this._chipLabel);
         this._metricsBox = new St.BoxLayout({style_class: 'msi-metrics', y_align: Clutter.ActorAlign.CENTER});
-        this._panelBox.add_child(this._icon);
+        this._panelBox.add_child(this._chip);
         this._panelBox.add_child(this._metricsBox);
         this.add_child(this._panelBox);
         this._buildMetrics();
@@ -92,7 +111,9 @@ class MsiIndicator extends PanelMenu.Button {
     _buildMetrics() {
         this._metricsBox.destroy_all_children();
         this._metricItems = new Map();
-        if (this._settings.get_boolean('icon-only')) {
+        const iconOnly = this._settings.get_boolean('icon-only');
+        this._chipLabel.visible = !iconOnly && this._daemon.available;
+        if (iconOnly) {
             this._metricsBox.hide();
             return;
         }
@@ -148,40 +169,37 @@ class MsiIndicator extends PanelMenu.Button {
         this._theme.track(box);
         this._glassBlur = new MenuGlassBlur(this.menu, this._settings);
 
-        // Header: sunset gradient strip with title and live status.
-        const header = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'msi-header-item'});
-        const headerBox = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'msi-header', x_expand: true});
-        const titleRow = new St.BoxLayout({style_class: 'msi-header-row'});
-        titleRow.add_child(new St.Label({text: 'MSI Center', style_class: 'msi-title', x_expand: true}));
-        this._profilePill = new St.Label({style_class: 'msi-pill', y_align: Clutter.ActorAlign.CENTER});
-        titleRow.add_child(this._profilePill);
-        this._subtitle = new St.Label({style_class: 'msi-subtitle'});
-        headerBox.add_child(titleRow);
-        headerBox.add_child(this._subtitle);
-        header.add_child(headerBox);
-        this.menu.addMenuItem(header);
+        // 1. Profile switcher: the first and biggest thing in the menu. Three glass pills, one tap = SetProfile.
+        const profItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'msi-profiles-item'});
+        const profBox = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, style_class: 'msi-profiles'});
+        this._pillRow = new St.BoxLayout({style_class: 'msi-pill-row', x_expand: true});
+        this._pillRow.layout_manager.homogeneous = true; // three equal pills whatever the label length
+        this._pills = new Map();
+        for (const p of PROFILES)
+            this._pillRow.add_child(this._buildPill(p));
+        // ← → move between pills; only at the row's ends do they reach PanelMenu (next top bar menu).
+        const keys = new Clutter.KeyController();
+        keys.connect('key-press', () => {
+            const [, sym] = keys.get_key();
+            const dir = sym === Clutter.KEY_Left ? St.DirectionType.LEFT
+                : sym === Clutter.KEY_Right ? St.DirectionType.RIGHT : null;
+            if (dir === null)
+                return Clutter.EVENT_PROPAGATE;
+            const moved = this._pillRow.navigate_focus(global.stage.key_focus, dir, false);
+            return moved ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
+        });
+        this._pillRow.add_action(keys);
+        profBox.add_child(this._pillRow);
+        // Live status under the pills: fan mode · power source · dGPU.
+        this._subtitle = new St.Label({style_class: 'msi-status-line', x_align: Clutter.ActorAlign.CENTER});
+        this._subtitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        profBox.add_child(this._subtitle);
+        profItem.add_child(profBox);
+        this.menu.addMenuItem(profItem);
 
         // Banners (read-only, absent daemon, safety events, call errors).
         this._banners = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._banners);
-
-        // Segmented profile switch.
-        const segItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'msi-segment-item'});
-        this._segmented = new St.BoxLayout({style_class: 'msi-segmented', x_expand: true});
-        this._segments = new Map();
-        for (const p of PROFILES) {
-            const b = new St.Button({
-                label: p.label,
-                style_class: `msi-segment msi-segment-${p.id}`,
-                can_focus: true,
-                x_expand: true,
-            });
-            b.connect('clicked', () => this._setProfile(p.id));
-            this._segmented.add_child(b);
-            this._segments.set(p.id, b);
-        }
-        segItem.add_child(this._segmented);
-        this.menu.addMenuItem(segItem);
 
         // Live sparkline (CPU % + CPU °C).
         this._sparkItem = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'msi-spark-item'});
@@ -225,9 +243,11 @@ class MsiIndicator extends PanelMenu.Button {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        const clipItem = this.menu.addAction('Historique du presse-papiers', () => this._openClipboard());
+        // The clipboard has its own top bar button; this entry only appears when that button is hidden.
+        this._clipItem = this.menu.addAction('Historique du presse-papiers', () => this._openClipboard());
         this._clipHint = new St.Label({style_class: 'msi-shortcut-hint', y_align: Clutter.ActorAlign.CENTER, x_expand: true, x_align: Clutter.ActorAlign.END});
-        clipItem.add_child(this._clipHint);
+        this._clipItem.add_child(this._clipHint);
+        this._clipItem.visible = !this._settings.get_boolean('show-clipboard-button');
         this._syncShortcutHint();
         this._settings.connectObject('changed::clipboard-shortcut', () => this._syncShortcutHint(), this);
 
@@ -238,14 +258,56 @@ class MsiIndicator extends PanelMenu.Button {
             if (open) {
                 this._sync();
                 this._spark.setSeries(this._cpuHistory, this._tempHistory);
+                this._focusCurrentPill();
             }
         }, this);
     }
 
+    _buildPill(p) {
+        const pill = new St.Button({
+            style_class: `msi-profile-pill msi-profile-${p.id}`,
+            can_focus: true,
+            x_expand: true,
+            accessible_name: `Profil ${p.label} — ${p.caption}`,
+        });
+        const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'msi-pill-box', x_expand: true});
+        // Glyph bubble: the icon cross-fades with a spinner while SetProfile is in flight.
+        const bubble = new St.Widget({style_class: 'msi-pill-bubble', layout_manager: new Clutter.BinLayout(), x_align: Clutter.ActorAlign.CENTER});
+        const icon = new St.Icon({icon_name: p.icon, style_class: 'msi-pill-icon', x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.CENTER});
+        const spinner = new Animation.Spinner(18, {hideOnStop: true});
+        spinner.x_align = Clutter.ActorAlign.CENTER;
+        spinner.y_align = Clutter.ActorAlign.CENTER;
+        bubble.add_child(icon);
+        bubble.add_child(spinner);
+        box.add_child(bubble);
+        box.add_child(new St.Label({text: p.label, style_class: 'msi-pill-label', x_align: Clutter.ActorAlign.CENTER}));
+        const caption = new St.Label({text: p.caption, style_class: 'msi-pill-caption', x_align: Clutter.ActorAlign.CENTER});
+        box.add_child(caption);
+        pill.child = box;
+        pill.set_pivot_point(0.5, 0.5);
+        pill.connect('clicked', () => this._setProfile(p.id));
+        // Tactile press: scale down quickly, release a bit slower.
+        pill.connect('notify::pressed', () => {
+            const down = pill.pressed;
+            pill.ease({
+                scale_x: down ? PRESS_SCALE : 1, scale_y: down ? PRESS_SCALE : 1,
+                duration: down ? PRESS_MS : RELEASE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+        });
+        this._pills.set(p.id, {pill, icon, spinner});
+        return pill;
+    }
+
+    _focusCurrentPill() {
+        // Keyboard-opened menu: start on the active profile, not on the first pill.
+        const focus = global.stage.key_focus;
+        if (!focus || !this.menu.box.contains(focus))
+            return;
+        this._pills.get(this._shownProfile())?.pill.grab_key_focus();
+    }
+
     _syncShortcutHint() {
-        const accel = this._settings.get_strv('clipboard-shortcut')[0] ?? '';
-        this._clipHint.text = accel.replace(/<Super>/i, 'Super+').replace(/<Control>|<Primary>/i, 'Ctrl+')
-            .replace(/<Shift>/i, 'Maj+').replace(/<Alt>/i, 'Alt+').replace(/\+([a-z])$/, (_m, c) => `+${c.toUpperCase()}`);
+        this._clipHint.text = formatAccel(this._settings.get_strv('clipboard-shortcut')[0] ?? '');
     }
 
     // ── State → view ───────────────────────────────────────────────────────
@@ -256,13 +318,12 @@ class MsiIndicator extends PanelMenu.Button {
         const readOnly = live && p.ReadOnly === true;
         const writable = live && !readOnly;
 
-        if (live)
-            this._icon.remove_style_class_name('msi-muted');
-        else
-            this._icon.add_style_class_name('msi-muted');
+        if (this._confirm && p.Profile === this._confirm)
+            this._clearConfirm();
+        const shown = this._shownProfile();
+        this._renderChip(live, shown);
         this._renderMetrics();
 
-        this._profilePill.text = live ? profileLabel(p.Profile) : 'hors ligne';
         const parts = [];
         if (live) {
             if (p.FanMode)
@@ -275,10 +336,19 @@ class MsiIndicator extends PanelMenu.Button {
         }
         this._subtitle.text = parts.join(' · ');
 
-        for (const [id, b] of this._segments) {
-            b.checked = live && p.Profile === id;
-            b.reactive = writable;
-            b.can_focus = writable;
+        for (const [id, {pill, icon, spinner}] of this._pills) {
+            pill.checked = live && shown === id;
+            pill.reactive = writable;
+            pill.can_focus = writable;
+            const busy = this._pending === id;
+            if (busy) {
+                pill.add_style_pseudo_class('busy');
+                spinner.play();
+            } else {
+                pill.remove_style_pseudo_class('busy');
+                spinner.stop();
+            }
+            icon.ease({opacity: busy ? 0 : 255, duration: RELEASE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
         }
 
         this._boostItem.setToggleState(live && p.CoolerBoost === true);
@@ -298,6 +368,93 @@ class MsiIndicator extends PanelMenu.Button {
         this._chargeSlider.reactive = writable;
 
         this._renderBanners(live, readOnly, p.ReadOnlyReason);
+    }
+
+    /** Profile to highlight: the one being applied, then the one just applied, then the daemon's. */
+    _shownProfile() {
+        return this._pending ?? this._confirm ?? this._daemon.props.Profile ?? '';
+    }
+
+    _renderChip(live, id) {
+        const info = live ? profileInfo(id) : null;
+        for (const p of PROFILES)
+            this._chip.remove_style_class_name(`msi-profile-${p.id}`);
+        if (info) {
+            this._chip.add_style_class_name(`msi-profile-${info.id}`);
+            this._icon.gicon = null;
+            this._icon.icon_name = info.icon;
+            this._icon.remove_style_class_name('msi-muted');
+            this._chipLabel.text = info.label;
+        } else {
+            this._icon.gicon = this._logo;
+            if (live)
+                this._icon.remove_style_class_name('msi-muted');
+            else
+                this._icon.add_style_class_name('msi-muted');
+            this._chipLabel.text = live ? id : '';
+        }
+        this._chipLabel.visible = live && !this._settings.get_boolean('icon-only') && this._chipLabel.text !== '';
+        this.accessible_name = info ? `MSI Center, profil ${info.label}` : 'MSI Center';
+    }
+
+    _onScroll(event) {
+        if (!this._settings.get_boolean('scroll-cycles-profile'))
+            return Clutter.EVENT_PROPAGATE;
+        let step = 0;
+        switch (event.get_scroll_direction()) {
+        case Clutter.ScrollDirection.UP:
+            step = 1;
+            break;
+        case Clutter.ScrollDirection.DOWN:
+            step = -1;
+            break;
+        case Clutter.ScrollDirection.SMOOTH: {
+            const [, dy] = event.get_scroll_delta();
+            this._scrollAcc -= dy;
+            if (Math.abs(this._scrollAcc) >= 1) {
+                step = Math.sign(this._scrollAcc);
+                this._scrollAcc = 0;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        if (step !== 0 && !this._scrollLock) {
+            this._scrollLock = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SCROLL_COOLDOWN_MS, () => {
+                this._scrollLock = 0;
+                return GLib.SOURCE_REMOVE;
+            });
+            this.cycleProfile(step, false);
+        }
+        return Clutter.EVENT_STOP;
+    }
+
+    /**
+     * Step to the neighbour profile (scroll: clamped; shortcut: wraps). Shows the GNOME OSD when the menu is
+     * closed so the change is visible without opening anything.
+     */
+    cycleProfile(delta, wrap) {
+        const p = this._daemon.props;
+        if (!this._daemon.available || p.ReadOnly === true || this._pending)
+            return;
+        const cur = this._shownProfile();
+        const next = cycleProfile(cur, delta, wrap);
+        if (next === cur)
+            return;
+        if (!this.menu.isOpen) {
+            const info = profileInfo(next);
+            const monitor = Main.layoutManager.findIndexForActor(this) ?? Main.layoutManager.primaryIndex;
+            Main.osdWindowManager.showOne(monitor, Gio.ThemedIcon.new(info.icon), info.label, null);
+        }
+        this._setProfile(next);
+    }
+
+    _clearConfirm() {
+        this._confirm = null;
+        if (this._confirmTimeout)
+            GLib.source_remove(this._confirmTimeout);
+        this._confirmTimeout = 0;
     }
 
     _renderBanners(live, readOnly, reason) {
@@ -356,8 +513,16 @@ class MsiIndicator extends PanelMenu.Button {
     }
 
     async _setProfile(id) {
-        const b = this._segments.get(id);
-        b.add_style_class_name('msi-pending');
+        if (this._pending || !this._pills.has(id))
+            return;
+        const before = this._shownProfile();
+        if (id === before)
+            return;
+        // Optimistic: highlight + spinner right away, revert to the daemon's value if the call fails.
+        this._clearConfirm();
+        this._pending = id;
+        this._sync();
+        let failed = false;
         try {
             await this._daemon.setProfile(id);
             this._error = null;
@@ -377,12 +542,32 @@ class MsiIndicator extends PanelMenu.Button {
                 });
                 this._error = null;
             } else {
+                failed = true;
                 this._error = daemonErrorText(e.dbusName, e.message);
             }
-        } finally {
-            b.remove_style_class_name('msi-pending');
+        }
+        if (!this._pills)
+            return; // destroyed meanwhile
+        this._pending = null;
+        if (!failed && this._daemon.props.Profile !== id) {
+            this._confirm = id;
+            this._confirmTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, CONFIRM_MS, () => {
+                this._confirmTimeout = 0;
+                this._confirm = null;
+                this._sync();
+                return GLib.SOURCE_REMOVE;
+            });
         }
         this._sync();
+        if (failed)
+            this._nudge(this._pills.get(id).pill);
+    }
+
+    /** Small horizontal shake: "that did not work", without a modal. */
+    _nudge(actor) {
+        actor.remove_transition('translation-x');
+        actor.translation_x = 6;
+        actor.ease({translation_x: 0, duration: 260, mode: Clutter.AnimationMode.EASE_OUT_ELASTIC});
     }
 
     _chargeFromSlider() {
@@ -427,9 +612,12 @@ class MsiIndicator extends PanelMenu.Button {
     }
 
     destroy() {
-        if (this._chargeTimeout)
-            GLib.source_remove(this._chargeTimeout);
-        this._chargeTimeout = 0;
+        for (const id of [this._chargeTimeout, this._confirmTimeout, this._scrollLock]) {
+            if (id)
+                GLib.source_remove(id);
+        }
+        this._chargeTimeout = this._confirmTimeout = this._scrollLock = 0;
+        this._pills = null;
         this._daemon.disconnectObject(this);
         this._settings.disconnectObject(this);
         this._glassBlur?.destroy();
