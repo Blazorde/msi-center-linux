@@ -6,7 +6,7 @@ Deux paquets Arch (CachyOS), construits depuis le dépôt par [`scripts/package.
 | Paquet | Contenu |
 |---|---|
 | `msi-center-linux` | `msi-daemon`, `msictl`, `clipd`, l'app `msi-center`, unités systemd et presets, fichiers D-Bus et polkit, entrées de menu et d'autostart, icônes, extension GNOME (schéma compilé) |
-| `msi-ec-blazorde-dkms` | sources du module `msi-ec` modifié dans `/usr/src/msi-ec-blazorde-0.13-blazorde.1/` (recompilé par DKMS pour chaque noyau), `/usr/lib/modules-load.d/msi-ec.conf` |
+| `msi-ec-blazorde-dkms` | sources du module `msi-ec` modifié dans `/usr/src/msi-ec-blazorde-0.13.1/` (recompilé par DKMS pour chaque noyau), `/usr/lib/modules-load.d/msi-ec.conf` |
 
 `msi-center-linux` dépend de `msi-ec-blazorde-dkms` ; ce dernier est en conflit avec les paquets DKMS upstream
 (`msi-ec`, `msi-ec-dkms`, `msi-ec-git`, `msi-ec-dkms-git`).
