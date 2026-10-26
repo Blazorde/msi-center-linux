@@ -70,8 +70,8 @@ gapplication action org.blazorde.MsiCenter profile "'gaming'"  # action à param
 
 | Page | Contenu |
 |---|---|
-| **Accueil** | Sélecteur de profil Éco / Équilibré / Gaming, état (alimentation, pilotage, Cooler Boost, RTX), jauges en anneau animées : températures CPU/GPU, ventilateurs (tr/min et consigne), CPU, RTX 4070, iGPU, mémoire, NPU, puissance. |
-| **Ventilateurs** | Pour chaque ventilateur : la table à 7 paliers en graphique (marqueur de la température actuelle), la table écrite dans l'EC, les paliers **relevés par les planchers de sécurité S2** (signalés « ▲ »), le réglage de la courbe avec aperçu en direct, Appliquer, Annuler, Revenir au preset, Cooler Boost. |
+| **Accueil** | Sélecteur de profil Éco / Équilibré / Gaming, état (alimentation, **profil de ventilation** — un clic ouvre Ventilateurs —, Cooler Boost, RTX), jauges en anneau animées : températures CPU/GPU, ventilateurs (tr/min et consigne), CPU, RTX 4070, iGPU, mémoire, NPU, puissance. |
+| **Ventilateurs** | En tête, le **profil de ventilation** (voir ci-dessous). Puis, pour chaque ventilateur : la table à 7 paliers en graphique (marqueur de la température actuelle), la table écrite dans l'EC, les paliers **relevés par les planchers de sécurité S2** (signalés « ▲ »), l'éditeur de la courbe **Personnalisé** avec aperçu en direct, Appliquer, Annuler, Revenir au preset, Cooler Boost. |
 | **Performance & GPU** | Ce que fait chaque profil, état de la RTX 4070, processus qui la gardent allumée, profil automatique secteur/batterie, firmware EC, mode lecture seule. |
 | **Batterie** | Limite de charge 50–100 % (explication longévité), source d'alimentation. |
 | **Presse-papiers** | Recherche, filtre par tags, liste ou grille, miniatures d'images, copier, épingler, tags, sélection multiple et suppression, effacement de l'historique non épinglé. |
@@ -80,14 +80,36 @@ gapplication action org.blazorde.MsiCenter profile "'gaming'"  # action à param
 Raccourcis : `Ctrl+1` … `Ctrl+3` changent de profil, `Alt+1` … `Alt+6` changent de page, `Ctrl+F` cherche dans le presse-papiers, `Ctrl+W` ferme la
 fenêtre, `Ctrl+Q` quitte.
 
-### Courbe des ventilateurs
+### Profils de ventilation
+
+Chaque profil (Éco, Équilibré, Gaming) a un **profil de ventilation**, choisi en un clic dans les cinq tuiles
+de verre en haut de **Ventilateurs** (ou dans le menu principal, section Ventilation, ou par les actions
+`app.fan::silent|auto|balanced|turbo|custom`) :
+
+| Profil de ventilation | Ce qu'il fait | Par défaut pour |
+|---|---|---|
+| **Silencieux** | arrêté au repos, montée lente et tardive | Éco |
+| **Auto** | **courbe d'usine MSI gérée par le contrôleur** (EC), comme sous Windows | – |
+| **Équilibré** | démarrage doux, 100 % dès 85 °C | Équilibré |
+| **Turbo** | monte tôt et fort, 100 % dès 74 °C, puis redescend | Gaming |
+| **Personnalisé** | votre courbe (éditeur ci-dessous), planchers de sécurité inclus | – |
+
+Le choix est **retenu par profil** : passer en Gaming ré-applique le profil de ventilation choisi pour Gaming.
+La tuile du choix par défaut porte un badge « Défaut » ; **Revenir au défaut** l'y remet. Turbo n'est pas
+Cooler Boost (ventilateurs à fond), qui reste un interrupteur séparé. En **Auto**, aucune courbe de MSI Center
+n'est écrite (l'EC choisit ses paliers) ; la sécurité thermique Cooler Boost reste active.
+
+### Courbe des ventilateurs (Personnalisé)
 
 Les curseurs règlent la courbe exponentielle (vitesse au repos, T0, T1, vitesses de départ et maximale, k,
 hystérésis). Bouger T0 ou T1 répartit les 6 seuils régulièrement entre les deux. L'aperçu (pointillés) est
 calculé par le service **sans rien écrire** ; une valeur hors bornes (règle S3) est expliquée et bloque
 **Appliquer**. Si la courbe est plus lente qu'un plancher de sécurité (30 % dès 60 °C, 50 % dès 75 °C,
-100 % dès 85 °C), les paliers concernés sont relevés **et affichés** : rien n'est caché. **Appliquer**
-remplace la courbe du profil actif pour ce ventilateur ; **Revenir au preset** la supprime.
+100 % dès 85 °C), les paliers concernés sont relevés **et affichés** : rien n'est caché. L'éditeur part de
+votre courbe personnalisée (sinon du preset par défaut du profil). **Appliquer** (« Appliquer en
+Personnalisé » si un autre profil de ventilation est actif) enregistre la courbe de ce ventilateur pour le
+profil actif et **passe ce profil en Personnalisé** ; **Revenir au preset** la supprime (sans courbe
+personnalisée restante, le profil revient à son profil de ventilation par défaut).
 
 Le bouton **Rendre la main à l'EC** (courbes d'usine) n'apparaît que si le service fournit la méthode
 `RestoreFactory` (l'app le détecte par introspection).

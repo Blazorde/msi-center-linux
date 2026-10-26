@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
+use msi_core::fan_profile::{FanProfile, ParseFanProfileError};
 use msi_core::profile::Profile;
-use msi_core::table::{GeneratedCurve, generate};
+use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, generate};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::{DBusError, OwnedVariant, Str, interface};
@@ -102,14 +103,14 @@ pub fn spec_to_wire(s: &FanCurveSpec) -> SpecWire {
 /// Wire form of a generated table and its safety report.
 #[must_use]
 pub fn generated_to_wire(g: &GeneratedCurve) -> (TableWire, Vec<RaisedWire>) {
-    let table = (
-        g.curve.speeds().to_vec(),
-        g.curve.up().to_vec(),
-        g.curve.down().to_vec(),
-    );
-    let raised = g
-        .report
-        .raised
+    tables_to_wire(&g.curve.tables(), &g.report.raised)
+}
+
+/// Wire form of EC tables and the steps the safety floors raised.
+#[must_use]
+pub fn tables_to_wire(t: &RawTables, raised: &[RaisedPoint]) -> (TableWire, Vec<RaisedWire>) {
+    let table = (t.speeds.to_vec(), t.up.to_vec(), t.down.to_vec());
+    let raised = raised
         .iter()
         .map(|p| {
             (
@@ -278,6 +279,12 @@ impl MsiCenter {
         if old.profile != new.profile {
             res.push(self.profile_changed(e).await);
         }
+        if old.fan_profile != new.fan_profile {
+            res.push(self.fan_profile_changed(e).await);
+        }
+        if old.default_fan_profile != new.default_fan_profile {
+            res.push(self.default_fan_profile_changed(e).await);
+        }
         if old.auto_profile_on_power != new.auto_profile_on_power {
             res.push(self.auto_profile_on_power_changed(e).await);
         }
@@ -375,21 +382,52 @@ impl MsiCenter {
         res.map_err(Into::into)
     }
 
+    /// Selects the fan profile (`silent`, `auto`, `balanced`, `turbo`, `custom`) of the selected profile,
+    /// remembered for that profile, and applies it. `auto` = EC factory curve in fan mode `auto`.
+    async fn set_fan_profile(
+        &self,
+        fan_profile: String,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), MsiError> {
+        let fp: FanProfile = fan_profile
+            .parse()
+            .map_err(|e: ParseFanProfileError| MsiError::InvalidArgument(e.to_string()))?;
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, events, status) = self.run(move |c| c.set_fan_profile(fp)).await?;
+        self.publish(&emitter, events, status).await;
+        res.map_err(Into::into)
+    }
+
     /// Curve of `fan` (`cpu`, `gpu`) in the selected profile: spec, resulting EC table, steps raised by the
-    /// safety floors, and whether it is a custom curve (vs the profile preset). For the CPU under hybrid
-    /// control (ADR-0010) the table is the live vector in force: factory thresholds, steps 0–3 at the current
-    /// target, hot steps floored.
+    /// safety floors, and whether the fan profile is `custom`. For the CPU under hybrid control (ADR-0010) the
+    /// table is the live vector in force: factory thresholds, steps 0–3 at the current target, hot steps
+    /// floored. Under the `auto` fan profile: the factory table, nothing raised.
     #[zbus(out_args("spec", "table", "raised", "custom"))]
     async fn fan_curve(&self, fan: String) -> Result<(SpecWire, TableWire, Vec<RaisedWire>, bool), MsiError> {
         let fan = parse_fan(&fan)?;
         let (res, _, _) = self.run(move |c| c.fan_curve(fan)).await?;
-        let (spec, generated, custom) = res?;
-        let (table, raised) = generated_to_wire(&generated);
-        Ok((spec_to_wire(&spec), table, raised, custom))
+        let view = res?;
+        let (table, raised) = tables_to_wire(&view.table, &view.raised);
+        Ok((spec_to_wire(&view.spec), table, raised, view.custom))
     }
 
-    /// Sets a custom curve for `fan` in the selected profile, saves and applies it. Returns the EC table and
-    /// the steps raised by the S2 floors.
+    /// Custom curve of `fan` in the selected profile (the `custom` fan profile's curve, in force or not): the
+    /// saved spec, else the preset of the profile's default fan profile; with its step table and S2 report.
+    #[zbus(out_args("spec", "table", "raised"))]
+    async fn custom_fan_curve(
+        &self,
+        fan: String,
+    ) -> Result<(SpecWire, TableWire, Vec<RaisedWire>), MsiError> {
+        let fan = parse_fan(&fan)?;
+        let (res, _, _) = self.run(move |c| c.custom_fan_curve(fan)).await?;
+        let (spec, generated) = res?;
+        let (table, raised) = generated_to_wire(&generated);
+        Ok((spec_to_wire(&spec), table, raised))
+    }
+
+    /// Sets the custom curve of `fan` in the selected profile and switches it to the `custom` fan profile;
+    /// saves and applies it. Returns the EC table and the steps raised by the S2 floors.
     #[zbus(out_args("table", "raised"))]
     async fn set_fan_curve(
         &self,
@@ -406,7 +444,8 @@ impl MsiCenter {
         Ok(generated_to_wire(&res?))
     }
 
-    /// Drops the custom curve of `fan` in the selected profile (back to the preset) and applies it.
+    /// Drops the custom curve of `fan` in the selected profile and applies it; with no custom curve left, the
+    /// profile goes back to its default fan profile.
     async fn reset_fan_curve(
         &self,
         fan: String,
@@ -505,6 +544,19 @@ impl MsiCenter {
     #[zbus(property)]
     fn profile(&self) -> String {
         self.snapshot().profile.as_str().to_owned()
+    }
+
+    /// Fan profile of the selected profile: `silent`, `auto`, `balanced`, `turbo` or `custom`.
+    #[zbus(property)]
+    fn fan_profile(&self) -> String {
+        self.snapshot().fan_profile.as_str().to_owned()
+    }
+
+    /// Default fan profile of the selected profile (`eco` → `silent`, `balanced` → `balanced`, `gaming` →
+    /// `turbo`).
+    #[zbus(property)]
+    fn default_fan_profile(&self) -> String {
+        self.snapshot().default_fan_profile.as_str().to_owned()
     }
 
     /// Automatic profile on AC plug/unplug.

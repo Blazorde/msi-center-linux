@@ -124,6 +124,11 @@ export class DaemonClient extends EventEmitter {
         return this.call('SetProfile', new GLib.Variant('(s)', [id]));
     }
 
+    /** Fan profile of the current profile (`silent` · `auto` · `balanced` · `turbo` · `custom`). */
+    setFanProfile(id) {
+        return this.call('SetFanProfile', new GLib.Variant('(s)', [id]));
+    }
+
     setAutoProfileOnPower(on) {
         return this.call('SetAutoProfileOnPower', new GLib.Variant('(b)', [on]));
     }

@@ -112,8 +112,33 @@ async function walk(ext) {
         'failed SetProfile reverts the highlight and shows an error');
     ind._error = null;
     ind._sync();
+
+    // Fan profiles: chip row under the pills, default of Gaming = Turbo, optimistic switch + rollback
+    check(ind._fanRow.visible && ind._fanChips.size === 5, 'fan profile chips shown');
+    check(ind._fanChips.get('turbo').chip.checked, `Gaming → fan profile ${ind._daemon.props.FanProfile}`);
+    const fanPending = ind._setFanProfile('auto');
+    check(ind._fanChips.get('auto').chip.checked && ind._fanPending === 'auto', 'fan chip: optimistic highlight');
+    await fanPending;
+    await sleep(300);
+    check(ind._daemon.props.FanProfile === 'auto' && ind._daemon.props.FanMode === 'auto',
+        `after SetFanProfile: ${ind._daemon.props.FanProfile} / ${ind._daemon.props.FanMode}`);
+    check(ind._subtitle.text.includes('Auto'), `status line: ${ind._subtitle.text}`);
+    const realFan = ind._daemon.setFanProfile;
+    ind._daemon.setFanProfile = () => {
+        const e = new Error('refused (smoke)');
+        e.dbusName = 'org.blazorde.MsiCenter1.Error.NotAuthorized';
+        return Promise.reject(e);
+    };
+    await ind._setFanProfile('silent');
+    ind._daemon.setFanProfile = realFan;
+    check(ind._fanChips.get('auto').chip.checked && !ind._fanChips.get('silent').chip.checked && ind._error !== null,
+        'failed SetFanProfile reverts the highlight');
+    ind._error = null;
+    ind._sync();
     await sleep(200);
     await shot('menu-gaming', ind.menu.box);
+    await ind._setFanProfile('turbo');
+    await sleep(300);
     ind.menu.close();
     await sleep(300);
 

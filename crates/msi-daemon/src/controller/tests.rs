@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use msi_core::curve::CurvePreset;
+use msi_core::curve::{CurvePreset, FanCurveParams};
+use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::hybrid_cpu_table;
 use msi_core::table::TableWrite;
 use tempfile::TempDir;
@@ -465,7 +466,7 @@ fn restore_factory_hands_control_back_until_a_profile_is_applied() {
     assert!(!r.ctl.is_handed_back());
     assert_eq!(r.ec.state().fan_mode, FanMode::Advanced);
     assert_eq!(r.ec.state().gpu, expected(CurvePreset::Silent));
-    let live = r.ctl.fan_curve(Fan::Cpu).unwrap().1.curve.tables();
+    let live = r.ctl.fan_curve(Fan::Cpu).unwrap().table;
     assert_eq!(r.ec.state().cpu, live);
 }
 
@@ -644,8 +645,8 @@ fn hybrid_tick_writes_only_cpu_speeds_and_only_when_they_change() {
         );
     }
     // FanCurve("cpu") is the live vector.
-    let (_, live, _) = r.ctl.fan_curve(Fan::Cpu).unwrap();
-    assert_eq!(live.curve.tables(), r.ec.state().cpu);
+    let live = r.ctl.fan_curve(Fan::Cpu).unwrap();
+    assert_eq!(live.table, r.ec.state().cpu);
     assert_eq!(r.ctl.take_events().len(), 0);
 }
 
@@ -794,4 +795,351 @@ fn hybrid_set_fan_curve_cpu_returns_the_live_vector() {
     // GPU keeps the generated table.
     let g = r.ctl.set_fan_curve(Fan::Gpu, spec).unwrap();
     assert_eq!(g.curve.tables(), expected(CurvePreset::Progressive));
+}
+
+// ---- Fan profiles ----
+
+/// A second controller on the same state file and EC (daemon restart).
+fn restart(r: &Rig) -> Controller {
+    let root = FsRoot::new(r.dir.path());
+    let (ctl, warnings) = Controller::new(
+        Box::new(r.ec.clone()),
+        PowerSupply::new(root.clone()),
+        GpuManager::new(root),
+        None,
+        StateStore::new(r.dir.path().join("state/state.toml")),
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+    ctl
+}
+
+fn quiet_custom() -> FanCurveSpec {
+    FanCurveSpec::new(
+        FanCurveParams::new(45, 80, 30, 100, 2.5).unwrap(),
+        0,
+        [45, 52, 60, 67, 73, 80],
+        3,
+    )
+    .unwrap()
+}
+
+#[test]
+fn fan_profile_defaults_follow_the_performance_profile() {
+    let mut r = rig();
+    for (p, fp) in [
+        (Profile::Eco, FanProfile::Silent),
+        (Profile::Balanced, FanProfile::Balanced),
+        (Profile::Gaming, FanProfile::Turbo),
+    ] {
+        r.ctl.set_profile(p).unwrap();
+        let st = r.ctl.status();
+        assert_eq!((st.fan_profile, st.default_fan_profile), (fp, fp), "{p}");
+        assert_eq!(r.ec.state().gpu, expected(fp.preset().unwrap()), "{p}");
+    }
+}
+
+#[test]
+fn auto_writes_factory_tables_then_auto_then_shift_mode() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    let s = r.ec.state().clone();
+    assert_eq!((s.cpu, s.gpu), (FACTORY_CPU, FACTORY_GPU));
+    assert_eq!(s.fan_mode, FanMode::Auto);
+    assert_eq!(s.fan_mode_writes.last(), Some(&FanMode::Auto));
+    // Shift mode and GPU handling are the performance profile's, unchanged.
+    assert_eq!(s.shift_mode, ShiftMode::Turbo);
+    assert!(r.ctl.is_auto_applied());
+    assert!(!r.ctl.is_applied());
+    assert!(!r.ctl.is_handed_back());
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Auto);
+    assert_eq!(r.ctl.status().default_fan_profile, FanProfile::Turbo);
+    // FanCurve reports the factory table, nothing raised.
+    let view = r.ctl.fan_curve(Fan::Cpu).unwrap();
+    assert_eq!(view.table, FACTORY_CPU);
+    assert_eq!(view.raised, []);
+    assert!(!view.custom);
+    assert_eq!(r.ctl.fan_curve(Fan::Gpu).unwrap().table, FACTORY_GPU);
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn auto_stops_the_hybrid_cpu_loop() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    set_temps(&r.ec, Some(70), Some(40));
+    tick_secs(&mut r.ctl, 0, 10);
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    let n = r.ec.state().writes.len();
+    for (i, t) in [45, 60, 75, 80, 50, 40].into_iter().enumerate() {
+        set_temps(&r.ec, Some(t), Some(40));
+        let readings = r.ctl.tick(Clock((10 + i as u64 * 10) * SEC));
+        assert_eq!(readings.cpu_fan_target, None);
+        tick_secs(&mut r.ctl, 11 + i as u64 * 10, 9);
+    }
+    let s = r.ec.state();
+    assert_eq!(s.writes.len(), n);
+    assert_eq!((s.cpu, s.fan_mode), (FACTORY_CPU, FanMode::Auto));
+    assert_eq!(r.ctl.take_events().len(), 0, "Auto is not a drift");
+}
+
+#[test]
+fn auto_to_hybrid_and_back_through_the_kernel_rules() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    for fp in [
+        FanProfile::Auto,
+        FanProfile::Turbo,
+        FanProfile::Auto,
+        FanProfile::Silent,
+        FanProfile::Balanced,
+        FanProfile::Auto,
+        FanProfile::Custom,
+        FanProfile::Auto,
+    ] {
+        r.ctl.set_fan_profile(fp).unwrap();
+        let s = r.ec.state().clone();
+        match fp.preset() {
+            Some(preset) => {
+                assert_eq!(s.fan_mode, FanMode::Advanced, "{fp}");
+                assert_eq!(s.gpu, expected(preset), "{fp}");
+                assert_eq!((s.cpu.up, s.cpu.down), (FACTORY_CPU.up, FACTORY_CPU.down));
+                assert!(r.ctl.is_applied() && !r.ctl.is_auto_applied());
+            }
+            None if fp == FanProfile::Auto => {
+                assert_eq!(
+                    (s.cpu, s.gpu, s.fan_mode),
+                    (FACTORY_CPU, FACTORY_GPU, FanMode::Auto)
+                );
+                assert!(!r.ctl.is_applied() && r.ctl.is_auto_applied());
+            }
+            // Custom without a saved curve: the default fan profile's preset (Progressive).
+            None => assert_eq!(s.gpu, expected(CurvePreset::Progressive)),
+        }
+        assert_eq!(s.shift_mode, ShiftMode::Comfort);
+    }
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn switching_profile_applies_its_remembered_fan_profile() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Turbo).unwrap();
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Aggressive));
+    assert_eq!(r.ec.state().shift_mode, ShiftMode::Eco);
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Balanced);
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Progressive));
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Turbo);
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Aggressive));
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Auto);
+    let s = r.ec.state().clone();
+    assert_eq!(
+        (s.gpu, s.fan_mode, s.shift_mode),
+        (FACTORY_GPU, FanMode::Auto, ShiftMode::Turbo)
+    );
+    // Back to the default: the override is forgotten.
+    r.ctl.set_fan_profile(FanProfile::Turbo).unwrap();
+    assert!(!r.ctl.settings().fan_profiles.contains_key(&Profile::Gaming));
+}
+
+#[test]
+fn fan_profiles_persist_and_auto_is_reapplied_at_start() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Balanced).unwrap();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.shutdown();
+    // The EC is left in some other state, the daemon restarts.
+    r.ec.state().fan_mode = FanMode::Advanced;
+    let mut ctl = restart(&r);
+    assert_eq!(ctl.settings().fan_profile(Profile::Gaming), FanProfile::Auto);
+    assert_eq!(ctl.settings().fan_profile(Profile::Eco), FanProfile::Balanced);
+    ctl.start().unwrap();
+    assert!(ctl.is_auto_applied());
+    let s = r.ec.state().clone();
+    assert_eq!(
+        (s.cpu, s.gpu, s.fan_mode),
+        (FACTORY_CPU, FACTORY_GPU, FanMode::Auto)
+    );
+}
+
+#[test]
+fn auto_is_reapplied_after_resume_and_by_the_drift_check() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    // Idempotent re-apply.
+    let writes = r.ec.state().writes.len();
+    r.ctl.reapply().unwrap();
+    assert_eq!(r.ec.state().writes.len(), writes);
+    // Something changed the EC behind our back (resume): re-applied.
+    {
+        let mut s = r.ec.state();
+        s.gpu = expected(CurvePreset::Aggressive);
+        s.fan_mode = FanMode::Advanced;
+    }
+    r.ctl.reapply().unwrap();
+    let s = r.ec.state().clone();
+    assert_eq!((s.gpu, s.fan_mode), (FACTORY_GPU, FanMode::Auto));
+    // Drift check (every 10 s) sees a change and re-applies.
+    r.ec.state().fan_mode = FanMode::Advanced;
+    tick_secs(&mut r.ctl, 0, DRIFT_CHECK_EVERY);
+    assert_eq!(kinds(&r.ctl.take_events()), [EventKind::EcReset]);
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+}
+
+#[test]
+fn s4_still_forces_cooler_boost_under_auto() {
+    let mut r = rig();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    set_temps(&r.ec, Some(96), Some(60));
+    tick_secs(&mut r.ctl, 0, 2);
+    assert!(r.ec.state().cooler_boost);
+    assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostForced]);
+}
+
+#[test]
+fn s9_does_not_watch_the_firmware_curve_under_auto() {
+    let mut r = rig();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    {
+        let mut s = r.ec.state();
+        s.cpu_temp = Some(74);
+        s.fan_speed_override = [Some(0), None];
+    }
+    tick_secs(&mut r.ctl, 0, 60);
+    assert_eq!(r.ctl.status().read_only, None);
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn s7_auto_readback_mismatch_falls_back() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ec.state().corrupt_readback = Some(Fan::Gpu);
+    assert!(matches!(
+        r.ctl.set_fan_profile(FanProfile::Auto),
+        Err(ControlError::SafetyFallback(_))
+    ));
+    assert!(!r.ctl.is_auto_applied());
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    assert_eq!(kinds(&r.ctl.take_events()), [EventKind::WriteFailed]);
+}
+
+#[test]
+fn s7_auto_shift_mode_drift_is_detected() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    r.ec.state().shift_mode = ShiftMode::Eco;
+    tick_secs(&mut r.ctl, 0, DRIFT_CHECK_EVERY);
+    assert_eq!(kinds(&r.ctl.take_events()), [EventKind::EcReset]);
+    assert_eq!(r.ec.state().shift_mode, ShiftMode::Turbo);
+}
+
+#[test]
+fn s8_and_s9_refuse_fan_profiles_and_write_nothing() {
+    let mut r = rig_with(
+        MemoryState {
+            fw_version: "14K2EMS1.999".into(),
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    for fp in FanProfile::ALL {
+        assert!(matches!(
+            r.ctl.set_fan_profile(fp),
+            Err(ControlError::ReadOnly(_))
+        ));
+    }
+    assert_eq!(r.ec.state().fan_mode_writes.len(), 0);
+    assert_eq!(r.ec.state().writes.len(), 0);
+    // Refused choices are not remembered.
+    assert!(r.ctl.settings().fan_profiles.is_empty());
+}
+
+#[test]
+fn auto_on_firmware_without_factory_tables_only_sets_auto() {
+    let mut r = rig_with(
+        MemoryState {
+            fw_version: "14K2EMS1.109".into(),
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    let applied = r.ec.state().cpu;
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    assert!(r.ctl.is_auto_applied());
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    assert_eq!(r.ec.state().cpu, applied);
+    assert_eq!(r.ctl.fan_curve(Fan::Cpu).unwrap().table, applied);
+}
+
+#[test]
+fn set_fan_curve_switches_to_custom_and_reset_goes_back_to_the_default() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    let g = r.ctl.set_fan_curve(Fan::Gpu, quiet_custom()).unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Custom);
+    let s = r.ec.state().clone();
+    assert_eq!(s.fan_mode, FanMode::Advanced);
+    assert_eq!(s.gpu, generate(&quiet_custom()).unwrap().curve.tables());
+    assert_eq!(g.curve.tables(), s.gpu);
+    // The other fan of Custom follows the profile's default preset until edited.
+    assert_eq!(s.cpu, expected_cpu_initial(CurvePreset::Aggressive));
+    assert!(r.ctl.fan_curve(Fan::Gpu).unwrap().custom);
+    assert_eq!(r.ctl.custom_fan_curve(Fan::Gpu).unwrap().0, quiet_custom());
+    assert_eq!(
+        r.ctl.custom_fan_curve(Fan::Cpu).unwrap().0,
+        CurvePreset::Aggressive.spec()
+    );
+    // The custom curve is kept when another fan profile is picked, and comes back with Custom.
+    r.ctl.set_fan_profile(FanProfile::Silent).unwrap();
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Silent));
+    r.ctl.set_fan_profile(FanProfile::Custom).unwrap();
+    assert_eq!(
+        r.ec.state().gpu,
+        generate(&quiet_custom()).unwrap().curve.tables()
+    );
+    // Reset: no custom curve left → back to Turbo.
+    r.ctl.reset_fan_curve(Fan::Gpu).unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Turbo);
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Aggressive));
+}
+
+#[test]
+fn custom_curves_are_per_profile_and_survive_a_restart() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_fan_curve(Fan::Gpu, quiet_custom()).unwrap();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Balanced);
+    let mut ctl = restart(&r);
+    assert_eq!(ctl.settings().fan_profile(Profile::Eco), FanProfile::Custom);
+    ctl.set_profile(Profile::Eco).unwrap();
+    assert_eq!(
+        r.ec.state().gpu,
+        generate(&quiet_custom()).unwrap().curve.tables()
+    );
+}
+
+#[test]
+fn set_fan_profile_takes_control_back_after_restore_factory() {
+    let mut r = rig();
+    r.ctl.start().unwrap();
+    r.ctl.restore_factory().unwrap();
+    r.ctl.set_fan_profile(FanProfile::Turbo).unwrap();
+    assert!(!r.ctl.is_handed_back());
+    assert_eq!(r.ec.state().fan_mode, FanMode::Advanced);
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Aggressive));
 }

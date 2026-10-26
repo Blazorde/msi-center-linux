@@ -159,6 +159,34 @@ async fn preview_apply_and_reset_report_raised_steps() {
 }
 
 #[tokio::test]
+async fn fan_profiles_round_trip_against_the_real_daemon() {
+    use msi_core::fan_profile::FanProfile;
+    let h = daemon().await;
+    let d = &h.daemon;
+    d.set_profile("gaming").await.unwrap();
+    let s = d.status().await.unwrap();
+    assert_eq!(
+        (s.fan_profile.as_str(), s.default_fan_profile.as_str()),
+        ("turbo", "turbo")
+    );
+    d.set_fan_profile(FanProfile::Auto).await.unwrap();
+    let s = d.status().await.unwrap();
+    assert_eq!((s.fan_profile.as_str(), s.fan_mode.as_str()), ("auto", "auto"));
+    let c = d.fan_curve(Fan::Cpu).await.unwrap();
+    assert_eq!(
+        c.generated.table.speeds,
+        msi_core::ec::FACTORY_14K2EMS1_110.cpu.speeds
+    );
+    assert!(c.generated.raised.is_empty() && !c.custom);
+    // The Personnalisé editor starts from the default preset (Aggressive for Gaming).
+    let (spec, generated) = d.custom_fan_curve(Fan::Gpu).await.unwrap();
+    assert_eq!(spec, CurveSpec::from_core(&CurvePreset::Aggressive.spec()));
+    assert_eq!(generated.table.speeds[0], 30);
+    d.set_fan_curve(Fan::Gpu, &spec).await.unwrap();
+    assert_eq!(d.status().await.unwrap().fan_profile, "custom");
+}
+
+#[tokio::test]
 async fn errors_are_mapped() {
     let h = daemon_with(
         MemoryState::default(),

@@ -157,6 +157,41 @@ Argument de sécurité :
 - Firmware sans tables d'usine connues (`.104`–`.109`) : pas de pilotage hybride, la table CPU générée est
   écrite comme pour le GPU (comportement précédent).
 
+## Profils de ventilation
+
+Demande du propriétaire (2026-10-26) : « des profils de courbes, genre silencieux, auto, courbes que tu fais toi
+et turbo ». Chaque profil de performance (Éco, Équilibré, Gaming) a un **profil de ventilation** ; par défaut
+celui de la colonne « défaut », que le propriétaire peut changer. Le choix est **retenu par profil de
+performance** (`state.toml`, `[fan_profiles]`) et ré-appliqué à chaque changement de profil, au démarrage et
+après la veille. Le shift mode et le dGPU restent ceux du profil de performance. Code :
+`msi_core::fan_profile::FanProfile`, appliqué par `msi-daemon` (`Controller::apply_profile`), [ADR-0012](../adr/0012-fan-profiles.md).
+
+| Profil de ventilation | Id | Courbe | Défaut pour |
+|---|---|---|---|
+| **Silencieux** | `silent` | preset Silencieux | Éco |
+| **Auto** | `auto` | **courbe d'usine MSI**, gérée par le contrôleur (EC) | – |
+| **Équilibré** | `balanced` | preset Progressif | Équilibré |
+| **Turbo** | `turbo` | preset Agressif (monte tôt et fort, 100 % dès 74 °C, redescend) | Gaming |
+| **Personnalisé** | `custom` | courbe du propriétaire, une par ventilo et par profil de performance | – |
+
+- **Turbo n'est pas Cooler Boost** : Cooler Boost (ventilos à fond) reste un interrupteur séparé.
+- **Silencieux / Équilibré / Turbo / Personnalisé** : comportement décrit ci-dessus (GPU : table complète écrite ;
+  CPU : pilotage hybride ADR-0010 avec la courbe du profil de ventilation). S1–S9 inchangés.
+- **Personnalisé** : la courbe saisie est validée telle quelle (S3, rejet sans rien écrire), la table générée
+  applique les planchers S2 avec relèvements **signalés** (`raised`), comme toute courbe. Un ventilo jamais
+  édité suit le preset du profil de ventilation par défaut. Éditer une courbe passe le profil en Personnalisé ;
+  la courbe est conservée quand on choisit un autre profil de ventilation.
+- **Auto** : tables d'usine des deux ventilos (ordre sûr `write_plan_raw`, relues) puis `fan_mode=auto`, puis
+  shift mode, puis relecture de tout (S7 : divergence → tables d'usine + `auto` + `SafetyEvent`, ce qui est
+  déjà l'état visé). Le pilotage hybride CPU est **arrêté** (aucune écriture en direct). C'est le même état EC
+  que `RestoreFactory`, mais **choisi et persisté** : le contrôle de dérive (10 s) et la sortie de veille le
+  ré-appliquent. **S4** (Cooler Boost forcé à 95 °C) reste actif ; **S9** n'est pas surveillé (il ne porte que
+  sur nos tables, ici c'est la courbe du firmware) ; **S5** : l'arrêt restaure les tables d'usine comme
+  toujours ; **S8** : refusé en lecture seule, comme toute écriture. Firmware sans tables d'usine connues :
+  seul `fan_mode=auto` est écrit.
+- Migration : un `state.toml` version 1 n'a pas de `[fan_profiles]` ; un profil qui y avait une courbe
+  personnalisée passe en Personnalisé (comportement identique), les autres gardent leur défaut.
+
 ## Invariants (non négociables)
 
 | # | Règle | Où |

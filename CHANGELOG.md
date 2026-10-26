@@ -5,6 +5,21 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 ## [Unreleased]
 
 ### Added
+- **Profils de ventilation** (« silencieux, auto, courbes que tu fais toi et turbo ») : Silencieux, **Auto**
+  (courbe d'usine MSI gérée par le contrôleur, mode choisi et persisté, ré-appliqué au démarrage et après la
+  veille, pilotage hybride CPU arrêté, S4 actif), Équilibré, **Turbo** (courbe Agressive, distincte de Cooler
+  Boost) et **Personnalisé** (votre courbe, S1–S3, relèvements S2 signalés). Défaut par profil : Éco →
+  Silencieux, Équilibré → Équilibré, Gaming → Turbo ; le choix est **retenu par profil** (`state.toml` v2,
+  migration de la v1 : une courbe personnalisée existante passe en Personnalisé).
+  - D-Bus (compatible, ajouts) : `SetFanProfile(s)`, `CustomFanCurve(s) → (spec, table, raised)`, propriétés
+    `FanProfile` et `DefaultFanProfile` (avec `PropertiesChanged`). `SetFanCurve` passe le profil en
+    Personnalisé ; `ResetFanCurve` revient au défaut quand il ne reste aucune courbe personnalisée.
+  - `msictl fan [silent|auto|balanced|turbo|custom]`, profil de ventilation dans `msictl status`.
+  - App : cinq tuiles de verre en tête de Ventilateurs (badge « Défaut », « Revenir au défaut »), éditeur
+    Personnalisé, état Auto expliqué, puce « Ventilation · … » sur l'Accueil, actions `app.fan::…`, section
+    Ventilation du menu ; captures régénérées (dont `fans-auto`).
+  - Extension : rangée de cinq puces sous les pastilles de profil (optimiste, retour en arrière en cas
+    d'erreur), profil de ventilation dans la ligne d'état.
 - App : **changer de profil sans commande**. Grand sélecteur en verre Éco / Équilibré / Gaming sur l'Accueil
   (icône, nom, description, un clic applique, état optimiste avec « Application… », retour au profil réel et
   message en cas d'erreur, avertissement « RTX 4070 occupée » dans la carte), sélecteur compact dans la barre

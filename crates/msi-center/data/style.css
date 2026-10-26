@@ -375,6 +375,67 @@ window.msi-window .sidebar-pane list.navigation-sidebar > row:selected image {
   box-shadow: inset 0 1px 0 alpha(#ffffff, 0.35), 0 4px 12px -5px var(--accent-glow);
 }
 
+/* Tiles: the five fan profiles, wrapping on narrow windows. */
+.profile-picker.tiles > flowboxchild {
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.profile-picker.tiles .profile-segment {
+  padding: 12px 12px 14px 12px;
+}
+
+.profile-picker.tiles .profile-name {
+  font-size: 12.5pt;
+}
+
+/* « Défaut » badge next to a tile's name: shape and word, colour only reinforces. */
+.default-badge {
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-dim);
+  background-color: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+/* Calm information well (Auto: factory curve driven by the EC). */
+.inline-note {
+  border-radius: 14px;
+  padding: 10px 12px;
+  background-color: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ink-faint);
+}
+
+.inline-note > image {
+  color: var(--ink-dim);
+}
+
+/* A chip that is a button (Accueil → Ventilateurs). Hit area ≥ 32 px high in a dense row. */
+button.chip.chip-button {
+  min-height: 0;
+  padding: 4px 8px 4px 10px;
+  background-image: none;
+  transition: background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+button.chip.chip-button:hover {
+  background-color: alpha(#ffffff, 0.55);
+  box-shadow: inset 0 0 0 1px alpha(#c0362c, 0.35);
+}
+
+button.chip.chip-button:active {
+  transform: scale(0.97);
+}
+
+button.chip.chip-button:focus-visible {
+  outline: 2px solid alpha(#c0362c, 0.7);
+  outline-offset: 2px;
+}
+
 /* GPU busy, inline in the hero card. */
 .inline-warning {
   border-radius: 14px;
@@ -580,4 +641,10 @@ toast {
   border-radius: 999px;
   background-color: alpha(#1d1e33, 0.88);
   box-shadow: inset 0 1px 0 alpha(#ffffff, 0.12), 0 10px 30px -10px alpha(#000000, 0.5);
+}
+
+/* Text link in a card header (« Revenir au défaut »). */
+button.link-button {
+  color: var(--accent-color);
+  font-weight: 600;
 }

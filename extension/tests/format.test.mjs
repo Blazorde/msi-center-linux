@@ -6,6 +6,7 @@ import {test} from 'node:test';
 import {
     METRICS, PROFILES, badgeText, cycleProfile, daemonErrorText, formatAccel, formatFans, formatMetric,
     formatRelative, formatSize, normalizeOrder, panelPlacement, parseTags, pickCaptureMime, profileInfo,
+    FAN_PROFILES, fanProfileInfo, fanStatusText,
     profileLabel, pushSample, safetyEventText,
 } from '../msi-center@blazorde/lib/format.js';
 
@@ -127,4 +128,18 @@ test('badgeText hides zero and caps at 99+', () => {
     assert.equal(badgeText(NaN), '');
     assert.equal(badgeText(7), '7');
     assert.equal(badgeText(250), '99+');
+});
+
+test('fan profiles: stable ids, French labels, status text', () => {
+    assert.deepEqual(FAN_PROFILES.map(p => p.id), ['silent', 'auto', 'balanced', 'turbo', 'custom']);
+    assert.equal(fanProfileInfo('custom').label, 'Personnalisé');
+    assert.equal(fanProfileInfo('max'), null);
+    for (const p of FAN_PROFILES)
+        assert.match(p.icon, /-symbolic$/);
+    assert.equal(fanStatusText('turbo', 'advanced'), 'ventilation Turbo');
+    assert.equal(fanStatusText('auto', 'auto'), 'ventilation Auto (courbe d’usine)');
+    // Older daemon without FanProfile: the fan mode as before.
+    assert.equal(fanStatusText(undefined, 'advanced'), 'courbes actives');
+    assert.equal(fanStatusText(undefined, 'auto'), 'ventilos : auto');
+    assert.equal(fanStatusText(undefined, undefined), '');
 });

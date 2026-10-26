@@ -225,6 +225,51 @@
 .msi-profile-pill:checked:focus { border-color: rgba(255, 255, 255, 0.85); }
 .msi-profile-pill:busy .msi-pill-caption { color: rgba(255, 255, 255, 0.70); }
 
+/* Fan profile chips: a quieter, single well under the pills (secondary choice, same glass family) */
+.msi-fan-row {
+    spacing: 4px;
+    padding: 3px;
+    border-radius: 16px;                                  /* concentric: chip 13 + padding 3 */
+    background-color: rgba(0, 0, 0, 0.18);
+    box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.25);
+}
+.msi-light .msi-fan-row {
+    background-color: rgba(43, 45, 66, 0.06);
+    box-shadow: inset 0 1px 2px 0 rgba(43, 45, 66, 0.10);
+}
+.msi-fan-chip {
+    min-height: 40px;                                     /* hit area */
+    padding: 5px 2px 4px 2px;
+    border-radius: 13px;
+    border: 1px solid transparent;
+    color: rgba(245, 241, 238, 0.80);
+    transition-duration: 160ms;
+}
+.msi-light .msi-fan-chip { color: rgba(43, 45, 66, 0.80); }
+.msi-fan-chip:hover { background-color: rgba(255, 255, 255, 0.10); }
+.msi-light .msi-fan-chip:hover { background-color: rgba(255, 255, 255, 0.70); }
+.msi-fan-chip:focus { border-color: rgba(242, 140, 56, 0.95); }
+.msi-light .msi-fan-chip:focus { border-color: rgba(192, 54, 44, 0.85); }
+.msi-fan-chip:insensitive { color: rgba(245, 241, 238, 0.40); }
+.msi-light .msi-fan-chip:insensitive { color: rgba(43, 45, 66, 0.40); }
+.msi-fan-chip-box { spacing: 2px; }
+.msi-fan-chip-icon { icon-size: 16px; }
+.msi-fan-chip-label { font-size: 0.74em; font-weight: 700; }
+/* The profile's default: a thin underline-like ring, shape not colour only (accessible name says it too) */
+.msi-fan-chip:default { border-bottom-color: rgba(245, 241, 238, 0.28); }
+.msi-light .msi-fan-chip:default { border-bottom-color: rgba(43, 45, 66, 0.25); }
+.msi-fan-chip:checked,
+.msi-light .msi-fan-chip:checked {
+    color: #FFFFFF;
+    border-color: rgba(255, 255, 255, 0.10);
+    border-top-color: rgba(255, 255, 255, 0.45);
+    background-gradient-direction: vertical;
+    background-gradient-start: #F28C38;
+    background-gradient-end: #C0362C;
+    box-shadow: 0 4px 12px 0 rgba(192, 54, 44, 0.38);
+}
+.msi-fan-chip:checked:focus { border-color: rgba(255, 255, 255, 0.85); }
+
 .msi-status-line { font-size: 0.8em; color: rgba(245, 241, 238, 0.62); }
 .msi-light .msi-status-line { color: rgba(43, 45, 66, 0.62); }
 

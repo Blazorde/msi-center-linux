@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use futures_util::StreamExt as _;
+use msi_core::fan_profile::FanProfile;
 use msi_daemon::client::{MsiCenter1Proxy, RaisedWire, SpecWire, TableWire};
 use msi_daemon::ec::FACTORY_CPU;
 use zbus::OwnedVariant;
@@ -15,6 +16,9 @@ use zbus::OwnedVariant;
 const USAGE: &str = "usage: msictl [--session] <command>
   status                         profile, fan mode, Cooler Boost, battery, dGPU, firmware
   profile <eco|balanced|gaming>  apply a profile
+  fan [silent|auto|balanced|turbo|custom]
+                                 show or set the fan profile of the current profile (remembered per profile;
+                                 auto = MSI factory curve driven by the EC)
   factory                        hand the fans back to the EC (factory tables, fan mode auto)
   curve show [cpu|gpu]           curve parameters and the resulting EC table
   charge-limit [50..100]         show or set the battery charge limit
@@ -25,6 +29,7 @@ const USAGE: &str = "usage: msictl [--session] <command>
 enum Cmd {
     Status,
     Profile(String),
+    Fan(Option<FanProfile>),
     Factory,
     CurveShow(Vec<String>),
     ChargeLimit(Option<u8>),
@@ -50,6 +55,11 @@ fn parse(args: &[String]) -> Result<Cli, String> {
     let cmd = match rest.as_slice() {
         ["status"] => Cmd::Status,
         ["profile", p] => Cmd::Profile((*p).to_owned()),
+        ["fan"] => Cmd::Fan(None),
+        ["fan", id] => Cmd::Fan(Some(
+            id.parse()
+                .map_err(|e: msi_core::fan_profile::ParseFanProfileError| e.to_string())?,
+        )),
         ["factory"] => Cmd::Factory,
         ["curve", "show"] => Cmd::CurveShow(vec!["cpu".into(), "gpu".into()]),
         ["curve", "show", fan @ ("cpu" | "gpu")] => Cmd::CurveShow(vec![(*fan).to_owned()]),
@@ -78,11 +88,21 @@ fn format_curve(
     spec: &SpecWire,
     table: &TableWire,
     raised: &[RaisedWire],
-    custom: bool,
+    origin: &str,
 ) -> String {
     let (idle, t0, t1, min, max, k, up, hysteresis) = spec;
     let mut out = String::new();
-    let origin = if custom { "custom" } else { "preset" };
+    if origin == "auto" {
+        let _ = writeln!(
+            out,
+            "{fan} (fan profile auto): MSI factory curve, driven by the EC"
+        );
+        let _ = writeln!(out, "  step          {}", join(&[0, 1, 2, 3, 4, 5, 6]));
+        let _ = writeln!(out, "  speed %       {}", join(&table.0));
+        let _ = writeln!(out, "  up ≥ °C           {}", join(&table.1));
+        let _ = writeln!(out, "  down < °C         {}", join(&table.2));
+        return out;
+    }
     let _ = writeln!(
         out,
         "{fan} ({origin}): idle {idle} %, {min}→{max} % from {t0} to {t1} °C, k {k}, hysteresis {hysteresis} °C, up {up:?}"
@@ -102,6 +122,23 @@ fn format_curve(
         let _ = writeln!(
             out,
             "  ! step {step} (from {temp} °C) raised {curve} → {applied} % by the safety floor {floor_s} % at {floor_t} °C"
+        );
+    }
+    out
+}
+
+/// One line per fan profile, the current one marked.
+fn format_fan_profiles(current: &str, default: &str) -> String {
+    let mut out = String::new();
+    for fp in FanProfile::ALL {
+        let mark = if fp.as_str() == current { "*" } else { " " };
+        let hint = if fp.as_str() == default { "  (default)" } else { "" };
+        let _ = writeln!(
+            out,
+            "{mark} {:<9} {:<13} {}{hint}",
+            fp.as_str(),
+            fp.label(),
+            fp.description()
         );
     }
     out
@@ -166,7 +203,16 @@ warning: the dGPU could not be removed; it stays in runtime suspend ({state}).
 }
 
 async fn status(p: &MsiCenter1Proxy<'_>) -> zbus::Result<()> {
-    println!("profile          {}", p.profile().await?);
+    let profile = p.profile().await?;
+    println!("profile          {profile}");
+    let fan = p.fan_profile().await?;
+    let default = p.default_fan_profile().await?;
+    let note = if fan == default {
+        format!(" (default for {profile})")
+    } else {
+        format!(" (default for {profile}: {default})")
+    };
+    println!("fan profile      {fan}{note}");
     println!("auto on AC       {}", p.auto_profile_on_power().await?);
     println!("on AC power      {}", p.on_ac_power().await?);
     println!("fan mode         {}", p.fan_mode().await?);
@@ -219,15 +265,38 @@ async fn run(cli: Cli) -> zbus::Result<()> {
                 }
             }
         }
+        Cmd::Fan(None) => {
+            let (fan, default) = (p.fan_profile().await?, p.default_fan_profile().await?);
+            print!("{}", format_fan_profiles(&fan, &default));
+        }
+        Cmd::Fan(Some(fp)) => {
+            p.set_fan_profile(fp.as_str()).await?;
+            println!(
+                "fan profile {fp} ({}) applied to profile {}",
+                fp.label(),
+                p.profile().await?
+            );
+            if fp == FanProfile::Auto {
+                println!(
+                    "fans on the MSI factory curve (fan mode auto); S4 Cooler Boost supervision stays on"
+                );
+            }
+        }
         Cmd::Factory => {
             p.restore_factory().await?;
             println!("fans handed back to the EC: factory tables, fan mode auto");
             println!("(msictl profile <eco|balanced|gaming> takes control again)");
         }
         Cmd::CurveShow(fans) => {
+            let fan_profile = p.fan_profile().await?;
             for fan in fans {
                 let (spec, table, raised, custom) = p.fan_curve(&fan).await?;
-                print!("{}", format_curve(&fan, &spec, &table, &raised, custom));
+                let origin = match (fan_profile.as_str(), custom) {
+                    ("auto", _) => "auto".to_owned(),
+                    (_, true) => "custom".to_owned(),
+                    (fp, false) => format!("preset, fan profile {fp}"),
+                };
+                print!("{}", format_curve(&fan, &spec, &table, &raised, &origin));
             }
         }
         Cmd::ChargeLimit(None) => println!("{} %", p.charge_limit().await?),
@@ -288,6 +357,10 @@ mod tests {
         assert_eq!(p(&["status"]), Ok(Cmd::Status));
         assert_eq!(p(&["profile", "eco"]), Ok(Cmd::Profile("eco".into())));
         assert_eq!(p(&["factory"]), Ok(Cmd::Factory));
+        assert_eq!(p(&["fan"]), Ok(Cmd::Fan(None)));
+        for fp in FanProfile::ALL {
+            assert_eq!(p(&["fan", fp.as_str()]), Ok(Cmd::Fan(Some(fp))));
+        }
         assert_eq!(
             p(&["curve", "show"]),
             Ok(Cmd::CurveShow(vec!["cpu".into(), "gpu".into()]))
@@ -309,6 +382,9 @@ mod tests {
             &[][..],
             &["profile"],
             &["curve", "show", "fan3"],
+            &["fan", "max"],
+            &["fan", "Turbo"],
+            &["fan", "auto", "now"],
             &["charge-limit", "x"],
             &["reboot"],
         ] {
@@ -324,7 +400,7 @@ mod tests {
             vec![50, 57, 64, 70, 76, 82],
             vec![46, 53, 60, 66, 72, 78],
         );
-        let out = format_curve("cpu", &spec, &table, &[(1, 55, 0, 30, 60, 30)], false);
+        let out = format_curve("cpu", &spec, &table, &[(1, 55, 0, 30, 60, 30)], "preset");
         assert!(
             out.starts_with("cpu (preset): idle 0 %, 30→100 % from 50 to 82 °C"),
             "{out}"
@@ -337,11 +413,36 @@ mod tests {
             FACTORY_CPU.up.to_vec(),
             FACTORY_CPU.down.to_vec(),
         );
-        let out = format_curve("cpu", &spec, &live, &[], false);
+        let out = format_curve("cpu", &spec, &live, &[], "custom");
         assert!(
             out.contains("live: the EC ignores CPU thresholds") && out.contains("(now 37 %)"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn formats_the_auto_fan_profile_and_the_list() {
+        let spec = (0, 50, 82, 30, 100, 2.0, vec![50, 57, 64, 70, 76, 82], 4);
+        let factory = (
+            FACTORY_CPU.speeds.to_vec(),
+            FACTORY_CPU.up.to_vec(),
+            FACTORY_CPU.down.to_vec(),
+        );
+        let out = format_curve("cpu", &spec, &factory, &[], "auto");
+        assert!(
+            out.starts_with("cpu (fan profile auto): MSI factory curve"),
+            "{out}"
+        );
+        assert!(!out.contains("live:") && !out.contains("k 2"), "{out}");
+        let list = format_fan_profiles("auto", "turbo");
+        assert_eq!(list.lines().count(), 5);
+        assert!(list.contains("* auto"), "{list}");
+        assert!(
+            list.lines()
+                .any(|l| l.contains("turbo") && l.ends_with("(default)")),
+            "{list}"
+        );
+        assert!(list.contains("Personnalisé"), "{list}");
     }
 
     #[test]

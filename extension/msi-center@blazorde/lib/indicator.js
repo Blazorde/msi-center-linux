@@ -16,8 +16,8 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as Slider from 'resource:///org/gnome/shell/ui/slider.js';
 
 import {
-    PROFILES, cycleProfile, daemonErrorText, formatAccel, formatMetric, normalizeOrder, profileInfo, pushSample,
-    safetyEventText,
+    FAN_PROFILES, PROFILES, cycleProfile, daemonErrorText, fanProfileInfo, fanStatusText, formatAccel, formatMetric,
+    normalizeOrder, profileInfo, pushSample, safetyEventText,
 } from './format.js';
 import {MenuGlassBlur} from './glassblur.js';
 import {Sparkline} from './sparkline.js';
@@ -62,6 +62,9 @@ class MsiIndicator extends PanelMenu.Button {
         this._pending = null; // profile id being applied (optimistic)
         this._confirm = null; // applied, waiting for the Profile property to catch up
         this._confirmTimeout = 0;
+        this._fanPending = null; // fan profile id being applied (optimistic)
+        this._fanConfirm = null; // applied, waiting for the FanProfile property to catch up
+        this._fanConfirmTimeout = 0;
         this._scrollAcc = 0;
         this._scrollLock = 0;
 
@@ -190,6 +193,25 @@ class MsiIndicator extends PanelMenu.Button {
         });
         this._pillRow.add_action(keys);
         profBox.add_child(this._pillRow);
+        // Fan profile of the current profile: five compact chips, one tap = SetFanProfile. Hidden with an older
+        // daemon that has no FanProfile property.
+        this._fanRow = new St.BoxLayout({style_class: 'msi-fan-row', x_expand: true});
+        this._fanRow.layout_manager.homogeneous = true;
+        this._fanChips = new Map();
+        for (const f of FAN_PROFILES)
+            this._fanRow.add_child(this._buildFanChip(f));
+        const fanKeys = new Clutter.KeyController();
+        fanKeys.connect('key-press', () => {
+            const [, sym] = fanKeys.get_key();
+            const dir = sym === Clutter.KEY_Left ? St.DirectionType.LEFT
+                : sym === Clutter.KEY_Right ? St.DirectionType.RIGHT : null;
+            if (dir === null)
+                return Clutter.EVENT_PROPAGATE;
+            const moved = this._fanRow.navigate_focus(global.stage.key_focus, dir, false);
+            return moved ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
+        });
+        this._fanRow.add_action(fanKeys);
+        profBox.add_child(this._fanRow);
         // Live status under the pills: fan mode · power source · dGPU.
         this._subtitle = new St.Label({style_class: 'msi-status-line', x_align: Clutter.ActorAlign.CENTER});
         this._subtitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
@@ -298,6 +320,42 @@ class MsiIndicator extends PanelMenu.Button {
         return pill;
     }
 
+    _buildFanChip(f) {
+        const chip = new St.Button({
+            style_class: `msi-fan-chip msi-fan-${f.id}`,
+            can_focus: true,
+            x_expand: true,
+            accessible_name: `Ventilation ${f.label}`,
+        });
+        const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'msi-fan-chip-box', x_expand: true});
+        const bubble = new St.Widget({layout_manager: new Clutter.BinLayout(), x_align: Clutter.ActorAlign.CENTER});
+        const icon = new St.Icon({icon_name: f.icon, style_class: 'msi-fan-chip-icon', x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.CENTER});
+        const spinner = new Animation.Spinner(14, {hideOnStop: true});
+        spinner.x_align = Clutter.ActorAlign.CENTER;
+        spinner.y_align = Clutter.ActorAlign.CENTER;
+        bubble.add_child(icon);
+        bubble.add_child(spinner);
+        box.add_child(bubble);
+        box.add_child(new St.Label({text: f.short, style_class: 'msi-fan-chip-label', x_align: Clutter.ActorAlign.CENTER}));
+        chip.child = box;
+        chip.set_pivot_point(0.5, 0.5);
+        chip.connect('clicked', () => this._setFanProfile(f.id));
+        chip.connect('notify::pressed', () => {
+            const down = chip.pressed;
+            chip.ease({
+                scale_x: down ? PRESS_SCALE : 1, scale_y: down ? PRESS_SCALE : 1,
+                duration: down ? PRESS_MS : RELEASE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            });
+        });
+        this._fanChips.set(f.id, {chip, icon, spinner});
+        return chip;
+    }
+
+    /** Fan profile to highlight: the one being applied, then the one just applied, then the daemon's. */
+    _shownFanProfile() {
+        return this._fanPending ?? this._fanConfirm ?? this._daemon.props.FanProfile ?? '';
+    }
+
     _focusCurrentPill() {
         // Keyboard-opened menu: start on the active profile, not on the first pill.
         const focus = global.stage.key_focus;
@@ -324,10 +382,13 @@ class MsiIndicator extends PanelMenu.Button {
         this._renderChip(live, shown);
         this._renderMetrics();
 
+        if (this._fanConfirm && p.FanProfile === this._fanConfirm)
+            this._clearFanConfirm();
         const parts = [];
         if (live) {
-            if (p.FanMode)
-                parts.push(p.FanMode === 'advanced' ? 'courbes actives' : `ventilos : ${p.FanMode}`);
+            const fans = fanStatusText(this._shownFanProfile(), p.FanMode);
+            if (fans)
+                parts.push(fans);
             parts.push(p.OnAcPower ? 'secteur' : 'batterie');
             if (p.GpuState)
                 parts.push(`dGPU ${p.GpuState === 'active' ? 'actif' : p.GpuState === 'suspended' ? 'en veille' : 'retiré'}`);
@@ -346,6 +407,30 @@ class MsiIndicator extends PanelMenu.Button {
                 spinner.play();
             } else {
                 pill.remove_style_pseudo_class('busy');
+                spinner.stop();
+            }
+            icon.ease({opacity: busy ? 0 : 255, duration: RELEASE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+        }
+
+        const fanShown = this._shownFanProfile();
+        this._fanRow.visible = live && typeof p.FanProfile === 'string' && p.FanProfile !== '';
+        for (const [id, {chip, icon, spinner}] of this._fanChips) {
+            chip.checked = live && fanShown === id;
+            chip.reactive = writable;
+            chip.can_focus = writable;
+            const isDefault = p.DefaultFanProfile === id;
+            const info = fanProfileInfo(id);
+            chip.accessible_name = `Ventilation ${info.label}${isDefault ? ' (par défaut)' : ''}`;
+            if (isDefault)
+                chip.add_style_pseudo_class('default');
+            else
+                chip.remove_style_pseudo_class('default');
+            const busy = this._fanPending === id;
+            if (busy) {
+                chip.add_style_pseudo_class('busy');
+                spinner.play();
+            } else {
+                chip.remove_style_pseudo_class('busy');
                 spinner.stop();
             }
             icon.ease({opacity: busy ? 0 : 255, duration: RELEASE_MS, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
@@ -457,6 +542,13 @@ class MsiIndicator extends PanelMenu.Button {
         this._confirmTimeout = 0;
     }
 
+    _clearFanConfirm() {
+        this._fanConfirm = null;
+        if (this._fanConfirmTimeout)
+            GLib.source_remove(this._fanConfirmTimeout);
+        this._fanConfirmTimeout = 0;
+    }
+
     _renderBanners(live, readOnly, reason) {
         this._banners.removeAll();
         const add = (level, text, onClick = null) => {
@@ -563,6 +655,40 @@ class MsiIndicator extends PanelMenu.Button {
             this._nudge(this._pills.get(id).pill);
     }
 
+    async _setFanProfile(id) {
+        if (this._fanPending || !this._fanChips?.has(id))
+            return;
+        if (id === this._shownFanProfile())
+            return;
+        // Optimistic like the pills: highlight + spinner now, back to the daemon's value on failure.
+        this._clearFanConfirm();
+        this._fanPending = id;
+        this._sync();
+        let failed = false;
+        try {
+            await this._daemon.setFanProfile(id);
+            this._error = null;
+        } catch (e) {
+            failed = true;
+            this._error = daemonErrorText(e.dbusName, e.message);
+        }
+        if (!this._fanChips)
+            return; // destroyed meanwhile
+        this._fanPending = null;
+        if (!failed && this._daemon.props.FanProfile !== id) {
+            this._fanConfirm = id;
+            this._fanConfirmTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, CONFIRM_MS, () => {
+                this._fanConfirmTimeout = 0;
+                this._fanConfirm = null;
+                this._sync();
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+        this._sync();
+        if (failed)
+            this._nudge(this._fanChips.get(id).chip);
+    }
+
     /** Small horizontal shake: "that did not work", without a modal. */
     _nudge(actor) {
         actor.remove_transition('translation-x');
@@ -612,12 +738,13 @@ class MsiIndicator extends PanelMenu.Button {
     }
 
     destroy() {
-        for (const id of [this._chargeTimeout, this._confirmTimeout, this._scrollLock]) {
+        for (const id of [this._chargeTimeout, this._confirmTimeout, this._fanConfirmTimeout, this._scrollLock]) {
             if (id)
                 GLib.source_remove(id);
         }
-        this._chargeTimeout = this._confirmTimeout = this._scrollLock = 0;
+        this._chargeTimeout = this._confirmTimeout = this._fanConfirmTimeout = this._scrollLock = 0;
         this._pills = null;
+        this._fanChips = null;
         this._daemon.disconnectObject(this);
         this._settings.disconnectObject(this);
         this._glassBlur?.destroy();

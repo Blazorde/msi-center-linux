@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use msi_core::curve::FanCurveSpec;
 use msi_core::ec::FACTORY_14K2EMS1_110;
+use msi_core::fan_profile::{FanCurveSource, FanProfile};
 use msi_core::profile::Profile;
 use msi_core::table::{GeneratedCurve, generate};
 use zbus::object_server::SignalEmitter;
@@ -105,12 +106,24 @@ fn parse_fan(fan: &str) -> Result<Fan, DemoError> {
 }
 
 impl DaemonInner {
-    fn spec(&self, fan: Fan) -> (FanCurveSpec, bool) {
+    /// Custom curve of `fan` in the selected profile (saved, else the default preset).
+    fn custom_spec(&self, fan: Fan) -> FanCurveSpec {
         let key = (self.state.profile.as_str(), fan.as_str());
-        self.custom.get(&key).map_or_else(
-            || (self.state.profile.target().curve.spec(), false),
-            |s| (*s, true),
-        )
+        self.custom
+            .get(&key)
+            .copied()
+            .unwrap_or_else(|| self.state.profile.target().curve.spec())
+    }
+
+    /// Curve in force for `fan`, and whether the fan profile is `custom` (as the real daemon).
+    fn spec(&self, fan: Fan) -> (FanCurveSpec, bool) {
+        let fp = self.state.fan_profile();
+        let spec = match fp.source() {
+            FanCurveSource::Preset(p) => p.spec(),
+            FanCurveSource::Custom => self.custom_spec(fan),
+            FanCurveSource::Factory => self.state.profile.target().curve.spec(),
+        };
+        (spec, fp == FanProfile::Custom)
     }
 
     /// Live CPU target % (ADR-0010) at the current CPU temperature.
@@ -122,6 +135,18 @@ impl DaemonInner {
         } else {
             p.speed_percent_celsius(self.cpu_temp)
         }
+    }
+
+    /// Table in force: the factory table under Auto (nothing raised), else the generated / live one.
+    fn table(&self, fan: Fan) -> Result<(TableWire, Vec<RaisedWire>), DemoError> {
+        if self.state.fan_profile() == FanProfile::Auto {
+            let t = match fan {
+                Fan::Cpu => FACTORY_14K2EMS1_110.cpu,
+                Fan::Gpu => FACTORY_14K2EMS1_110.gpu,
+            };
+            return Ok(((t.speeds.to_vec(), t.up.to_vec(), t.down.to_vec()), Vec::new()));
+        }
+        Ok(to_wire(&self.generated(fan)?))
     }
 
     fn generated(&self, fan: Fan) -> Result<GeneratedCurve, DemoError> {
@@ -143,6 +168,8 @@ impl DemoDaemon {
 
     async fn all_changed(&self, e: &SignalEmitter<'_>) {
         let _ = self.profile_changed(e).await;
+        let _ = self.fan_profile_changed(e).await;
+        let _ = self.default_fan_profile_changed(e).await;
         let _ = self.gpu_state_changed(e).await;
         let _ = self.fan_mode_changed(e).await;
         let _ = self.cooler_boost_changed(e).await;
@@ -159,8 +186,8 @@ impl DemoDaemon {
             let changed = i.state.tick(now);
             let s = super::sample(now, &i.state);
             i.cpu_temp = s.cpu_temp;
-            let target = i.cpu_target();
-            (super::telemetry_map(&s, &i.state, Some(target)), changed)
+            let target = (i.state.fan_profile() != FanProfile::Auto).then(|| i.cpu_target());
+            (super::telemetry_map(&s, &i.state, target), changed)
         };
         if changed {
             self.all_changed(e).await;
@@ -201,30 +228,77 @@ impl DemoDaemon {
         Ok(())
     }
 
+    async fn set_fan_profile(
+        &self,
+        fan_profile: String,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+    ) -> Result<(), DemoError> {
+        let fp: FanProfile = fan_profile.parse().map_err(invalid)?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        self.inner().state.set_fan_profile(fp);
+        let _ = self.fan_profile_changed(&e).await;
+        let _ = self.fan_mode_changed(&e).await;
+        Ok(())
+    }
+
+    #[zbus(out_args("spec", "table", "raised"))]
+    fn custom_fan_curve(&self, fan: String) -> Result<(SpecWire, TableWire, Vec<RaisedWire>), DemoError> {
+        let fan = parse_fan(&fan)?;
+        let spec = self.inner().custom_spec(fan);
+        let (table, raised) = to_wire(&generate(&spec).map_err(invalid)?);
+        Ok((spec_to_wire(&spec), table, raised))
+    }
+
     #[zbus(out_args("spec", "table", "raised", "custom"))]
     fn fan_curve(&self, fan: String) -> Result<(SpecWire, TableWire, Vec<RaisedWire>, bool), DemoError> {
         let fan = parse_fan(&fan)?;
         let i = self.inner();
         let (spec, custom) = i.spec(fan);
-        let (table, raised) = to_wire(&i.generated(fan)?);
+        let (table, raised) = i.table(fan)?;
         Ok((spec_to_wire(&spec), table, raised, custom))
     }
 
     #[zbus(out_args("table", "raised"))]
-    fn set_fan_curve(&self, fan: String, spec: SpecWire) -> Result<(TableWire, Vec<RaisedWire>), DemoError> {
+    async fn set_fan_curve(
+        &self,
+        fan: String,
+        spec: SpecWire,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+    ) -> Result<(TableWire, Vec<RaisedWire>), DemoError> {
         let fan = parse_fan(&fan)?;
         let spec = spec_from_wire(&spec)?;
-        let mut i = self.inner();
-        let key = (i.state.profile.as_str(), fan.as_str());
-        i.custom.insert(key, spec);
-        Ok(to_wire(&i.generated(fan)?))
+        let out = {
+            let mut i = self.inner();
+            let key = (i.state.profile.as_str(), fan.as_str());
+            i.custom.insert(key, spec);
+            i.state.set_fan_profile(FanProfile::Custom);
+            to_wire(&i.generated(fan)?)
+        };
+        let _ = self.fan_profile_changed(&e).await;
+        let _ = self.fan_mode_changed(&e).await;
+        Ok(out)
     }
 
-    fn reset_fan_curve(&self, fan: String) -> Result<(), DemoError> {
+    async fn reset_fan_curve(
+        &self,
+        fan: String,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+    ) -> Result<(), DemoError> {
         let fan = parse_fan(&fan)?;
-        let mut i = self.inner();
-        let key = (i.state.profile.as_str(), fan.as_str());
-        i.custom.remove(&key);
+        {
+            let mut i = self.inner();
+            let profile = i.state.profile.as_str();
+            i.custom.remove(&(profile, fan.as_str()));
+            let any_left = Fan::ALL
+                .iter()
+                .any(|f| i.custom.contains_key(&(profile, f.as_str())));
+            if !any_left && i.state.fan_profile() == FanProfile::Custom {
+                let default = i.state.profile.default_fan_profile();
+                i.state.set_fan_profile(default);
+            }
+        }
+        let _ = self.fan_profile_changed(&e).await;
+        let _ = self.fan_mode_changed(&e).await;
         Ok(())
     }
 
@@ -242,6 +316,21 @@ impl DemoDaemon {
         self.inner().state.cooler_boost = enabled;
         let _ = self.cooler_boost_changed(&e).await;
         Ok(())
+    }
+
+    #[zbus(property)]
+    fn fan_profile(&self) -> String {
+        self.inner().state.fan_profile().as_str().to_owned()
+    }
+
+    #[zbus(property)]
+    fn default_fan_profile(&self) -> String {
+        self.inner()
+            .state
+            .profile
+            .default_fan_profile()
+            .as_str()
+            .to_owned()
     }
 
     async fn restore_factory(&self, #[zbus(signal_emitter)] e: SignalEmitter<'_>) -> Result<(), DemoError> {
@@ -495,7 +584,15 @@ where
 /// # Errors
 /// Socket pair or connection setup failures.
 pub async fn connect(now_ms: i64) -> zbus::Result<DemoLinks> {
-    let (daemon_server, daemon) = pair(DAEMON_PATH, DemoDaemon::default()).await?;
+    let demo = DemoDaemon::default();
+    // Screenshots of another fan profile (`scripts/app-shots.sh`, page `fans-auto`).
+    if let Some(fp) = std::env::var(super::FAN_PROFILE_ENV)
+        .ok()
+        .and_then(|v| v.parse::<FanProfile>().ok())
+    {
+        demo.inner().state.set_fan_profile(fp);
+    }
+    let (daemon_server, daemon) = pair(DAEMON_PATH, demo).await?;
     let (clipd_server, clipd) = pair(CLIPD_PATH, DemoClipd::new(now_ms)).await?;
     let iface = daemon_server
         .object_server()

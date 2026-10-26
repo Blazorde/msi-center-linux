@@ -38,6 +38,10 @@ pub trait MsiCenter1 {
     fn set_profile(&self, profile: &str) -> zbus::Result<()>;
     /// `SetAutoProfileOnPower`.
     fn set_auto_profile_on_power(&self, enabled: bool) -> zbus::Result<()>;
+    /// `SetFanProfile`.
+    fn set_fan_profile(&self, fan_profile: &str) -> zbus::Result<()>;
+    /// `CustomFanCurve`.
+    fn custom_fan_curve(&self, fan: &str) -> zbus::Result<(SpecWire, TableWire, Vec<RaisedWire>)>;
     /// `FanCurve`.
     fn fan_curve(&self, fan: &str) -> zbus::Result<(SpecWire, TableWire, Vec<RaisedWire>, bool)>;
     /// `SetFanCurve`.
@@ -219,7 +223,35 @@ impl Daemon {
         })
     }
 
-    /// `SetFanCurve`.
+    /// `SetFanProfile`: the fan profile of the selected profile (remembered per profile).
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors (`GpuBusy` means the EC part was applied).
+    pub async fn set_fan_profile(&self, fan_profile: msi_core::fan_profile::FanProfile) -> Result<()> {
+        self.proxy
+            .set_fan_profile(fan_profile.as_str())
+            .await
+            .map_err(|e| de(&e))
+    }
+
+    /// `CustomFanCurve`: the custom curve of `fan` (the Personnalisé editor), in force or not, with its step
+    /// table and S2 report.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors, or a malformed reply.
+    pub async fn custom_fan_curve(&self, fan: Fan) -> Result<(CurveSpec, Generated)> {
+        let (spec, table, raised) = self
+            .proxy
+            .custom_fan_curve(fan.as_str())
+            .await
+            .map_err(|e| de(&e))?;
+        Ok((
+            CurveSpec::from_wire(&spec).ok_or_else(|| bad_reply("CustomFanCurve"))?,
+            Generated::from_wire(&table, &raised).ok_or_else(|| bad_reply("CustomFanCurve"))?,
+        ))
+    }
+
+    /// `SetFanCurve` (switches the selected profile to the custom fan profile).
     ///
     /// # Errors
     /// Mapped D-Bus errors, or a malformed reply.

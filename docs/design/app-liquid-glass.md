@@ -27,9 +27,16 @@ dégradé coucher de soleil `#F28C38 → #C0362C`. L'accent est réservé à l'�
 2. **Partout ailleurs** : le même sélecteur, compact (icônes seules + infobulles), au centre de la barre de
    titre — comme un contrôle segmenté de barre d'outils macOS. Masqué sur l'Accueil, où le grand sélecteur
    est juste dessous (pas deux contrôles identiques dans le même écran).
-3. **Hors de l'app** : actions `app.profile::eco|balanced|gaming` (et `app.profile-eco`…) pour l'extension
-   et les raccourcis, et liste d'actions du fichier `.desktop` (clic droit sur l'icône du dock).
-4. Viennent ensuite les jauges en direct (anneaux), puis les pages de réglage fin.
+3. **Profil de ventilation** (Silencieux, Auto, Équilibré, Turbo, Personnalisé) : cinq tuiles de verre en tête
+   de Ventilateurs (même matière que le sélecteur de profil, qui passent à la ligne en fenêtre étroite),
+   badge « Défaut » sur le choix par défaut du profil, lien « Revenir au défaut ». Sur l'Accueil, une puce
+   « Ventilation · … » à côté du profil ouvre Ventilateurs. Auto affiche un puits calme « Courbe d'usine MSI
+   gérée par le contrôleur ». L'éditeur de courbe est celui de **Personnalisé**.
+4. **Hors de l'app** : actions `app.profile::eco|balanced|gaming` (et `app.profile-eco`…) pour l'extension
+   et les raccourcis, et liste d'actions du fichier `.desktop` (clic droit sur l'icône du dock) ; de même
+   `app.fan::silent|auto|balanced|turbo|custom` (et `app.fan-auto`…), aussi dans le menu principal. Le menu du
+   dock garde seulement les trois profils (huit entrées seraient trop).
+5. Viennent ensuite les jauges en direct (anneaux), puis les pages de réglage fin.
 
 ## Matériaux (Liquid Glass sous GTK)
 
@@ -100,6 +107,7 @@ un GNOME headless isolé : [`screenshots/`](screenshots/).
 |---|---|---|
 | Accueil | ![](screenshots/home-light.jpg) | ![](screenshots/home-dark.jpg) |
 | Ventilateurs | ![](screenshots/fans-light.jpg) | ![](screenshots/fans-dark.jpg) |
+| Ventilateurs, profil Auto | ![](screenshots/fans-auto-light.jpg) | ![](screenshots/fans-auto-dark.jpg) |
 | Performance & GPU | ![](screenshots/perf-light.jpg) | ![](screenshots/perf-dark.jpg) |
 | Batterie | ![](screenshots/battery-light.jpg) | ![](screenshots/battery-dark.jpg) |
 | Presse-papiers | ![](screenshots/clipboard-light.jpg) | ![](screenshots/clipboard-dark.jpg) |

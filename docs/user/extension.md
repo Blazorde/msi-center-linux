@@ -83,8 +83,12 @@ la métrique.
 
 ## Menu
 
-- **Profils** : les trois pastilles (voir ci-dessus), puis une ligne d'état : mode ventilo, secteur/batterie,
-  état du dGPU.
+- **Profils** : les trois pastilles (voir ci-dessus), puis une rangée de cinq puces **Silence / Auto /
+  Équilibré / Turbo / Perso** : le profil de ventilation du profil actif (un clic = `SetFanProfile`, retenu par
+  profil ; allumage immédiat avec indicateur d'activité, retour en arrière et bandeau d'erreur si le daemon
+  refuse ; `←` `→` pour naviguer). Le choix par défaut du profil a un fin trait. **Auto** = courbe d'usine MSI
+  gérée par le contrôleur ; Turbo n'est pas Cooler Boost. Puis une ligne d'état : profil de ventilation,
+  secteur/batterie, état du dGPU. (Avec un daemon plus ancien sans `FanProfile`, la rangée est masquée.)
 - **Bandeaux** : daemon absent, **lecture seule** (`ReadOnly` + `ReadOnlyReason`, commandes désactivées),
   événements de sécurité (`SafetyEvent` : Cooler Boost forcé, retour en mode auto…), erreurs d'appel (polkit,
   `GpuBusy` avec la liste des processus qui tiennent le dGPU). Cliquer sur un bandeau le ferme.
