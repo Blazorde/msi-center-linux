@@ -50,5 +50,9 @@ exit 0
 EOS
 chmod +x "$S/inner.sh"
 timeout 600 dbus-run-session -- "$S/inner.sh"
-ls -1 "$OUT"/*.png
+# The grain texture makes PNGs ~1.6 MB each: commit JPEGs (~10× smaller) instead.
+for png in "$OUT"/*.png; do
+    magick "$png" -strip -quality 85 "${png%.png}.jpg" && rm -f "$png"
+done
+ls -1 "$OUT"/*.jpg
 echo "journal : $S/app.log"

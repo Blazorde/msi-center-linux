@@ -98,12 +98,12 @@ un GNOME headless isolé : [`screenshots/`](screenshots/).
 
 | Page | Clair | Sombre |
 |---|---|---|
-| Accueil | ![](screenshots/home-light.png) | ![](screenshots/home-dark.png) |
-| Ventilateurs | ![](screenshots/fans-light.png) | ![](screenshots/fans-dark.png) |
-| Performance & GPU | ![](screenshots/perf-light.png) | ![](screenshots/perf-dark.png) |
-| Batterie | ![](screenshots/battery-light.png) | ![](screenshots/battery-dark.png) |
-| Presse-papiers | ![](screenshots/clipboard-light.png) | ![](screenshots/clipboard-dark.png) |
-| Réglages | ![](screenshots/prefs-light.png) | ![](screenshots/prefs-dark.png) |
+| Accueil | ![](screenshots/home-light.jpg) | ![](screenshots/home-dark.jpg) |
+| Ventilateurs | ![](screenshots/fans-light.jpg) | ![](screenshots/fans-dark.jpg) |
+| Performance & GPU | ![](screenshots/perf-light.jpg) | ![](screenshots/perf-dark.jpg) |
+| Batterie | ![](screenshots/battery-light.jpg) | ![](screenshots/battery-dark.jpg) |
+| Presse-papiers | ![](screenshots/clipboard-light.jpg) | ![](screenshots/clipboard-dark.jpg) |
+| Réglages | ![](screenshots/prefs-light.jpg) | ![](screenshots/prefs-dark.jpg) |
 
 ## Hors champ (limites GTK)
 
