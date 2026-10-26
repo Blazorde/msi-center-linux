@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "clip-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "sha2",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "clipd"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clip-core",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "msi-center"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clip-core",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "msi-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
@@ -786,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "msi-daemon"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",

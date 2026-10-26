@@ -152,13 +152,13 @@ Copy text → Super+V → popup history → type to search → Enter pastes / Ct
 |---|-------|-------------|--------|----------|---------|----------|
 | 1 | Foundations | Repo, workspace, docs, CI, git workflow | complete | - | - | - |
 | 2 | EC spike | Install msi-ec, read fw version, dump & map fan curve registers (read-only) | complete | with 5, 6 | 1 | #5 |
-| 3 | msi-ec fork | Fan curve sysfs attributes + DKMS package | pending | - | 2 | - |
-| 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | in-progress | - | 3 | #2 (msi-core) |
+| 3 | msi-ec fork | Fan curve sysfs attributes + DKMS package | complete | - | 2 | - |
+| 4 | msi-core + msi-daemon | Curve engine, safety, profiles, battery limit, D-Bus API, CLI | complete | - | 3 | #2 (msi-core) |
 | 5 | GPU manager | RTD3 config, holder detection, PCI remove/rescan | in-progress | with 2, 6 | 1 | #4 (code + probe; real remove untested) |
 | 6 | clip-core + clipd | SQLite store, tags, search, runtime/persistent split, D-Bus API | complete | with 2, 5 | 1 | #3 |
-| 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | in-progress | with 8 | 4, 5, 6 | feat/ext-gnome (headless smoke-tested; owner session test pending) |
-| 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | in-progress | with 7 | 4, 5, 6 | feat/app-gtk (all pages; owner test pending) |
-| 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | in-progress | - | 7, 8 | feat/pkg-arch (split PKGBUILD + presets + autostart; owner install test pending) |
+| 7 | GNOME extension | Top bar stats (toggleable), profile menu, clipboard capture + Super+V popup | complete | with 8 | 4, 5, 6 | feat/ext-gnome (headless smoke-tested; owner session test pending) |
+| 8 | msi-center GTK app | Tabs: Fans, Performance/GPU, Battery, Clipboard, Settings | complete | with 7 | 4, 5, 6 | feat/app-gtk (all pages; owner test pending) |
+| 9 | Packaging & release | PKGBUILD, systemd units, polkit, release workflow v0.1.0 | complete | - | 7, 8 | feat/pkg-arch (split PKGBUILD + presets + autostart; owner install test pending) |
 
 ### Phase Details
 
