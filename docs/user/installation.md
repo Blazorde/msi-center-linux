@@ -14,7 +14,7 @@ Le paquet installera :
 
 - le module `msi-ec` modifié (DKMS, recompilé automatiquement à chaque mise à jour du noyau) ;
 - `msi-daemon` (service systemd système) et `clipd` (service utilisateur) ;
-- l'application `msi-center` ;
+- l'application `msi-center` (dès maintenant, sans paquet : [`scripts/app-install.sh`](app.md)) ;
 - l'extension GNOME (à activer : `gnome-extensions enable msi-center@blazorde`).
 
 ## Désinstallation

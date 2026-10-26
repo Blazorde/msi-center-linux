@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=MSI Center
+GenericName=Réglages de l'ordinateur portable
+Comment=Ventilateurs, profils, batterie, carte graphique et presse-papiers
+Exec=msi-center
+Icon=org.blazorde.MsiCenter
+Terminal=false
+Categories=Settings;HardwareSettings;GTK;
+Keywords=MSI;ventilateur;fan;profil;batterie;GPU;presse-papiers;clipboard;
+StartupNotify=true
+DBusActivatable=true
+X-GNOME-UsesNotifications=true

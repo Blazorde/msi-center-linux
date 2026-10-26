@@ -3,11 +3,32 @@ name = "msi-center"
 description = "GTK4/libadwaita front-end for msi-daemon and clipd"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# gtk4-rs 0.11 needs Rust 1.92.
+rust-version = "1.92"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish.workspace = true
+
+[dependencies]
+adw.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+gtk.workspace = true
+msi-core.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus = { workspace = true, features = ["proxy"] }
+
+[dev-dependencies]
+clip-core.workspace = true
+clipd = { path = "../clipd" }
+msi-daemon = { path = "../msi-daemon" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "net", "time"] }
+zbus = { workspace = true, features = ["proxy", "p2p"] }
 
 [lints]
 workspace = true
