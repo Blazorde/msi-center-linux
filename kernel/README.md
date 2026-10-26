@@ -45,6 +45,9 @@ sudo modprobe -r msi_ec; sudo modprobe msi_ec
 echo msi_ec | sudo tee /etc/modules-load.d/msi-ec.conf
 ```
 
+Tout cela (plus le daemon au démarrage) est automatisé par `sudo scripts/dev-install.sh --enable` ; voir
+[installation](../docs/user/installation.md).
+
 Désinstaller :
 
 ```bash

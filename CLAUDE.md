@@ -45,7 +45,7 @@ which rewrites the EC. The extension itself never auto-starts the daemon (`NO_AU
    `scripts/spike/` may read EC, never write.
 3. Every value sent to the EC goes through `msi-core` validation (see `docs/hardware/fan-safety.md`). Safety
    invariants must have unit tests; never weaken them to make a test pass.
-4. Daemon shutdown/crash path must restore EC fan mode `auto`.
+4. Daemon shutdown/crash path must restore the EC factory tables, then fan mode `auto` (S5).
 5. Do not run commands that write to `/sys` on the owner's machine without explicit confirmation.
 
 ## Code rules

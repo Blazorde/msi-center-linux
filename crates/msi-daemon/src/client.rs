@@ -28,6 +28,8 @@ pub trait MsiCenter1 {
     /// See the interface documentation.
     fn set_cooler_boost(&self, enabled: bool) -> zbus::Result<()>;
     /// See the interface documentation.
+    fn restore_factory(&self) -> zbus::Result<()>;
+    /// See the interface documentation.
     fn set_charge_limit(&self, limit: u8) -> zbus::Result<()>;
     /// See the interface documentation.
     fn gpu_holders(&self) -> zbus::Result<Vec<(u32, String)>>;

@@ -384,7 +384,16 @@ pub enum TableWrite {
 /// (steps 1–2) or as `target` (steps 3–5): the ascending speeds never drop below one of the two.
 #[must_use]
 pub fn write_plan(current: &RawTables, target: &StepCurve) -> Vec<TableWrite> {
-    let goal = target.tables();
+    write_plan_raw(current, &target.tables())
+}
+
+/// [`write_plan`] towards tables that are not a [`StepCurve`]: the firmware's factory tables, which break S2
+/// (96 % maximum) but are what fan mode `auto` must run on (factory restore, S5/S7/S9).
+///
+/// Same order and guarantees as [`write_plan`], provided `goal` passes [`RawTables::kernel_check`].
+#[must_use]
+pub fn write_plan_raw(current: &RawTables, goal: &RawTables) -> Vec<TableWrite> {
+    let goal = *goal;
     let mut state = *current;
     let mut plan = Vec::new();
     let mut push = |state: &mut RawTables, write: TableWrite| {
@@ -413,11 +422,7 @@ mod tests {
     const DOWN: Thresholds = [46, 53, 60, 66, 72, 78];
 
     /// Factory CPU table of firmware 14K2EMS1.110.
-    const FACTORY_CPU: RawTables = RawTables {
-        speeds: [0, 36, 40, 50, 62, 80, 96],
-        up: [57, 62, 70, 77, 83, 90],
-        down: [53, 57, 65, 73, 80, 87],
-    };
+    const FACTORY_CPU: RawTables = crate::ec::FACTORY_14K2EMS1_110.cpu;
 
     #[test]
     fn accepts_a_safe_table() {
@@ -710,6 +715,22 @@ mod tests {
                 TableWrite::Speeds(high.speeds())
             ]
         );
+    }
+
+    #[test]
+    fn factory_restore_plan_keeps_kernel_rules_at_every_step() {
+        for preset in CurvePreset::ALL {
+            let from = generate(&preset.spec()).unwrap().curve.tables();
+            let mut state = from;
+            let plan = write_plan_raw(&from, &FACTORY_CPU);
+            assert!(!plan.is_empty(), "{preset:?}");
+            for w in &plan {
+                state.apply(w);
+                assert_eq!(state.kernel_check(), Ok(()), "{preset:?}: {state:?}");
+            }
+            assert_eq!(state, FACTORY_CPU, "{preset:?}");
+        }
+        assert_eq!(write_plan_raw(&FACTORY_CPU, &FACTORY_CPU), Vec::new());
     }
 
     #[test]

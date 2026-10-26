@@ -92,10 +92,11 @@ Justification :
 | S2 | Vitesse du **palier montant** ≥ **30 %** dès 60 °C, ≥ **50 %** dès 75 °C, **100 %** dès 85 °C (planchers, quelle que soit la courbe). Table générée depuis les paramètres : paliers relevés **explicitement et signalés** (`SafetyReport`). Table saisie palier par palier : **rejetée** | `msi-core` |
 | S3 | Toute **entrée** hors bornes (paramètres de courbe, disposition, table brute) est **rejetée**, jamais « corrigée silencieusement » | `msi-core` + noyau |
 | S4 | CPU ou GPU ≥ **95 °C** sur **2 lectures consécutives** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics). Capteur illisible → forcé immédiatement | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
-| S5 | Arrêt du daemon (normal, signal, panic) → EC remis en fan mode `auto` | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost` systemd |
+| S5 | Arrêt du daemon (normal, signal, panic) → **tables d'usine réécrites** puis EC remis en fan mode `auto` (voir [Restitution à l'EC](#restitution-à-lec-tables-dusine)) | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost=msi-daemon --restore-factory` |
 | S6 | Watchdog systemd (`WatchdogSec=15`) : `WATCHDOG=1` après chaque tick de 1 s réussi ; daemon figé → tué, redémarré, et S5 s'applique (`ExecStopPost`) | systemd + `msi-daemon` (`notify`) |
-| S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → retour `auto` + `SafetyEvent` | `msi-daemon` |
+| S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → tables d'usine + `auto` + `SafetyEvent` | `msi-daemon` |
 | S8 | Firmware EC non reconnu, ou attributs de courbe absents (module amont, `firmware=` forcé) → aucune écriture, mode lecture seule | `msi-ec` fork + daemon (liste dans `msi-core`) |
+| S9 | Nos tables en vigueur (`advanced`) et un ventilo à **0 %** (et 0 tr/min si connu) alors que la température **filtrée** (minimum des 2 dernières lectures) de son capteur est **≥ 70 °C** pendant **≥ 30 s** → tables d'usine + `auto`, `SafetyEvent("fan_stalled")`, **lecture seule jusqu'au redémarrage** du daemon (`ReadOnly`, `ReadOnlyReason` commençant par `S9`) | `msi-core` (`stall::StallDetector`) + `msi-daemon` (tick 1 Hz) |
 
 Les seuils S2/S4 sont prudents : le Core Ultra 9 185H a un Tjmax de 110 °C, la RTX 4070 Laptop réduit sa fréquence vers 87 °C.
 
@@ -122,6 +123,38 @@ sont ≥ 95 °C (minimum glissant) et n'est relâché que si les deux sont < 85 
 est ignoré, une vraie surchauffe est prise en compte une lecture (~1 s) plus tard. Une lecture en échec force
 immédiatement, sans filtre. Après le démarrage ou le retour d'un capteur, une seule lecture ne suffit ni à forcer
 ni à relâcher.
+
+## S9 : ventilo arrêté sur puce chaude
+
+Origine : premier essai réel (2026-10-25), ventilo CPU à 0 % à 57–60 °C lus alors que la table demandait 30–45 %.
+Les spikes suivants ont montré que c'était le palier 0 normal (l'EC pilote le CPU sur une température lissée,
+nettement sous `cpu/realtime_temperature`, et ignore les seuils CPU écrits : [carte EC](ec-map.md)). S9 ne se
+base donc **pas** sur les seuils de notre table (il se déclencherait sans cesse) mais sur une température fixe :
+
+- **arrêté** = vitesse temps réel EC 0 % **et**, si le régime hwmon est disponible, 0 tr/min (un ventilo qui
+  ralentit encore n'est pas arrêté) ;
+- **chaud** = minimum des **deux dernières** lectures ≥ 70 °C : un pic isolé du capteur `0x68` (jusqu'à ~90 °C au
+  repos) ne compte jamais ;
+- la condition doit durer **30 s** ; une seule lecture « non bloquée » entre deux bloquées est ignorée, deux de
+  suite remettent le compteur à zéro ; une lecture illisible n'est pas un blocage (S4 s'en charge) ;
+- surveillé seulement quand nos tables sont en vigueur (`advanced` vérifié) ; remis à zéro à chaque application.
+
+Au déclenchement : tables d'usine puis `auto` (le firmware reprend la main, S4 continue de forcer Cooler Boost
+si besoin), événement `fan_stalled` (valeur : °C), et le daemon refuse toute écriture EC jusqu'à son redémarrage
+pour ne pas ré-appliquer aussitôt. `msictl status` affiche `SAFETY STOP (S9)` avec la raison.
+
+## Restitution à l'EC (tables d'usine)
+
+L'EC ne garde **qu'une copie** des tables, utilisée aussi par `auto` ([carte EC](ec-map.md)) : remettre seulement
+`fan_mode=auto` laisserait nos tables actives et « auto » ne serait plus le comportement d'usine. Les tables
+d'usine du firmware `14K2EMS1.110` sont des constantes de `msi-core` (`ec::FACTORY_14K2EMS1_110`, issues du spike
+phase 2). Restitution (`msi_daemon::ec::restore_factory`) : tables d'usine dans l'ordre sûr
+(`table::write_plan_raw`, mêmes garanties que ci-dessous), relecture, **puis** `fan_mode=auto`, tenté même si une
+écriture de table a échoué. Idempotente (écritures sans effet sautées). Firmware sans tables d'usine connues
+(`.104`–`.109`) : seul `auto` est restauré.
+
+Appliquée à l'arrêt (S5 : signal, sortie normale, hook de panic, `ExecStopPost=msi-daemon --restore-factory`),
+sur repli S7 et S9, et à la demande (`RestoreFactory`, `msictl factory`).
 
 ## Écriture ordonnée des tables
 

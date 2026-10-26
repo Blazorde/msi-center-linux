@@ -14,6 +14,7 @@ use zbus::OwnedVariant;
 const USAGE: &str = "usage: msictl [--session] <command>
   status                         profile, fan mode, Cooler Boost, battery, dGPU, firmware
   profile <eco|balanced|gaming>  apply a profile
+  factory                        hand the fans back to the EC (factory tables, fan mode auto)
   curve show [cpu|gpu]           curve parameters and the resulting EC table
   charge-limit [50..100]         show or set the battery charge limit
   telemetry [--watch]            one telemetry sample, or one per second until Ctrl+C
@@ -23,6 +24,7 @@ const USAGE: &str = "usage: msictl [--session] <command>
 enum Cmd {
     Status,
     Profile(String),
+    Factory,
     CurveShow(Vec<String>),
     ChargeLimit(Option<u8>),
     Telemetry { watch: bool },
@@ -47,6 +49,7 @@ fn parse(args: &[String]) -> Result<Cli, String> {
     let cmd = match rest.as_slice() {
         ["status"] => Cmd::Status,
         ["profile", p] => Cmd::Profile((*p).to_owned()),
+        ["factory"] => Cmd::Factory,
         ["curve", "show"] => Cmd::CurveShow(vec!["cpu".into(), "gpu".into()]),
         ["curve", "show", fan @ ("cpu" | "gpu")] => Cmd::CurveShow(vec![(*fan).to_owned()]),
         ["charge-limit"] => Cmd::ChargeLimit(None),
@@ -131,6 +134,29 @@ fn describe(e: &zbus::Error) -> String {
     }
 }
 
+/// Warning printed when Éco is applied but the dGPU could not be removed (it stays in runtime suspend).
+fn gpu_busy_warning(state: &str, holders: &[(u32, String)]) -> String {
+    let list = if holders.is_empty() {
+        "(no process listed: display connected or processes not inspectable)".to_owned()
+    } else {
+        holders
+            .iter()
+            .map(|(pid, name)| format!("{name} ({pid})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "attention : le dGPU n'a pas pu être retiré, il reste en veille runtime ({state}).
+warning: the dGPU could not be removed; it stays in runtime suspend ({state}).
+  tenu par / held by: {list}
+  astuce / hint: install the udev rule mutter-device-ignore (docs/adr/0008-dgpu-power-management.md,
+  docs/hardware/gpu-power.md) then log out and back in, and stop nvidia-powerd:
+    sudo systemctl disable --now nvidia-powerd
+  Nothing was killed. The EC part of the profile (curves, fan mode, shift mode) is applied.
+"
+    )
+}
+
 async fn status(p: &MsiCenter1Proxy<'_>) -> zbus::Result<()> {
     println!("profile          {}", p.profile().await?);
     println!("auto on AC       {}", p.auto_profile_on_power().await?);
@@ -154,7 +180,13 @@ async fn status(p: &MsiCenter1Proxy<'_>) -> zbus::Result<()> {
     println!("dGPU             {}", p.gpu_state().await?);
     println!("EC firmware      {}", p.firmware_version().await?);
     if p.read_only().await? {
-        println!("READ-ONLY        {}", p.read_only_reason().await?);
+        let reason = p.read_only_reason().await?;
+        let label = if reason.starts_with("S9") {
+            "SAFETY STOP (S9)"
+        } else {
+            "READ-ONLY       "
+        };
+        println!("{label} {reason}");
     }
     Ok(())
 }
@@ -171,6 +203,18 @@ async fn run(cli: Cli) -> zbus::Result<()> {
         Cmd::Profile(name) => {
             p.set_profile(&name).await?;
             println!("profile {name} applied");
+            if name == "eco" {
+                let state = p.gpu_state().await?;
+                if state != "removed" {
+                    let holders = p.gpu_holders().await.unwrap_or_default();
+                    eprint!("{}", gpu_busy_warning(&state, &holders));
+                }
+            }
+        }
+        Cmd::Factory => {
+            p.restore_factory().await?;
+            println!("fans handed back to the EC: factory tables, fan mode auto");
+            println!("(msictl profile <eco|balanced|gaming> takes control again)");
         }
         Cmd::CurveShow(fans) => {
             for fan in fans {
@@ -235,6 +279,7 @@ mod tests {
         let p = |a: &[&str]| parse(&args(a)).map(|c| c.cmd);
         assert_eq!(p(&["status"]), Ok(Cmd::Status));
         assert_eq!(p(&["profile", "eco"]), Ok(Cmd::Profile("eco".into())));
+        assert_eq!(p(&["factory"]), Ok(Cmd::Factory));
         assert_eq!(
             p(&["curve", "show"]),
             Ok(Cmd::CurveShow(vec!["cpu".into(), "gpu".into()]))
@@ -278,6 +323,18 @@ mod tests {
         );
         assert!(out.contains("   0  30  33  43  57  76 100"), "{out}");
         assert!(out.contains("step 1 (from 55 °C) raised 0 → 30 %"), "{out}");
+    }
+
+    #[test]
+    fn gpu_busy_warning_lists_holders_and_the_hint() {
+        let w = gpu_busy_warning(
+            "suspended",
+            &[(812, "nvidia-powerd".into()), (3876, "gnome-shell".into())],
+        );
+        assert!(w.contains("nvidia-powerd (812), gnome-shell (3876)"), "{w}");
+        assert!(w.contains("mutter-device-ignore") && w.contains("systemctl disable --now nvidia-powerd"));
+        assert!(w.contains("attention") && w.contains("warning"));
+        assert!(gpu_busy_warning("active", &[]).contains("no process listed"));
     }
 
     #[test]

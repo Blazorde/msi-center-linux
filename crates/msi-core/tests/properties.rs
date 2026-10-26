@@ -4,8 +4,9 @@
 #![allow(clippy::expect_used)]
 
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
+use msi_core::ec::CONF_G2_5;
 use msi_core::supervisor::{BOOST_ON_TEMP, BoostDecision, SensorReading, ThermalSupervisor};
-use msi_core::table::{RawTables, SPEED_FLOORS, StepCurve, generate, write_plan};
+use msi_core::table::{RawTables, SPEED_FLOORS, StepCurve, generate, write_plan, write_plan_raw};
 use proptest::prelude::*;
 
 fn valid_params() -> impl Strategy<Value = FanCurveParams> {
@@ -126,6 +127,20 @@ proptest! {
             prop_assert!(as_safe_as_current || as_safe_as_target, "{:?}", state);
         }
         prop_assert_eq!(state, target.tables());
+    }
+
+    #[test]
+    fn factory_restore_plan_keeps_kernel_rules_at_every_step(
+        current in kernel_valid_tables(),
+    ) {
+        for factory in CONF_G2_5.factory_tables.iter().flat_map(|f| [f.cpu, f.gpu]) {
+            let mut state = current;
+            for write in write_plan_raw(&current, &factory) {
+                state.apply(&write);
+                prop_assert_eq!(state.kernel_check(), Ok(()), "{:?}", state);
+            }
+            prop_assert_eq!(state, factory);
+        }
     }
 
     #[test]

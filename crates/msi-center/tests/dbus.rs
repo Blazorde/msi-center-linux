@@ -174,8 +174,10 @@ async fn errors_are_mapped() {
     d.set_charge_limit(80).await.unwrap();
     assert_eq!(d.status().await.unwrap().charge_limit, 80);
     assert_eq!(d.gpu_holders().await.unwrap(), vec![]);
-    assert!(!d.has_method(dbus::RESTORE_FACTORY).await);
+    assert!(d.has_method(dbus::RESTORE_FACTORY).await);
     assert!(d.has_method("SetProfile").await);
+    // RestoreFactory needs set-fan-curve.
+    assert_eq!(d.restore_factory().await, Err(AppError::NotAuthorized));
 }
 
 #[tokio::test]

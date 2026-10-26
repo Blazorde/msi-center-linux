@@ -15,8 +15,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use msi_core::ec::{FanMode, ShiftMode};
-use msi_core::table::{RawTables, TableWrite};
+use msi_core::ec::{FACTORY_14K2EMS1_110, FactoryTables, FanMode, ShiftMode};
+use msi_core::table::{RawTables, TableWrite, write_plan_raw};
 
 use crate::fs::{FsRoot, read_trimmed, write_attr};
 
@@ -300,19 +300,58 @@ pub fn restore_auto_at(fan_mode: &Path) -> io::Result<()> {
     write_attr(fan_mode, FanMode::Auto.as_str())
 }
 
-/// Factory CPU tables of firmware `14K2EMS1.110`.
-pub const FACTORY_CPU: RawTables = RawTables {
-    speeds: [0, 36, 40, 50, 62, 80, 96],
-    up: [57, 62, 70, 77, 83, 90],
-    down: [53, 57, 65, 73, 80, 87],
-};
+/// Factory CPU tables of firmware `14K2EMS1.110` (from `msi-core`).
+pub const FACTORY_CPU: RawTables = FACTORY_14K2EMS1_110.cpu;
 
-/// Factory GPU tables of firmware `14K2EMS1.110`.
-pub const FACTORY_GPU: RawTables = RawTables {
-    speeds: [0, 36, 42, 50, 62, 80, 96],
-    up: [50, 60, 65, 70, 78, 83],
-    down: [45, 55, 63, 67, 75, 80],
-};
+/// Factory GPU tables of firmware `14K2EMS1.110` (from `msi-core`).
+pub const FACTORY_GPU: RawTables = FACTORY_14K2EMS1_110.gpu;
+
+/// What [`restore_factory`] could not do.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}", .0.join("; "))]
+pub struct RestoreError(pub Vec<String>);
+
+/// Hands the fans back to the firmware: writes `factory` tables (kernel-safe order, `write_plan_raw`, then
+/// read back) and **then** fan mode `auto`. With `factory = None` (tables never measured for this firmware) only
+/// fan mode `auto` is restored. Idempotent: writes that change nothing are skipped.
+///
+/// Never stops early: fan mode `auto` is always attempted, even if a table write failed. Used by
+/// `Controller` (shutdown, S7/S9 fallback, `RestoreFactory`), the panic hook and `msi-daemon --restore-factory`
+/// (`ExecStopPost`).
+///
+/// # Errors
+/// [`RestoreError`] listing every failed step.
+pub fn restore_factory(ec: &mut dyn EcBackend, factory: Option<&FactoryTables>) -> Result<(), RestoreError> {
+    let mut errors = Vec::new();
+    if let Some(f) = factory {
+        for (fan, goal) in [(Fan::Cpu, f.cpu), (Fan::Gpu, f.gpu)] {
+            if let Err(e) = restore_fan(ec, fan, &goal) {
+                errors.push(e);
+            }
+        }
+    }
+    if let Err(e) = ec.set_fan_mode(FanMode::Auto) {
+        errors.push(format!("fan mode auto: {e}"));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(RestoreError(errors))
+    }
+}
+
+fn restore_fan(ec: &mut dyn EcBackend, fan: Fan, goal: &RawTables) -> Result<(), String> {
+    let current = ec.read_tables(fan).map_err(|e| format!("{fan} tables: {e}"))?;
+    for write in write_plan_raw(&current, goal) {
+        ec.write_table(fan, &write)
+            .map_err(|e| format!("{fan} factory table write: {e}"))?;
+    }
+    match ec.read_tables(fan) {
+        Ok(t) if t == *goal => Ok(()),
+        Ok(t) => Err(format!("{fan} tables read back {t:?} after factory restore")),
+        Err(e) => Err(format!("{fan} readback: {e}")),
+    }
+}
 
 /// State of a [`MemoryEc`], shared with the test that created it.
 #[derive(Debug, Clone, PartialEq)]
@@ -343,6 +382,8 @@ pub struct MemoryState {
     pub fail_table_writes: bool,
     /// Fault: the readback of this fan's speeds is off by one (EC not applying the table).
     pub corrupt_readback: Option<Fan>,
+    /// Fault: real-time speed (%) reported for CPU then GPU instead of the table speed (stalled fan, S9).
+    pub fan_speed_override: [Option<u8>; 2],
 }
 
 impl Default for MemoryState {
@@ -361,6 +402,7 @@ impl Default for MemoryState {
             fan_mode_writes: Vec::new(),
             fail_table_writes: false,
             corrupt_readback: None,
+            fan_speed_override: [None; 2],
         }
     }
 }
@@ -488,6 +530,10 @@ impl EcBackend for MemoryEc {
     }
 
     fn fan_speed(&self, fan: Fan) -> Result<u8, EcError> {
+        let forced = self.state().fan_speed_override[usize::from(fan == Fan::Gpu)];
+        if let Some(pct) = forced {
+            return Ok(pct);
+        }
         let temp = self.temperature(fan)?;
         let t = self.read_tables(fan)?;
         Ok(t.min_speed_at(temp))
@@ -637,6 +683,69 @@ mod tests {
         ec.write_table(Fan::Cpu, &TableWrite::Speeds([0, 30, 33, 43, 57, 76, 100]))
             .unwrap();
         assert_eq!(ec.state().writes.len(), 1);
+    }
+
+    #[test]
+    fn restore_factory_writes_tables_then_auto_and_is_idempotent() {
+        let mut ec = MemoryEc::default();
+        {
+            let mut s = ec.state();
+            s.cpu = RawTables {
+                speeds: [0, 30, 33, 43, 57, 76, 100],
+                up: [50, 57, 64, 70, 76, 82],
+                down: [46, 53, 60, 66, 72, 78],
+            };
+            s.gpu = RawTables {
+                speeds: [30, 40, 47, 57, 71, 86, 100],
+                up: [40, 47, 54, 61, 68, 74],
+                down: [37, 44, 51, 58, 65, 71],
+            };
+            s.fan_mode = FanMode::Advanced;
+        }
+        restore_factory(&mut ec, Some(&FACTORY_14K2EMS1_110)).unwrap();
+        let writes = {
+            let s = ec.state();
+            assert_eq!((s.cpu, s.gpu), (FACTORY_CPU, FACTORY_GPU));
+            assert_eq!(s.fan_mode, FanMode::Auto);
+            assert_eq!(s.fan_mode_writes, [FanMode::Auto]);
+            s.writes.len()
+        };
+        restore_factory(&mut ec, Some(&FACTORY_14K2EMS1_110)).unwrap();
+        assert_eq!(ec.state().writes.len(), writes, "nothing rewritten");
+    }
+
+    #[test]
+    fn restore_factory_always_ends_in_auto() {
+        let mut ec = MemoryEc::default();
+        ec.state().cpu.speeds = [0, 30, 33, 43, 57, 76, 100];
+        ec.state().fan_mode = FanMode::Advanced;
+        ec.state().fail_table_writes = true;
+        let err = restore_factory(&mut ec, Some(&FACTORY_14K2EMS1_110)).unwrap_err();
+        assert!(err.to_string().contains("cpu factory table write"), "{err}");
+        assert_eq!(ec.state().fan_mode, FanMode::Auto);
+        // Unknown factory tables: only fan mode auto.
+        let mut ec = MemoryEc::default();
+        ec.state().fan_mode = FanMode::Advanced;
+        restore_factory(&mut ec, None).unwrap();
+        assert_eq!(ec.state().fan_mode, FanMode::Auto);
+        assert_eq!(ec.state().writes.len(), 0);
+    }
+
+    #[test]
+    fn restore_factory_through_sysfs() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fake_tree(dir.path(), "14K2EMS1.110", true).unwrap();
+        let mut ec = SysfsEc::new(&FsRoot::new(dir.path()));
+        ec.set_fan_mode(FanMode::Advanced).unwrap();
+        ec.write_table(Fan::Cpu, &TableWrite::Speeds([0, 36, 40, 50, 62, 80, 100]))
+            .unwrap();
+        restore_factory(&mut ec, Some(&FACTORY_14K2EMS1_110)).unwrap();
+        let base = "sys/devices/platform/msi-ec";
+        assert_eq!(
+            read(dir.path(), &format!("{base}/cpu/fan_curve_speeds")),
+            "0 36 40 50 62 80 96"
+        );
+        assert_eq!(read(dir.path(), &format!("{base}/fan_mode")), "auto");
     }
 
     #[test]

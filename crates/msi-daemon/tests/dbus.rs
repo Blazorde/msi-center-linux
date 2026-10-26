@@ -192,6 +192,7 @@ async fn mutating_calls_need_authorization() {
         p.set_auto_profile_on_power(true).await.unwrap_err(),
         p.set_cooler_boost(true).await.unwrap_err(),
         p.reset_fan_curve("cpu").await.unwrap_err(),
+        p.restore_factory().await.unwrap_err(),
     ] {
         assert_eq!(
             error_name(&e),
@@ -297,6 +298,7 @@ async fn introspection_matches_documented_signatures() {
         r#"<method name="PreviewFanCurve">"#,
         r#"<method name="SetCoolerBoost">"#,
         r#"<arg name="enabled" type="b" direction="in"/>"#,
+        r#"<method name="RestoreFactory">"#,
         r#"<method name="SetChargeLimit">"#,
         r#"<arg name="limit" type="y" direction="in"/>"#,
         r#"<method name="GpuHolders">"#,
@@ -323,7 +325,47 @@ async fn introspection_matches_documented_signatures() {
     }
     let start = xml.find(r#"<interface name="org.blazorde.MsiCenter1">"#).unwrap();
     let iface = &xml[start..start + xml[start..].find("</interface>").unwrap()];
-    assert_eq!(iface.matches("<method ").count(), 9, "{iface}");
+    assert_eq!(iface.matches("<method ").count(), 10, "{iface}");
     assert_eq!(iface.matches("<signal ").count(), 2, "{iface}");
     assert_eq!(iface.matches("<property ").count(), 11, "{iface}");
+}
+
+#[tokio::test]
+async fn restore_factory_hands_control_back_to_the_ec() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_profile("gaming").await.unwrap();
+    assert_eq!(p.fan_mode().await.unwrap(), "advanced");
+    p.restore_factory().await.unwrap();
+    assert_eq!(p.fan_mode().await.unwrap(), "auto");
+    let s = h.ec.state();
+    assert_eq!(s.cpu, msi_daemon::ec::FACTORY_CPU);
+    assert_eq!(s.gpu, msi_daemon::ec::FACTORY_GPU);
+}
+
+#[tokio::test]
+async fn s9_fan_stall_sets_read_only_and_emits_fan_stalled() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_profile("eco").await.unwrap();
+    let mut events = p.receive_safety_event().await.unwrap();
+    {
+        let mut s = h.ec.state();
+        s.cpu_temp = Some(78);
+        s.fan_speed_override = [Some(0), None];
+    }
+    for t in 0..=31 {
+        tick(&h, t * 1_000_000_000).await;
+    }
+    let ev = tokio::time::timeout(Duration::from_secs(5), events.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let args = ev.args().unwrap();
+    assert_eq!((args.kind.as_str(), args.value), ("fan_stalled", 78.0));
+    assert!(p.read_only().await.unwrap());
+    assert!(p.read_only_reason().await.unwrap().starts_with("S9 fan stall"));
+    assert_eq!(p.fan_mode().await.unwrap(), "auto");
+    let e = p.set_profile("gaming").await.unwrap_err();
+    assert_eq!(error_name(&e), "org.blazorde.MsiCenter1.Error.ReadOnly");
 }

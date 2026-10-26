@@ -54,7 +54,22 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   hors-ligne de l'extension, appelées par `scripts/ci.sh`), `scripts/ext-smoke.sh` (test de bout en bout dans un
   GNOME Shell headless isolé avec un faux `msi-daemon`).
 
+- Sécurité S9 (ventilo bloqué) : ventilo à 0 % (et 0 tr/min si connu) sur puce ≥ 70 °C (filtrée sur 2 lectures)
+  pendant 30 s → tables d'usine + `auto`, `SafetyEvent("fan_stalled")`, lecture seule jusqu'au redémarrage
+  (`msictl status` : `SAFETY STOP (S9)`).
+- `RestoreFactory()` (D-Bus, polkit `set-fan-curve`) et `msictl factory` : rendre la main à l'EC (tables d'usine
+  puis `auto`) jusqu'au prochain profil. `msi-daemon --restore-factory` (sans D-Bus, idempotent).
+- `scripts/dev-install.sh --enable` : démarrage automatique (DKMS `msi-ec-blazorde`, `modules-load.d`,
+  `msi-daemon` activé, `clipd` pour chaque session) ; `--uninstall` défait tout via le manifeste.
+
 ### Changed
+- Arrêt du daemon (signal, sortie, panic, `ExecStopPost`) et replis S7 : les **tables d'usine** sont réécrites
+  avant `fan_mode=auto` (l'EC n'a qu'une copie des tables : avant, « auto » gardait nos courbes). Tables d'usine
+  du firmware `14K2EMS1.110` dans `msi-core`.
+- `SetProfile("eco")` réussit quand le dGPU est tenu : profil appliqué, dGPU gardé en veille runtime,
+  `SafetyEvent("gpu_busy")` ; `msictl profile eco` affiche un avertissement (processus, règle udev ADR-0008,
+  `nvidia-powerd`) au lieu d'échouer.
+- Activation D-Bus système de `msi-daemon` : installée seulement par `dev-install.sh --enable`.
 - `msi-core` : la table EC suit le modèle mesuré par paliers (7 vitesses, 6 seuils de montée, 6 de descente)
   au lieu de la disposition provisoire de 7 points ; nouveaux presets **Silencieux** (ventilo arrêté sous 50 °C,
   démarrage doux à 30 %), **Progressif** et **Agressif** ; filtre anti-pics pour S4 (2 lectures consécutives) ;
