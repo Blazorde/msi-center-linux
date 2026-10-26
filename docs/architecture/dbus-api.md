@@ -16,13 +16,14 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 
 | Méthode | Entrée | Sortie | polkit | Erreurs |
 |---|---|---|---|---|
-| `SetProfile` | `s profile` (`eco` · `balanced` · `gaming`) | – | `set-profile` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
+| `SetProfile` | `s profile` (`eco` · `balanced` · `gaming`) | – | `set-profile` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy` (écriture sysfs dGPU en échec), `Hardware` |
 | `SetAutoProfileOnPower` | `b enabled` | – | `set-profile` | idem |
 | `FanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised, b custom` | – | `InvalidArgument` |
 | `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` |
 | `ResetFanCurve` | `s fan` | – | `set-fan-curve` | idem |
 | `PreviewFanCurve` | `(yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
 | `SetCoolerBoost` | `b enabled` | – | `set-fan-curve` | `InvalidArgument` (forcé par S4), `ReadOnly`, `SafetyFallback` |
+| `RestoreFactory` | – | – | `set-fan-curve` | `ReadOnly` (S8), `SafetyFallback` (une étape a échoué ; `auto` tenté quand même) |
 | `SetChargeLimit` | `y limit` (50–100) | – | `set-battery` | `InvalidArgument`, `ReadOnly`, `Hardware` |
 | `GpuHolders` | – | `a(us) holders` (pid, nom) | – | – |
 
@@ -45,10 +46,10 @@ Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/
 | Signal | Signature | Sens |
 |---|---|---|
 | `Telemetry` | `a{sv} data` | ~1 Hz. Clés (absentes si inconnues) : `cpu_pct`, `ram_pct`, `igpu_pct`, `dgpu_pct`, `npu_pct`, `cpu_temp`, `gpu_temp`, `power_w` (`d`) ; `fan1_rpm`, `fan2_rpm` (`u`) ; `fan1_pct`, `fan2_pct` (`y`) ; `dgpu_state` (`s`) ; `cooler_boost` (`b`). Températures de l'EC (celles que suivent les ventilos), sinon hwmon/NVML. |
-| `SafetyEvent` | `s kind, d value, s detail` | `kind` : `boost_forced` / `boost_released` (`value` = °C le plus chaud, 0 si capteur illisible), `readback_mismatch` / `write_failed` (EC remis en `auto`), `ec_reset` (tables perdues par l'EC, ré-appliquées). `detail` : texte anglais. |
+| `SafetyEvent` | `s kind, d value, s detail` | `kind` : `boost_forced` / `boost_released` (`value` = °C le plus chaud, 0 si capteur illisible), `readback_mismatch` / `write_failed` (EC remis sur ses tables d'usine en `auto`), `ec_reset` (tables perdues par l'EC, ré-appliquées), `fan_stalled` (S9, `value` = °C du capteur ; tables d'usine + `auto`, lecture seule jusqu'au redémarrage), `gpu_busy` (Éco : retrait du dGPU refusé, gardé en veille runtime ; `value` = 0, `detail` = raison avec les processus, ex. `dGPU is in use by nvidia-powerd (812), gnome-shell (3876); dGPU kept in runtime suspend`). `detail` : texte anglais. Les clients doivent ignorer un `kind` inconnu. |
 
 `PropertiesChanged` (`org.freedesktop.DBus.Properties`) est émis pour `Profile`, `AutoProfileOnPower`,
-`OnAcPower`, `FanMode`, `CoolerBoost`, `BoostForced`, `ChargeLimit`, `GpuState` quand ils changent (après un
+`OnAcPower`, `FanMode`, `CoolerBoost`, `BoostForced`, `ChargeLimit`, `GpuState`, `ReadOnly`, `ReadOnlyReason` quand ils changent (après un
 appel ou à la boucle de 1 s).
 
 ### Propriétés (lecture seule)
@@ -63,8 +64,8 @@ appel ou à la boucle de 1 s).
 | `BoostForced` | `b` | Cooler Boost forcé par le superviseur thermique (S4) |
 | `ChargeLimit` | `y` | Limite de charge (%), 0 si non supportée |
 | `GpuState` | `s` | `active` · `suspended` · `removed` |
-| `ReadOnly` | `b` | S8 : EC non supporté, aucune écriture |
-| `ReadOnlyReason` | `s` | Pourquoi (vide sinon) |
+| `ReadOnly` | `b` | Aucune écriture EC : S8 (EC non supporté) ou S9 (ventilo bloqué, jusqu'au redémarrage du daemon) |
+| `ReadOnlyReason` | `s` | Pourquoi (vide sinon) ; commence par `S9 fan stall` pour S9 |
 | `FirmwareVersion` | `s` | Version firmware EC (vide si msi-ec absent) |
 
 Les réglages modifiables passent par des **méthodes** (et non des propriétés en écriture) pour que chacun ait
@@ -74,9 +75,22 @@ son contrôle polkit et ses erreurs typées.
 
 - **`SetProfile`** : ordre d'application courbes (écritures ordonnées, une table complète par écriture) →
   `fan_mode=advanced` → `shift_mode` → relecture de tout (S7) → dGPU. Une divergence ou une écriture en échec
-  remet l'EC en `auto`, émet `SafetyEvent` et renvoie `SafetyFallback`. Si l'étape dGPU est refusée (Éco : dGPU
-  tenu par des processus, écran branché, scan incomplet) la partie EC reste appliquée, le profil reste choisi, et
-  l'appel renvoie `GpuBusy` (liste avec `GpuHolders`). Aucun processus n'est jamais tué. Idempotent.
+  remet l'EC sur ses tables d'usine en `auto`, émet `SafetyEvent` et renvoie `SafetyFallback`. Si le retrait du
+  dGPU est refusé (Éco : dGPU tenu par des processus, écran branché, scan incomplet) l'appel **réussit** : la
+  partie EC est appliquée, `Profile` devient le profil demandé, le dGPU reste en veille runtime
+  (`power/control=auto`) et `SafetyEvent("gpu_busy", 0, raison)` est émis (liste avec `GpuHolders`). Avant
+  2026-10-26 l'appel renvoyait `GpuBusy` dans ce cas ; l'erreur n'est plus renvoyée que si une écriture sysfs
+  du dGPU échoue (compatible : un client qui la traitait la verra simplement moins). Aucun processus n'est
+  jamais tué. Idempotent.
+- **`RestoreFactory`** : rend la main à l'EC : tables d'usine (ordre sûr, relues) puis `fan_mode=auto`
+  ([fan-safety.md](../hardware/fan-safety.md#restitution-à-lec-tables-dusine)). Dure jusqu'au prochain
+  `SetProfile`, `SetFanCurve`, `ResetFanCurve` ou `SetAutoProfileOnPower(true)` ; la sortie de veille, le
+  contrôle de dérive et le profil automatique secteur n'y touchent pas. Non persisté : au redémarrage le daemon
+  ré-applique le profil enregistré. Idempotent. `msictl factory`.
+- **Arrêt** (S5) : le daemon, son hook de panic et `ExecStopPost` (`msi-daemon --restore-factory`, sans D-Bus)
+  restituent les tables d'usine puis `auto`.
+- **S9** : ventilo à 0 % sur puce ≥ 70 °C (filtrée) pendant 30 s → tables d'usine + `auto`, `fan_stalled`,
+  `ReadOnly=true` jusqu'au redémarrage (`systemctl restart msi-daemon`).
 - **Courbes** : chaque profil a une courbe par ventilo, le preset du profil par défaut. `SetFanCurve` remplace
   celle du **profil choisi** pour ce ventilo (persistée), `ResetFanCurve` revient au preset. Les paliers relevés
   par les planchers S2 sont renvoyés dans `raised`, jamais cachés. `PreviewFanCurve` calcule sans rien écrire.
@@ -85,8 +99,9 @@ son contrôle polkit et ses erreurs typées.
 - **Persistance** : profil, `AutoProfileOnPower`, limite de charge et courbes personnalisées dans
   `/var/lib/msi-center/state.toml`, ré-appliqués au démarrage, après la sortie de veille et quand l'EC a perdu
   les tables (vérifié toutes les 10 s).
-- **Lecture seule (S8)** : firmware absent de la liste ou attributs de courbe absents → toutes les méthodes qui
-  écrivent renvoient `ReadOnly`, l'EC reste en courbe usine.
+- **Lecture seule** : S8 (firmware absent de la liste ou attributs de courbe absents) → toutes les méthodes qui
+  écrivent renvoient `ReadOnly`, l'EC reste en courbe usine. Après S9 : idem jusqu'au redémarrage (sauf
+  `RestoreFactory`, sans effet de plus) ; S4 continue de forcer Cooler Boost.
 
 ### Erreurs
 
@@ -96,10 +111,10 @@ Nom `org.blazorde.MsiCenter1.Error.<X>`, message lisible en anglais :
 |---|---|
 | `NotAuthorized` | polkit a refusé (ou est injoignable). |
 | `InvalidArgument` | Profil/ventilo inconnu, valeur hors bornes (S3), Cooler Boost forcé par S4. |
-| `ReadOnly` | EC non supporté (S8). |
+| `ReadOnly` | EC non supporté (S8) ou arrêt de sécurité S9 jusqu'au redémarrage. |
 | `Hardware` | Écriture matérielle hors EC en échec (batterie, PCI). |
-| `SafetyFallback` | Écriture ou relecture EC en échec : EC remis en fan mode `auto` (S7). |
-| `GpuBusy` | Retrait du dGPU refusé ; la partie EC du profil est appliquée. |
+| `SafetyFallback` | Écriture ou relecture EC en échec : EC remis sur ses tables d'usine en fan mode `auto` (S7). |
+| `GpuBusy` | Écriture sysfs du dGPU en échec pendant un changement de profil ; la partie EC est appliquée. (Un retrait refusé n'est plus une erreur : `SafetyEvent("gpu_busy")`.) |
 | `Internal` | Échec interne (détail dans le journal). |
 
 ### Choix d'implémentation
