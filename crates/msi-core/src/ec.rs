@@ -4,6 +4,8 @@
 //! Source: upstream msi-ec `CONF_G2_5` (see `docs/hardware/stealth-14-a1vgg.md`); fan curve tables and
 //! firmware `14K2EMS1.110` from the spike (`docs/hardware/ec-map.md`).
 
+use crate::table::RawTables;
+
 /// A single bit of an EC register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EcBit {
@@ -162,6 +164,36 @@ pub struct FanTableMap {
     pub down: u8,
 }
 
+/// Factory fan curve tables of one firmware version, as read in fan mode `auto` on a cold EC.
+///
+/// The EC keeps a **single** copy of the tables, used by `auto` as well as `advanced`
+/// (`docs/hardware/ec-map.md`): handing control back to the firmware means writing these tables back
+/// before fan mode `auto` (S5, S7, S9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FactoryTables {
+    /// Firmware version (`fw_version`).
+    pub firmware: &'static str,
+    /// CPU fan tables.
+    pub cpu: RawTables,
+    /// GPU fan tables.
+    pub gpu: RawTables,
+}
+
+/// Factory tables of firmware `14K2EMS1.110` (measured by the phase 2 spike).
+pub const FACTORY_14K2EMS1_110: FactoryTables = FactoryTables {
+    firmware: "14K2EMS1.110",
+    cpu: RawTables {
+        speeds: [0, 36, 40, 50, 62, 80, 96],
+        up: [57, 62, 70, 77, 83, 90],
+        down: [53, 57, 65, 73, 80, 87],
+    },
+    gpu: RawTables {
+        speeds: [0, 36, 42, 50, 62, 80, 96],
+        up: [50, 60, 65, 70, 78, 83],
+        down: [45, 55, 63, 67, 75, 80],
+    },
+};
+
 /// Webcam switch registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WebcamMap {
@@ -178,6 +210,8 @@ pub struct EcConfig {
     pub name: &'static str,
     /// EC firmware versions this configuration is known to be valid for (S8).
     pub allowed_firmware: &'static [&'static str],
+    /// Known factory tables, per firmware version (a subset of [`EcConfig::allowed_firmware`]).
+    pub factory_tables: &'static [FactoryTables],
     /// Shift mode.
     pub shift_mode: ShiftModeMap,
     /// Fan mode.
@@ -210,6 +244,14 @@ impl EcConfig {
         let fw = fw_version.trim();
         self.allowed_firmware.contains(&fw)
     }
+
+    /// Factory tables of `fw_version` (surrounding whitespace ignored), `None` if they were never measured: then
+    /// only fan mode `auto` can be restored.
+    #[must_use]
+    pub fn factory_tables(&self, fw_version: &str) -> Option<FactoryTables> {
+        let fw = fw_version.trim();
+        self.factory_tables.iter().find(|t| t.firmware == fw).copied()
+    }
 }
 
 /// msi-ec `CONF_G2_5`: MSI Stealth 14 AI Studio A1VGG / A1VFG.
@@ -222,6 +264,7 @@ pub const CONF_G2_5: EcConfig = EcConfig {
         "14K2EMS1.109",
         "14K2EMS1.110",
     ],
+    factory_tables: &[FACTORY_14K2EMS1_110],
     shift_mode: ShiftModeMap {
         address: 0xd2,
         eco: 0xc2,
@@ -356,6 +399,28 @@ mod tests {
         assert!(!CONF_G2_5.supports_firmware("14K2EMS1.111"));
         assert!(!CONF_G2_5.supports_firmware("14K2EMS1.10"));
         assert!(!CONF_G2_5.supports_firmware(""));
+    }
+
+    #[test]
+    fn factory_tables_of_110_match_the_ec_map() {
+        let f = CONF_G2_5.factory_tables("14K2EMS1.110\n").unwrap();
+        assert_eq!(f.cpu.speeds, [0, 36, 40, 50, 62, 80, 96]);
+        assert_eq!(f.cpu.up, [57, 62, 70, 77, 83, 90]);
+        assert_eq!(f.cpu.down, [53, 57, 65, 73, 80, 87]);
+        assert_eq!(f.gpu.speeds, [0, 36, 42, 50, 62, 80, 96]);
+        assert_eq!(f.gpu.up, [50, 60, 65, 70, 78, 83]);
+        assert_eq!(f.gpu.down, [45, 55, 63, 67, 75, 80]);
+        assert_eq!(CONF_G2_5.factory_tables("14K2EMS1.109"), None);
+        assert_eq!(CONF_G2_5.factory_tables("14K2EMS1.111"), None);
+    }
+
+    #[test]
+    fn factory_tables_are_accepted_by_the_kernel_and_supported() {
+        for f in CONF_G2_5.factory_tables {
+            assert!(CONF_G2_5.supports_firmware(f.firmware), "{}", f.firmware);
+            assert_eq!(f.cpu.kernel_check(), Ok(()));
+            assert_eq!(f.gpu.kernel_check(), Ok(()));
+        }
     }
 
     #[test]
