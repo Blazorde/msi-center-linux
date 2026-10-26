@@ -121,10 +121,10 @@ async fn status_profile_and_curves() {
     assert!(c.generated.table.is_live_cpu());
     assert!(c.generated.is_raised(3));
     assert!(!c.custom);
-    let g = d.fan_curve(Fan::Gpu).await.unwrap();
-    assert_eq!(g.generated.table.speeds, [0, 30, 33, 43, 57, 76, 100]);
-    assert_eq!(g.generated.raised, vec![]);
-    assert!(!g.generated.table.is_live_cpu());
+    let gpu = d.fan_curve(Fan::Gpu).await.unwrap();
+    assert_eq!(gpu.generated.table.speeds, [0, 30, 33, 43, 57, 76, 100]);
+    assert_eq!(gpu.generated.raised, vec![]);
+    assert!(!gpu.generated.table.is_live_cpu());
 }
 
 #[tokio::test]
