@@ -42,6 +42,17 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   arrière-plan à chaque session avec notifications des alertes de sécurité ; installation utilisateur par
   `scripts/app-install.sh`. Erreurs D-Bus traduites, services absents gérés (réessai). L'app dessine sur
   l'iGPU et ne réveille jamais la RTX 4070. Docs : [l'application](docs/user/app.md), ADR 0011.
+- Extension GNOME Shell `msi-center@blazorde` (phase 7, GNOME 51) : métriques dans la barre supérieure poussées
+  par `Telemetry` (CPU, dGPU ou son état, iGPU, RAM, NPU, températures, ventilos ; chacune activable, ordre
+  réglable, mode icône seule), menu (profils Éco / Équilibré / Gaming, Cooler Boost, profil auto secteur,
+  limite de charge appliquée au relâchement, bandeaux lecture seule / sécurité / `GpuBusy`, mini-graphe, ouverture
+  de l'app), capture du presse-papiers (texte et images) vers `clipd` et popup `Super+V` (recherche, tags,
+  épinglage, suppression multiple, vignettes, navigation clavier, copier / coller). Style « Liquid Glass » ×
+  Golden Gate clair et sombre. Ne démarre jamais `msi-daemon` (pas d'auto-activation D-Bus).
+  Docs : [extension](docs/user/extension.md).
+- `scripts/ext-install.sh` (installation utilisateur, sans sudo), `scripts/ext-check.sh` (vérifications
+  hors-ligne de l'extension, appelées par `scripts/ci.sh`), `scripts/ext-smoke.sh` (test de bout en bout dans un
+  GNOME Shell headless isolé avec un faux `msi-daemon`).
 
 ### Changed
 - `msi-core` : la table EC suit le modèle mesuré par paliers (7 vitesses, 6 seuils de montée, 6 de descente)

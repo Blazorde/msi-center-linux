@@ -27,3 +27,4 @@
 ## 📖 Utilisateur
 - [Installation](user/installation.md)
 - [L'application MSI Center](user/app.md)
+- [Extension GNOME (barre, menu, `Super+V`)](user/extension.md)
