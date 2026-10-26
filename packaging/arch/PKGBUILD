@@ -48,6 +48,9 @@ prepare() {
   [[ $ver == "$pkgver" ]] || { error "Cargo.toml version $ver ≠ pkgver $pkgver"; return 1; }
   ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' kernel/msi-ec/dkms.conf)
   [[ $ver == "$_dkms_ver" ]] || { error "dkms.conf PACKAGE_VERSION $ver ≠ _dkms_ver $_dkms_ver"; return 1; }
+  # pacman's dkms hook splits /usr/src/<name>-<version> on the LAST '-': a '-' in the version leaves the module
+  # "added" but never built (seen 2026-10-26 with 0.13-blazorde.1).
+  [[ $_dkms_ver != *-* ]] || { error "_dkms_ver $_dkms_ver must not contain '-'"; return 1; }
 }
 
 build() {
