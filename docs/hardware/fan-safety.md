@@ -52,19 +52,21 @@ refroidit. Le **palier montant** (nombre de seuils `up ≤ T`) est le plus bas d
 
 | Preset (profil) | `idle` | `T0` | `T1` | `min` | `max` | `k` | `up` (°C) | hyst. |
 |---|---|---|---|---|---|---|---|---|
-| **Silencieux** (Éco) | 0 % | 50 | 82 | 30 % | 100 % | 2,0 | 50 57 64 70 76 82 | 4 °C |
-| **Progressif** (Balanced) | 0 % | 42 | 79 | 30 % | 100 % | 1,8 | 42 50 58 65 72 79 | 4 °C |
+| **Silencieux** (Éco) | 0 % | 52 | 88 | 30 % | 100 % | 2,5 | 52 60 67 75 83 85 | 4 °C |
+| **Progressif** (Balanced) | 0 % | 48 | 85 | 30 % | 100 % | 2,2 | 48 56 64 71 79 85 | 4 °C |
 | **Agressif** (Gaming) | 30 % | 40 | 74 | 40 % | 100 % | 1,4 | 40 47 54 61 68 74 | 3 °C |
 
-Tables générées (testées dans `table::tests::presets_generate_the_documented_tables`), **aucun palier relevé
-par S2** :
+Tables générées (testées dans `table::tests::presets_generate_the_documented_tables`). **Un seul palier relevé
+par S2** : Silencieux palier 6 (entré à 85 °C), courbe 86 % → **100 %** (plancher 100 % dès 85 °C), car sa
+courbe n'atteint 100 % qu'à `T1` = 88 °C. Le relèvement est signalé (`raised`), comme tout relèvement S2.
+Progressif et Agressif : aucun palier relevé.
 
 | Palier | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|---|
-| Silencieux vitesse % | 0 | 30 | 33 | 43 | 57 | 76 | 100 |
-| Silencieux monte ≥ / redescend < °C | – | 50 / 46 | 57 / 53 | 64 / 60 | 70 / 66 | 76 / 72 | 82 / 78 |
-| Progressif vitesse % | 0 | 30 | 34 | 45 | 60 | 78 | 100 |
-| Progressif monte ≥ / redescend < °C | – | 42 / 38 | 50 / 46 | 58 / 54 | 65 / 61 | 72 / 68 | 79 / 75 |
+| Silencieux vitesse % | 0 | 30 | 32 | 38 | 53 | 78 | 100 (S2, courbe 86) |
+| Silencieux monte ≥ / redescend < °C | – | 52 / 48 | 60 / 56 | 67 / 63 | 75 / 71 | 83 / 79 | 85 / 81 |
+| Progressif vitesse % | 0 | 30 | 32 | 41 | 55 | 77 | 100 |
+| Progressif monte ≥ / redescend < °C | – | 48 / 44 | 56 / 52 | 64 / 60 | 71 / 67 | 79 / 75 | 85 / 81 |
 | Agressif vitesse % | 30 | 40 | 47 | 57 | 71 | 86 | 100 |
 | Agressif monte ≥ / redescend < °C | – | 40 / 37 | 47 / 44 | 54 / 51 | 61 / 58 | 68 / 65 | 74 / 71 |
 | *Usine CPU (rappel)* | *0* | *36* | *40* | *50* | *62* | *80* | *96* |
@@ -75,13 +77,21 @@ Justification :
 - **Vitesse active minimale 30 %** : c'est la plus basse valeur vérifiée sur la machine (≈ 2070 tr/min, le
   ventilo tourne). En dessous, rien n'est mesuré (risque de calage) ; et les bas régimes sont proches en
   tr/min (36 % ≈ 2200), donc le silence vient de la **forme** de la courbe, pas de vitesses très basses.
-- **Silencieux** (« je veux un mode silencieux ») : ventilo **arrêté sous 50 °C** (redémarre à 50, s'arrête
-  sous 46), **démarrage doux à 30 % avant 55 °C** au lieu de 0 % jusqu'à 57 °C puis des sauts tardifs.
-  Plus silencieux que l'usine à chaque température jusqu'à 69 °C, sans saut de plus de 24 points entre deux
-  paliers. Hystérésis de 4 °C : pas de « pompage » entre deux paliers, source de bruit.
-- **Progressif** : démarre dès 42 °C, montée exponentielle régulière, 100 % à 79 °C.
+- **Recalage 2026-10-26 (retour sur la machine réelle)** : avec le pilotage hybride, la consigne CPU est
+  calculée sur `cpu/realtime_temperature` **filtrée**, qui se tient **5 à 8 °C au-dessus** de la température
+  lissée sur laquelle l'EC choisit ses paliers. Avec les anciens presets (Silencieux T0 50 / T1 82 / k 2,0,
+  Progressif T0 42 / T1 79 / k 1,8), Progressif au repos (57–61 °C lus) demandait 44–50 % (≈ 2900 tr/min)
+  là où l'usine reste à 36 % (≈ 2200 tr/min) : **plus bruyant que l'usine**. Les presets sont donc décalés
+  vers le haut (`T0`, `T1`) et plus convexes (`k`) : bas régimes plus longs, montée tardive mais franche.
+- **Silencieux** (« je veux un mode silencieux ») : ventilo **arrêté sous 52 °C** filtrés (redémarre à 52,
+  s'arrête sous 48), **démarrage doux à 30 %**, ≈ 32 % à 60 °C, 42 % à 70 °C, 67 % à 80 °C, 100 % à 88 °C
+  (S2 impose 100 % dès 85 °C sur la table générée, relèvement signalé). Table GPU plus silencieuse que l'usine
+  de 57 à 74 °C, sans saut de plus de 25 points entre deux paliers. Hystérésis de 4 °C : pas de « pompage ».
+- **Progressif** : arrêté sous 48 °C (s'arrête sous 44), ≈ 36 % à 60 °C (niveau de l'usine au repos), 52 % à
+  70 °C, 81 % à 80 °C, 100 % à 85 °C.
 - **Agressif** : jamais arrêté (30 %), réagit tôt, 100 % dès 74 °C ; hystérésis 3 °C pour redescendre vite.
-- Tous atteignent **100 % avant 85 °C** (S2), alors que la table d'usine plafonne à 96 % à 90 °C.
+- Toutes les tables générées sont à **100 % dès 85 °C** (S2) — par la courbe pour Progressif et Agressif,
+  par relèvement signalé pour Silencieux —, alors que la table d'usine plafonne à 96 % à 90 °C.
 - Les mêmes presets s'appliquent aux deux ventilos (CPU et GPU). Le **GPU** reçoit la table ci-dessus telle
   quelle. Le **CPU** est piloté en hybride (section suivante) : l'EC ignore les seuils CPU écrits.
 
@@ -121,15 +131,18 @@ Comportement obtenu (consigne des paliers 0–3 selon la température CPU **filt
 
 | °C filtrés | 40 | 45 | 50 | 55 | 60 | 65 | 70 | 75 | 80 | ≥ T1 | Paliers 4 / 5 / 6 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| **Silencieux** (T0 50, arrêt < 46, T1 82) | 0 | 0 | 30 | 32 | 37 | 45 | 57 | 73 | 92 | 100 | 80 / 100 / 100 |
-| **Progressif** (T0 42, arrêt < 38, T1 79) | 0* | 31 | 34 | 41 | 49 | 60 | 72 | 87 | 100 | 100 | 93 / 100 / 100 |
+| **Silencieux** (T0 52, arrêt < 48, T1 88) | 0 | 0 | 0* | 30 | 32 | 35 | 42 | 53 | 67 | 100 | 60 / 100 / 100 |
+| **Progressif** (T0 48, arrêt < 44, T1 85) | 0 | 0* | 30 | 32 | 36 | 43 | 52 | 65 | 81 | 100 | 71 / 100 / 100 |
 | **Agressif** (T0 40, repos 30 %, T1 74) | 40 | 44 | 51 | 59 | 69 | 79 | 90 | 100 | 100 | 100 | 100 / 100 / 100 |
 | *Usine (rappel, température lissée de l'EC)* | *0* | *0* | *0* | *0* | *36* | *40* | *50* | *50* | *62* | | *62 / 80 / 96* |
 
-\* 30 % si le ventilo tournait déjà (hystérésis : arrêt sous 38 °C). Les paliers 1–3 sont en plus relevés à
-30 / 30 / 50 % au minimum (S2) : l'EC n'y entre que vers 57 / 62 / 70 °C lissés, où la consigne est déjà
-au-dessus. Silencieux reste **arrêté sous 46–50 °C**, démarre **doucement à 30 % dès 50 °C** (au lieu de 0 %
-jusqu'à ~57 °C lissés puis des sauts), monte de façon exponentielle et lente, et atteint 100 % à 82 °C.
+\* 30 % si le ventilo tournait déjà (hystérésis : arrêt sous 48 °C pour Silencieux, 44 °C pour Progressif).
+Les paliers 1–3 sont en plus relevés à 30 / 30 / 50 % au minimum (S2) : l'EC n'y entre que vers 57 / 62 /
+70 °C lissés. Comme la température filtrée se tient 5 à 8 °C au-dessus de la lissée, l'EC au repos (palier
+1, ~57–61 °C lissés) correspond à ~62–69 °C filtrés : Silencieux y demande 33–41 % et Progressif 38–50 %,
+contre 40–55 % et 53–70 % avec les anciens presets. Silencieux reste **arrêté sous 48–52 °C**, démarre **doucement à
+30 %**, monte de façon exponentielle et lente, et atteint 100 % à 88 °C (paliers chauds : ≥ 60 % dès 77 °C
+lissés, 100 % dès 83 °C, inchangé).
 
 Argument de sécurité :
 

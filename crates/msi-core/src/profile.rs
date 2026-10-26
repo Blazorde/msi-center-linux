@@ -156,10 +156,18 @@ mod tests {
     }
 
     #[test]
-    fn every_profile_curve_generates_a_clean_safe_table() {
+    fn every_profile_curve_generates_a_safe_table() {
         for p in Profile::ALL {
             let generated = crate::table::generate(&p.target().curve.spec()).unwrap();
-            assert!(generated.report.is_clean(), "{p}");
+            // Only Eco (Silent, T1 = 88 °C) needs S2: its step entered at 85 °C is raised to 100 %.
+            let raised: Vec<(usize, u8)> = generated
+                .report
+                .raised
+                .iter()
+                .map(|r| (r.index, r.floor.temp))
+                .collect();
+            let expected: &[(usize, u8)] = if p == Profile::Eco { &[(6, 85)] } else { &[] };
+            assert_eq!(raised, expected, "{p}");
         }
     }
 }

@@ -60,7 +60,7 @@ Règle déduite : palier `i` (i ≥ 1) atteint quand T ≥ `up[i-1]`, quitté qu
 |---|---|
 | `StepCurve` (`msi-core`) | ✅ 7 vitesses + 6 seuils montée + 6 seuils descente (remplace la disposition provisoire de 7 points) |
 | Planchers S2 | ✅ Contrôlés sur le **palier montant** (le plus bas possible à une température) ; la redescente ne peut qu'être plus rapide |
-| Premier palier | Silencieux/Progressif : 0 % sous un seuil bas (50 / 42 °C) puis démarrage doux à 30 % ; Agressif : 30 % permanent (voir [fan-safety.md](fan-safety.md)) |
+| Premier palier | Silencieux/Progressif : 0 % sous un seuil bas (52 / 48 °C) puis démarrage doux à 30 % ; Agressif : 30 % permanent (voir [fan-safety.md](fan-safety.md)) |
 | Fork `msi-ec` | Ajouter `.110` ; attributs sysfs pour les 3 tables × 2 ventilos, avec validation noyau |
 
 ## Bascule des modes ventilo (autorisée par le propriétaire)

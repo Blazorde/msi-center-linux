@@ -612,7 +612,7 @@ fn hybrid_tick_writes_only_cpu_speeds_and_only_when_they_change() {
     let mut r = rig();
     r.ctl.set_profile(Profile::Eco).unwrap();
     let applied = r.ec.state().writes.len();
-    // 45 °C: Silent is idle below 46 °C once the filter has 3 readings → steps 0–3 at 0 %.
+    // 45 °C: Silent is idle below 48 °C once the filter has 3 readings → steps 0–3 at 0 %.
     set_temps(&r.ec, Some(45), Some(40));
     tick_secs(&mut r.ctl, 0, 2);
     assert_eq!(r.ec.state().writes.len(), applied, "filter not ready yet");
@@ -623,12 +623,13 @@ fn hybrid_tick_writes_only_cpu_speeds_and_only_when_they_change() {
     let n = r.ec.state().writes.len();
     tick_secs(&mut r.ctl, 3, 30);
     assert_eq!(r.ec.state().writes.len(), n);
-    // Heating to 70 °C: the target ramps (start speed, then +5 %/s) to the curve value 57 %.
+    // Heating to 70 °C: the target ramps (start speed, then +5 %/s) to the curve value 42 %; the last points
+    // are within the dead band, so they wait their 20 s hold.
     set_temps(&r.ec, Some(70), Some(40));
-    tick_secs(&mut r.ctl, 33, 30);
-    assert_eq!(r.ec.state().cpu, expected_cpu(CurvePreset::Silent, 57));
-    let readings = r.ctl.tick(Clock(63 * SEC));
-    assert_eq!(readings.cpu_fan_target, Some(57));
+    tick_secs(&mut r.ctl, 33, 60);
+    assert_eq!(r.ec.state().cpu, expected_cpu(CurvePreset::Silent, 42));
+    let readings = r.ctl.tick(Clock(93 * SEC));
+    assert_eq!(readings.cpu_fan_target, Some(42));
     // Only CPU speeds were written by the loop, GPU untouched, every vector kernel-valid and S2-safe.
     let all = r.ec.state().writes.clone();
     for (fan, w) in &all[applied..] {

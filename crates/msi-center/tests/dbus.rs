@@ -117,13 +117,15 @@ async fn status_profile_and_curves() {
     let c = d.fan_curve(Fan::Cpu).await.unwrap();
     assert_eq!(c.spec, CurveSpec::from_core(&CurvePreset::Silent.spec()));
     // ADR-0010: the CPU is driven live (factory thresholds, steps 0–3 at the target, hot steps floored).
-    assert_eq!(c.generated.table.speeds, [30, 30, 30, 50, 80, 100, 100]);
+    assert_eq!(c.generated.table.speeds, [30, 30, 30, 50, 60, 100, 100]);
     assert!(c.generated.table.is_live_cpu());
     assert!(c.generated.is_raised(3));
     assert!(!c.custom);
     let gpu = d.fan_curve(Fan::Gpu).await.unwrap();
-    assert_eq!(gpu.generated.table.speeds, [0, 30, 33, 43, 57, 76, 100]);
-    assert_eq!(gpu.generated.raised, vec![]);
+    assert_eq!(gpu.generated.table.speeds, [0, 30, 32, 38, 53, 78, 100]);
+    // Silent reaches 100 % at 88 °C: S2 raises the step entered at 85 °C (step 6) to 100 %.
+    assert_eq!(gpu.generated.raised.len(), 1);
+    assert!(gpu.generated.is_raised(6));
     assert!(!gpu.generated.table.is_live_cpu());
 }
 

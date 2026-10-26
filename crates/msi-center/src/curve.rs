@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(spread_thresholds(42, 79), [42, 49, 57, 64, 72, 79]);
         assert_eq!(spread_thresholds(50, 55), [50, 51, 52, 53, 54, 55]);
         let s = Param::T1.set(&silent(), 90.0);
-        assert_eq!(s.up, spread_thresholds(50, 90));
+        assert_eq!(s.up, spread_thresholds(52, 90));
         assert!(s.validate().is_ok());
     }
 
@@ -585,7 +585,8 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(t.ascending_step(40.0), 0);
-        assert_eq!(t.ascending_step(50.0), 1);
+        assert_eq!(t.ascending_step(51.0), 0);
+        assert_eq!(t.ascending_step(52.0), 1);
         assert_eq!(t.ascending_step(99.0), 6);
         assert_eq!(Table::from_wire(&(vec![1], vec![], vec![])), None);
 

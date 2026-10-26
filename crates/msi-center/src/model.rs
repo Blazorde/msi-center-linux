@@ -232,8 +232,8 @@ pub fn profile_description(p: msi_core::profile::Profile) -> String {
     use msi_core::profile::GpuMode;
     let t = p.target();
     let curve = match t.curve {
-        CurvePreset::Silent => "courbe Silencieuse (arrêt sous 50 °C)",
-        CurvePreset::Progressive => "courbe Progressive (dès 42 °C)",
+        CurvePreset::Silent => "courbe Silencieuse (arrêt sous 52 °C)",
+        CurvePreset::Progressive => "courbe Progressive (dès 48 °C)",
         CurvePreset::Aggressive => "courbe Agressive (jamais à l'arrêt)",
     };
     let shift = match t.shift_mode {
