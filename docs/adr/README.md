@@ -18,3 +18,5 @@ Un ADR accepté n'est pas modifié : on en crée un nouveau qui le remplace (`Su
 | [0011](0011-gtk-app-runtime-and-glass-style.md) | App GTK : D-Bus sur un thread tokio, verre dépoli simulé sans sous-classe, rendu hors dGPU | Proposé |
 | [0012](0012-fan-profiles.md) | Profils de ventilation : Auto persisté, choix retenu par profil, `SetFanCurve` = Personnalisé | Proposé |
 | [0013](0013-staged-cpu-fan-curve.md) | Courbe à paliers du ventilo CPU : autant de paliers que souhaité, retombée propre à chaque palier, piloté en direct | Proposé |
+| [0014](0014-cpu-power-limits.md) | Limites de puissance CPU (RAPL PL1/PL2) par profil, jamais au-dessus du firmware | Proposé |
+| [0014](0014-cpu-power-limits.md) | Limites de puissance CPU (RAPL PL1/PL2) par profil, jamais au-dessus du firmware | Proposé |

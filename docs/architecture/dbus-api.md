@@ -57,7 +57,7 @@ Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/
 | `SafetyEvent` | `s kind, d value, s detail` | `kind` : `boost_forced` / `boost_released` (`value` = °C le plus chaud, 0 si capteur illisible), `readback_mismatch` / `write_failed` (EC remis sur ses tables d'usine en `auto`), `ec_reset` (tables perdues par l'EC, ré-appliquées), `fan_stalled` (S9, `value` = °C du capteur ; tables d'usine + `auto`, lecture seule jusqu'au redémarrage), `gpu_busy` (Éco : retrait du dGPU refusé, gardé en veille runtime ; `value` = 0, `detail` = raison avec les processus, ex. `dGPU is in use by nvidia-powerd (812), gnome-shell (3876); dGPU kept in runtime suspend`). `detail` : texte anglais. Les clients doivent ignorer un `kind` inconnu. |
 
 `PropertiesChanged` (`org.freedesktop.DBus.Properties`) est émis pour `Profile`, `FanProfile`, `DefaultFanProfile`, `AutoProfileOnPower`,
-`OnAcPower`, `FanMode`, `CoolerBoost`, `BoostForced`, `ChargeLimit`, `GpuState`, `ReadOnly`, `ReadOnlyReason` quand ils changent (après un
+`OnAcPower`, `FanMode`, `CoolerBoost`, `BoostForced`, `ChargeLimit`, `GpuState`, `ReadOnly`, `ReadOnlyReason`, `CpuPowerLimits` quand ils changent (après un
 appel ou à la boucle de 1 s).
 
 ### Propriétés (lecture seule)
@@ -77,6 +77,7 @@ appel ou à la boucle de 1 s).
 | `ReadOnly` | `b` | Aucune écriture EC : S8 (EC non supporté) ou S9 (ventilo bloqué, jusqu'au redémarrage du daemon) |
 | `ReadOnlyReason` | `s` | Pourquoi (vide sinon) ; commence par `S9 fan stall` pour S9 |
 | `FirmwareVersion` | `s` | Version firmware EC (vide si msi-ec absent) |
+| `CpuPowerLimits` | `(uu)` | Limites de puissance CPU en vigueur (PL1, PL2) en W, `(0, 0)` si illisibles ([ADR-0014](../adr/0014-cpu-power-limits.md)) |
 
 Les réglages modifiables passent par des **méthodes** (et non des propriétés en écriture) pour que chacun ait
 son contrôle polkit et ses erreurs typées.

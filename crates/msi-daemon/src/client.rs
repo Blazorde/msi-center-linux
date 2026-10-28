@@ -90,4 +90,7 @@ pub trait MsiCenter1 {
     /// See the interface documentation.
     #[zbus(property)]
     fn firmware_version(&self) -> zbus::Result<String>;
+    /// See the interface documentation.
+    #[zbus(property)]
+    fn cpu_power_limits(&self) -> zbus::Result<(u32, u32)>;
 }

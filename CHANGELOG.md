@@ -5,6 +5,13 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 ## [Unreleased]
 
 ### Added
+
+- **Limites de puissance CPU par profil** ([ADR-0014](docs/adr/0014-cpu-power-limits.md)) : le firmware laisse le
+  185H à 110 W / 160 W, d'où des pics à 97–99 °C et un CPU chaud même au repos. Éco passe à **20 / 35 W**,
+  Équilibré à **35 / 60 W** (PL1 / PL2), Gaming garde les limites du firmware. Jamais au-dessus du firmware,
+  écrites sur les deux zones RAPL (MSR et MMIO) avec relecture, ré-appliquées si elles changent, limites du
+  firmware restaurées à l'arrêt. `msictl status` affiche les limites en vigueur ; D-Bus : propriété
+  `CpuPowerLimits` (ajout compatible).
 - **Wiki GitHub** : la doc `docs/` est publiée sur le [wiki](https://github.com/Blazorde/msi-center-linux/wiki)
   par `scripts/wiki-sync.sh` (pages à plat, liens réécrits, captures, barre latérale ; `--dry-run` pour un aperçu).
 - **Courbe à paliers du ventilo CPU** ([ADR-0013](docs/adr/0013-staged-cpu-fan-curve.md)) : autant de paliers
