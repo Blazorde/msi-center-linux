@@ -357,6 +357,9 @@ impl MsiCenter {
             res.push(self.read_only_changed(e).await);
             res.push(self.read_only_reason_changed(e).await);
         }
+        if old.cpu_power != new.cpu_power {
+            res.push(self.cpu_power_limits_changed(e).await);
+        }
         for r in res {
             if let Err(err) = r {
                 tracing::warn!(error = %err, "cannot emit PropertiesChanged");
@@ -724,6 +727,15 @@ impl MsiCenter {
     #[zbus(property)]
     fn firmware_version(&self) -> String {
         self.snapshot().fw_version
+    }
+
+    /// CPU package power limits in force, (PL1, PL2) in W; (0, 0) if unreadable (ADR-0014).
+    #[zbus(property)]
+    fn cpu_power_limits(&self) -> (u32, u32) {
+        self.snapshot().cpu_power.map_or((0, 0), |l| {
+            let w = |uw: u64| u32::try_from(uw / 1_000_000).unwrap_or(u32::MAX);
+            (w(l.pl1_uw), w(l.pl2_uw))
+        })
     }
 }
 

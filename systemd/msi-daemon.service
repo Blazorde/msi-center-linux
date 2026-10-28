@@ -23,6 +23,10 @@ ExecStopPost=-/usr/bin/msi-daemon --restore-factory
 # Settings: /var/lib/msi-center/state.toml
 StateDirectory=msi-center
 StateDirectoryMode=0755
+# /run/msi-center: the firmware's CPU power limits (ADR-0014). Kept across daemon restarts, cleared at boot.
+RuntimeDirectory=msi-center
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 UMask=0022
 
 # Hardening, compatible with the sysfs writes the daemon needs (msi-ec attributes, power_supply charge limit,

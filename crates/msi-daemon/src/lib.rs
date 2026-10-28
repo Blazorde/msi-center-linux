@@ -12,6 +12,7 @@ pub mod gpu;
 pub mod notify;
 pub mod polkit;
 pub mod power;
+pub mod rapl;
 pub mod service;
 pub mod state;
 pub mod telemetry;

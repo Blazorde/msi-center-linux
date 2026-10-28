@@ -11,6 +11,7 @@
 //! | S7 | [`Controller::apply_profile`] reads back tables, fan mode and shift mode; mismatch → factory + `auto` + event |
 //! | S8 | [`Controller::new`]: unknown firmware or missing curve files → read-only, no EC write at all |
 //! | S9 | [`Controller::tick`] feeds one `StallDetector` per fan (0 % at a filtered ≥ 70 °C for 30 s) → factory + `auto`, read-only until restart |
+//! | ADR-0014 | CPU power limits per profile: [`Controller::apply_profile`] (after the EC, never above the firmware's), re-applied by the drift check, firmware's restored by [`Controller::shutdown`] |
 //! | ADR-0013 | Staged CPU curve: [`Controller::set_cpu_stages`] (S3 on input by construction, S2 floors reported by [`Controller::cpu_stages`]) |
 //! | ADR-0010 | CPU fan driven live: factory thresholds kept, [`Controller::tick`] writes only `cpu/fan_curve_speeds` (from `msi_core::hybrid`) when the vector changes, read back (S7) |
 //!
@@ -42,6 +43,7 @@ use msi_core::curve::FanCurveSpec;
 use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
 use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::{CpuCurve, CpuDriver, TempFilter, hybrid_cpu_table_for};
+use msi_core::power_limit::PowerLimits;
 use msi_core::profile::{GpuMode, Profile};
 use msi_core::staged::{FloorRaise, StagedCurve};
 use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
@@ -51,6 +53,7 @@ use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, StepCurve, TableWr
 use crate::ec::{EcBackend, Fan, restore_factory};
 use crate::gpu::{GpuError, GpuManager, GpuState, Holder, PowerControl};
 use crate::power::PowerSupply;
+use crate::rapl::Rapl;
 use crate::state::{Settings, StateStore};
 use crate::telemetry::dgpu::{DgpuBackend, DgpuPolicy};
 use crate::telemetry::{Clock, Sample, Sampler};
@@ -175,6 +178,8 @@ pub struct Status {
     pub read_only: Option<String>,
     /// EC firmware version (empty if unknown).
     pub fw_version: String,
+    /// CPU power limits in force (`None` = not controlled or unreadable).
+    pub cpu_power: Option<PowerLimits>,
 }
 
 /// What one tick measured (the D-Bus `Telemetry` payload).
@@ -238,6 +243,8 @@ pub struct CpuStagesView {
 pub struct Controller {
     ec: Box<dyn EcBackend>,
     power: PowerSupply,
+    rapl: Option<Rapl>,
+    cpu_power: Option<PowerLimits>,
     gpu: GpuManager,
     telemetry: Option<Box<dyn Telemetry>>,
     store: StateStore,
@@ -298,6 +305,8 @@ impl Controller {
             Self {
                 ec,
                 power,
+                rapl: None,
+                cpu_power: None,
                 gpu,
                 telemetry,
                 store,
@@ -322,6 +331,13 @@ impl Controller {
             },
             warnings,
         )
+    }
+
+    /// Controls the CPU power limits per profile (ADR-0014). Without it, the firmware's limits stay.
+    #[must_use]
+    pub fn with_rapl(mut self, rapl: Rapl) -> Self {
+        self.rapl = Some(rapl);
+        self
     }
 
     /// Current settings.
@@ -499,6 +515,7 @@ impl Controller {
             d.reset();
         }
         tracing::info!(profile = %profile, fan_profile = %self.settings.fan_profile(profile), "profile applied to the EC");
+        self.apply_cpu_power(target.cpu_power);
         self.apply_gpu_step(target.gpu)
     }
 
@@ -516,7 +533,26 @@ impl Controller {
         self.verify(&expected, FanMode::Auto, target.shift_mode)?;
         self.auto_applied = true;
         tracing::info!(profile = %profile, "profile applied, fans on the EC factory curve (fan profile auto)");
+        self.apply_cpu_power(target.cpu_power);
         self.apply_gpu_step(target.gpu)
+    }
+
+    /// ADR-0014: CPU power limits of a profile, capped to the firmware's (`None` = the firmware's). A failure is
+    /// logged, never fatal: the limits only make the CPU cooler, the EC part stays applied.
+    fn apply_cpu_power(&mut self, wanted: Option<PowerLimits>) {
+        let Some(rapl) = &self.rapl else {
+            return;
+        };
+        self.cpu_power = match rapl.apply(wanted) {
+            Ok(l) => {
+                tracing::info!(limits = %l, "CPU power limits applied");
+                Some(l)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "CPU power limits not applied");
+                None
+            }
+        };
     }
 
     /// Factory tables the EC must hold under Auto (empty when unknown for this firmware: only `auto` is set).
@@ -941,6 +977,7 @@ impl Controller {
             gpu_state: self.gpu.state(),
             read_only: self.read_only.clone().or_else(|| self.tripped.clone()),
             fw_version: self.fw_version.clone(),
+            cpu_power: self.rapl.as_ref().and_then(Rapl::current),
         }
     }
 
@@ -980,6 +1017,7 @@ impl Controller {
             self.auto_switch();
             if (self.applied || self.auto_applied) && self.ticks % DRIFT_CHECK_EVERY == 0 {
                 self.check_drift();
+                self.check_power_drift();
             }
         }
         readings.cpu_fan_target = self
@@ -1151,6 +1189,18 @@ impl Controller {
         }
     }
 
+    /// ADR-0014: re-applies the profile's CPU power limits when something else changed them (firmware on an AC
+    /// or shift mode change, another tool).
+    fn check_power_drift(&mut self) {
+        let (Some(rapl), Some(applied)) = (&self.rapl, self.cpu_power) else {
+            return;
+        };
+        if let Some(now) = rapl.current().filter(|now| *now != applied) {
+            tracing::info!(limits = %now, "CPU power limits changed by someone else: re-applying");
+            self.apply_cpu_power(self.settings.profile.target().cpu_power);
+        }
+    }
+
     /// S5: puts the EC back on its factory tables in fan mode `auto` (normal exit, signal). Cooler Boost is left
     /// on if S4 forces it. Nothing is written under S8.
     pub fn shutdown(&mut self) {
@@ -1159,6 +1209,12 @@ impl Controller {
         }
         if self.hand_back().is_ok() {
             tracing::info!("EC back on its factory tables, fan mode auto");
+        }
+        if let Some(rapl) = &self.rapl {
+            match rapl.restore() {
+                Ok(l) => tracing::info!(limits = %l, "firmware CPU power limits restored"),
+                Err(e) => tracing::warn!(error = %e, "firmware CPU power limits not restored"),
+            }
         }
     }
 }

@@ -38,6 +38,10 @@ Source : [`msi-ec.c`](https://github.com/BeardOverflow/msi-ec), `ALLOWED_FW_G2_5
 | Temp GPU / RPM GPU | `0x80` / `0x89` | temps réel |
 | Webcam | `0x2e` bit 1 (block `0x2f`) | |
 | Fn ↔ Win | `0xe8` bit 4 | |
+
+Limites de puissance CPU (hors EC, RAPL `/sys/class/powercap`, relevé du 2026-10-28) : le firmware règle
+**PL1 110 W / PL2 160 W** (fenêtre PL1 ≈ 56 s) sur `intel-rapl:0` (MSR) et `intel-rapl-mmio:0` (MMIO), quel que
+soit le shift mode. Le daemon les abaisse par profil ([ADR-0014](../adr/0014-cpu-power-limits.md)).
 | Rétroéclairage clavier | non supporté | |
 
 ## Courbe ventilo — hypothèses à vérifier (phase 2)

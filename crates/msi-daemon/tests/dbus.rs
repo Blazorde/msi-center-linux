@@ -362,6 +362,7 @@ async fn introspection_matches_documented_signatures() {
         r#"<property name="ReadOnly" type="b" access="read"/>"#,
         r#"<property name="ReadOnlyReason" type="s" access="read"/>"#,
         r#"<property name="FirmwareVersion" type="s" access="read"/>"#,
+        r#"<property name="CpuPowerLimits" type="(uu)" access="read"/>"#,
     ] {
         assert!(xml.contains(fragment), "missing {fragment}\n{xml}");
     }
@@ -369,7 +370,7 @@ async fn introspection_matches_documented_signatures() {
     let iface = &xml[start..start + xml[start..].find("</interface>").unwrap()];
     assert_eq!(iface.matches("<method ").count(), 16, "{iface}");
     assert_eq!(iface.matches("<signal ").count(), 2, "{iface}");
-    assert_eq!(iface.matches("<property ").count(), 13, "{iface}");
+    assert_eq!(iface.matches("<property ").count(), 14, "{iface}");
 }
 
 #[tokio::test]

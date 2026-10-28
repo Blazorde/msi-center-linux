@@ -60,6 +60,7 @@ Le quota GitHub Actions n'est pas disponible : la CI tourne sur la machine de de
 | `.githooks/commit-msg` | à chaque commit | Conventional Commits, ≤ 72 caractères |
 | `scripts/package.sh` | avant une release, ou pour installer | paquets Arch dans `dist/` (makepkg en dossier temporaire, n'installe rien) |
 | `scripts/release.sh x.y.z` | release depuis `main` | CI, build release, tag, release GitHub avec notes du CHANGELOG et paquets `dist/` |
+| `scripts/wiki-sync.sh` | après un merge qui touche `docs/` | régénère le [wiki](https://github.com/Blazorde/msi-center-linux/wiki) depuis `docs/` commité, commit + push (`--dry-run` : aperçu) |
 | Dependabot | hebdo | MAJ cargo → PR sur `develop` |
 
 Activer les hooks (une fois par clone) : `git config core.hooksPath .githooks`.
