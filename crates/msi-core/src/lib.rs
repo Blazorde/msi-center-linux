@@ -11,6 +11,7 @@
 //! | Ordered table writes (kernel `down < up`) | [`table::write_plan`] |
 //! | S8 known EC firmware only | [`ec::EcConfig::supports_firmware`] |
 //! | Hybrid CPU fan control (ADR-0010): spike filter, live target, safe vector | [`hybrid::TempFilter`], [`hybrid::CpuFanPilot`], [`hybrid::hybrid_cpu_table`] |
+//! | Staged CPU curve, any number of stages with a fall-back temperature each (ADR-0013); S1–S3 on input, S2 as a reported floor | [`staged::StagedCurve`], [`staged::StagedPilot`], [`hybrid::CpuCurve`], [`hybrid::hybrid_cpu_table_for`] |
 //! | S9 fan stall detector | [`stall::StallDetector`] (applied by `msi-daemon`) |
 //! | Fan profiles (Silencieux, Auto, Équilibré, Turbo, Personnalisé) and their curve source | [`fan_profile::FanProfile`] |
 //! | Factory tables (hand control back to the EC) | [`ec::EcConfig::factory_tables`], [`table::write_plan_raw`] |
@@ -21,6 +22,7 @@ pub mod ec;
 pub mod fan_profile;
 pub mod hybrid;
 pub mod profile;
+pub mod staged;
 pub mod stall;
 pub mod supervisor;
 pub mod table;
