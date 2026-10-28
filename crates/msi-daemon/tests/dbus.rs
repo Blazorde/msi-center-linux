@@ -213,6 +213,8 @@ async fn mutating_calls_need_authorization() {
         p.set_auto_profile_on_power(true).await.unwrap_err(),
         p.set_cooler_boost(true).await.unwrap_err(),
         p.reset_fan_curve("cpu").await.unwrap_err(),
+        p.set_cpu_stages(0, &[(50, 46, 30)]).await.unwrap_err(),
+        p.reset_cpu_stages().await.unwrap_err(),
         p.set_fan_profile("auto").await.unwrap_err(),
         p.restore_factory().await.unwrap_err(),
     ] {
@@ -227,6 +229,8 @@ async fn mutating_calls_need_authorization() {
     p.set_charge_limit(80).await.unwrap();
     assert_eq!(p.charge_limit().await.unwrap(), 80);
     assert!(p.fan_curve("cpu").await.is_ok());
+    assert!(p.cpu_stages().await.is_ok());
+    assert!(p.preview_cpu_stages(0, &[(50, 46, 30)]).await.is_ok());
     assert_eq!(p.gpu_holders().await.unwrap(), vec![]);
 }
 
@@ -290,7 +294,7 @@ async fn s4_tick_forces_cooler_boost_and_emits_signals() {
         .unwrap()
         .unwrap();
     let data = t.args().unwrap().data;
-    assert_eq!(f64::try_from(&*data["cpu_temp"]).unwrap(), 97.0);
+    assert!((f64::try_from(&*data["cpu_temp"]).unwrap() - 97.0).abs() < 1e-9);
     assert_eq!(u8::try_from(&*data["fan1_pct"]).unwrap(), 100);
     // ADR-0010: live CPU target (start speed until the filter has three readings).
     assert_eq!(u8::try_from(&*data["cpu_fan_target_pct"]).unwrap(), 30);
@@ -329,6 +333,15 @@ async fn introspection_matches_documented_signatures() {
         r#"<method name="SetFanProfile">"#,
         r#"<arg name="fan_profile" type="s" direction="in"/>"#,
         r#"<method name="CustomFanCurve">"#,
+        r#"<method name="CpuStages">"#,
+        r#"<arg name="stages" type="a(yyy)" direction="out"/>"#,
+        r#"<arg name="floors" type="a(yyy)" direction="out"/>"#,
+        r#"<arg name="supported" type="b" direction="out"/>"#,
+        r#"<method name="SetCpuStages">"#,
+        r#"<arg name="idle" type="y" direction="in"/>"#,
+        r#"<arg name="stages" type="a(yyy)" direction="in"/>"#,
+        r#"<method name="ResetCpuStages">"#,
+        r#"<method name="PreviewCpuStages">"#,
         r#"<property name="FanProfile" type="s" access="read"/>"#,
         r#"<property name="DefaultFanProfile" type="s" access="read"/>"#,
         r#"<arg name="holders" type="a(us)" direction="out"/>"#,
@@ -354,7 +367,7 @@ async fn introspection_matches_documented_signatures() {
     }
     let start = xml.find(r#"<interface name="org.blazorde.MsiCenter1">"#).unwrap();
     let iface = &xml[start..start + xml[start..].find("</interface>").unwrap()];
-    assert_eq!(iface.matches("<method ").count(), 12, "{iface}");
+    assert_eq!(iface.matches("<method ").count(), 16, "{iface}");
     assert_eq!(iface.matches("<signal ").count(), 2, "{iface}");
     assert_eq!(iface.matches("<property ").count(), 13, "{iface}");
 }
@@ -484,4 +497,119 @@ async fn invalid_custom_curve_under_auto_changes_nothing() {
     assert_eq!(h.ec.state().fan_mode_writes.len(), modes);
     assert_eq!(p.fan_profile().await.unwrap(), "auto");
     assert_eq!(h.ec.state().fan_mode, FanMode::Auto);
+}
+
+// ---- ADR-0013: staged CPU curve ----
+
+/// 4 stages: 50 °C 30 %, 60 °C 45 %, 70 °C 70 %, 80 °C 100 %, each falling back 4 °C under its rise.
+fn four_stages() -> Vec<(u8, u8, u8)> {
+    vec![(50, 46, 30), (60, 56, 45), (70, 66, 70), (80, 76, 100)]
+}
+
+#[tokio::test]
+async fn staged_cpu_curve_round_trips_and_drives_the_cpu_live() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_profile("eco").await.unwrap();
+    // Not edited yet: the 6 stages of the preset, not saved, not in force.
+    let (idle, stages, floors, saved, active, supported) = p.cpu_stages().await.unwrap();
+    assert_eq!(stages.len(), 6);
+    assert_eq!(idle, 0);
+    assert!(floors.is_empty() && !saved && !active && supported);
+
+    // Preview validates and reports the floors without writing.
+    let writes = h.ec.state().writes.len();
+    let quiet = [(40, 36, 20), (90, 80, 100)];
+    assert_eq!(
+        p.preview_cpu_stages(0, &quiet).await.unwrap(),
+        [(60, 30, 20), (75, 50, 20), (85, 100, 20)]
+    );
+    assert_eq!(h.ec.state().writes.len(), writes);
+
+    // Set: saved, custom fan profile, in force, and the CPU table keeps the factory thresholds.
+    let floors = p.set_cpu_stages(0, &four_stages()).await.unwrap();
+    assert!(floors.is_empty());
+    assert_eq!(p.fan_profile().await.unwrap(), "custom");
+    let (idle, stages, _, saved, active, _) = p.cpu_stages().await.unwrap();
+    assert_eq!((idle, stages, saved, active), (0, four_stages(), true, true));
+    let cpu = h.ec.state().cpu;
+    assert_eq!((cpu.up, cpu.down), (FACTORY_CPU.up, FACTORY_CPU.down));
+    assert_eq!(cpu.speeds, [30, 30, 30, 50, 70, 100, 100]);
+
+    // Live: 65 °C → stage 1 (45 %), reported by the telemetry signal.
+    h.ec.state().cpu_temp = Some(65);
+    for n in 1..=30 {
+        tick(&h, n * 1_000_000_000).await;
+    }
+    assert_eq!(h.ec.state().cpu.speeds[0], 45);
+    // The GPU still has its own 7-step table.
+    let silent = generate(&CurvePreset::Silent.spec()).unwrap().curve.tables();
+    assert_eq!(h.ec.state().gpu, silent);
+
+    // Reset: the CPU follows the exponential curve again, the profile goes back to Silencieux.
+    p.reset_cpu_stages().await.unwrap();
+    assert_eq!(p.fan_profile().await.unwrap(), "silent");
+    let (_, _, _, saved, active, _) = p.cpu_stages().await.unwrap();
+    assert!(!saved && !active);
+}
+
+#[tokio::test]
+async fn invalid_staged_curves_are_rejected_before_anything_is_written() {
+    let h = harness().await;
+    let p = &h.proxy;
+    p.set_profile("balanced").await.unwrap();
+    let writes = h.ec.state().writes.len();
+    let too_many = vec![(50u8, 46u8, 30u8); 80];
+    for (idle, stages) in [
+        (0, vec![]),
+        (0, vec![(50, 50, 30)]),
+        (0, vec![(50, 49, 30)]),
+        (0, vec![(60, 56, 45), (50, 46, 30)]),
+        (0, vec![(50, 46, 40), (60, 56, 30)]),
+        (0, vec![(50, 46, 101)]),
+        (31, vec![(50, 46, 30)]),
+        (0, too_many),
+    ] {
+        for e in [
+            p.set_cpu_stages(idle, &stages).await.unwrap_err(),
+            p.preview_cpu_stages(idle, &stages).await.unwrap_err(),
+        ] {
+            assert_eq!(
+                error_name(&e),
+                "org.blazorde.MsiCenter1.Error.InvalidArgument",
+                "{idle} {stages:?}: {e}"
+            );
+        }
+    }
+    assert_eq!(h.ec.state().writes.len(), writes);
+    assert_eq!(p.fan_profile().await.unwrap(), "balanced");
+}
+
+#[tokio::test]
+async fn staged_curves_are_refused_without_factory_tables_and_in_read_only_mode() {
+    // Firmware without known factory tables: no live CPU control, so no staged curve.
+    let h = harness_with(
+        MemoryState {
+            fw_version: "14K2EMS1.109".into(),
+            ..MemoryState::default()
+        },
+        Arc::new(StaticAuthorizer::allow_all()),
+    )
+    .await;
+    h.proxy.set_profile("eco").await.unwrap();
+    assert!(!h.proxy.cpu_stages().await.unwrap().5);
+    let e = h.proxy.set_cpu_stages(0, &four_stages()).await.unwrap_err();
+    assert_eq!(error_name(&e), "org.blazorde.MsiCenter1.Error.InvalidArgument");
+    // Unsupported EC (S8): read-only.
+    let h = harness_with(
+        MemoryState {
+            fw_version: "14K2EMS1.200".into(),
+            ..MemoryState::default()
+        },
+        Arc::new(StaticAuthorizer::allow_all()),
+    )
+    .await;
+    let e = h.proxy.set_cpu_stages(0, &four_stages()).await.unwrap_err();
+    assert_eq!(error_name(&e), "org.blazorde.MsiCenter1.Error.ReadOnly");
+    assert_eq!(h.ec.state().writes.len(), 0);
 }

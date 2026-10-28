@@ -1,4 +1,4 @@
-//! D-Bus interface `org.blazorde.MsiCenter1` (frozen, see `docs/architecture/dbus-api.md`).
+//! D-Bus interface `org.blazorde.MsiCenter1` (frozen, additive changes only, see `docs/architecture/dbus-api.md`).
 //!
 //! Every call runs the (blocking) sysfs work on Tokio's blocking pool under one mutex: calls and the 1 Hz
 //! tick are serialised. Properties are served from a snapshot refreshed after each call and each tick, so a
@@ -10,12 +10,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
 use msi_core::fan_profile::{FanProfile, ParseFanProfileError};
 use msi_core::profile::Profile;
+use msi_core::staged::{FloorRaise, Stage, StagedCurve};
 use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, generate};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::{DBusError, OwnedVariant, Str, interface};
 
-use crate::controller::{ControlError, Controller, Readings, SafetyEvent, Status};
+use crate::controller::{ControlError, Controller, CpuStagesView, Readings, SafetyEvent, Status};
 use crate::ec::Fan;
 use crate::gpu::GpuError;
 use crate::polkit::{Action, Authorizer};
@@ -68,6 +69,52 @@ pub type SpecWire = (u8, u8, u8, u8, u8, f64, Vec<u8>, u8);
 pub type TableWire = (Vec<u8>, Vec<u8>, Vec<u8>);
 /// Raised step on the wire: `(y step, y entry_temp, y curve_speed, y applied_speed, y floor_temp, y floor_speed)`.
 pub type RaisedWire = (u8, u8, u8, u8, u8, u8);
+/// Stage of a staged CPU curve on the wire: `(y up, y down, y speed)`.
+pub type StageWire = (u8, u8, u8);
+/// S2 floor that takes over from the stages on the wire: `(y floor_temp, y floor_speed, y curve_speed)`.
+pub type FloorWire = (u8, u8, u8);
+/// `CpuStages` reply: `(y idle, a(yyy) stages, a(yyy) floors, b saved, b active, b supported)`.
+pub type CpuStagesWire = (u8, Vec<StageWire>, Vec<FloorWire>, bool, bool, bool);
+
+/// Converts and validates a staged curve (S3: rejected, never corrected).
+///
+/// # Errors
+/// [`MsiError::InvalidArgument`] with the violated rule.
+pub fn staged_from_wire(idle: u8, stages: &[StageWire]) -> Result<StagedCurve, MsiError> {
+    let stages = stages
+        .iter()
+        .map(|&(up, down, speed)| Stage { up, down, speed })
+        .collect();
+    StagedCurve::new(idle, stages).map_err(|e| MsiError::InvalidArgument(e.to_string()))
+}
+
+/// Wire form of the stages of a staged curve.
+#[must_use]
+pub fn stages_to_wire(curve: &StagedCurve) -> Vec<StageWire> {
+    curve.stages().iter().map(|s| (s.up, s.down, s.speed)).collect()
+}
+
+/// Wire form of the S2 floors that take over from the stages.
+#[must_use]
+pub fn floors_to_wire(floors: &[FloorRaise]) -> Vec<FloorWire> {
+    floors
+        .iter()
+        .map(|f| (f.floor.temp, f.floor.speed, f.curve_speed))
+        .collect()
+}
+
+/// Wire form of a `CpuStages` view.
+#[must_use]
+pub fn cpu_stages_to_wire(v: &CpuStagesView) -> CpuStagesWire {
+    (
+        v.curve.idle(),
+        stages_to_wire(&v.curve),
+        floors_to_wire(&v.floors),
+        v.saved,
+        v.active,
+        v.supported,
+    )
+}
 
 /// Converts and validates a wire spec (S3: rejected, never corrected).
 ///
@@ -472,6 +519,65 @@ impl MsiCenter {
         Ok(generated_to_wire(&generated))
     }
 
+    /// Staged CPU curve of the selected profile (any number of stages, each with a rise temperature, a
+    /// fall-back temperature and a speed): the saved one, else the 6 stages of the preset the custom curve
+    /// starts from. `floors` lists the S2 floors that take over from the stages (never silent); `saved` = the
+    /// owner saved this curve; `active` = the CPU fan follows it now; `supported` = the firmware allows live CPU
+    /// control, so a staged curve can be applied.
+    #[zbus(out_args("idle", "stages", "floors", "saved", "active", "supported"))]
+    #[allow(
+        clippy::type_complexity,
+        reason = "zbus splits the out arguments only from an inline tuple, not from a type alias"
+    )]
+    async fn cpu_stages(&self) -> Result<(u8, Vec<StageWire>, Vec<FloorWire>, bool, bool, bool), MsiError> {
+        let (res, _, _) = self.run(|c| c.cpu_stages()).await?;
+        Ok(cpu_stages_to_wire(&res?))
+    }
+
+    /// Sets the staged CPU curve of the selected profile, switches it to the `custom` fan profile, saves and
+    /// applies it. The GPU keeps its own 7-step curve. Out-of-bounds input (S3) is rejected before anything is
+    /// changed. Returns the S2 floors that take over from the stages.
+    #[zbus(out_args("floors"))]
+    async fn set_cpu_stages(
+        &self,
+        idle: u8,
+        stages: Vec<StageWire>,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<Vec<FloorWire>, MsiError> {
+        let curve = staged_from_wire(idle, &stages)?;
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, events, status) = self.run(move |c| c.set_cpu_stages(curve)).await?;
+        self.publish(&emitter, events, status).await;
+        Ok(floors_to_wire(&res?.floors))
+    }
+
+    /// Drops the staged CPU curve of the selected profile and applies it: the CPU follows its exponential curve
+    /// again. With no custom curve left, the profile goes back to its default fan profile.
+    async fn reset_cpu_stages(
+        &self,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), MsiError> {
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, events, status) = self.run(Controller::reset_cpu_stages).await?;
+        self.publish(&emitter, events, status).await;
+        res.map_err(Into::into)
+    }
+
+    /// Validates a staged CPU curve and returns its S2 floors without applying anything (UI preview). No
+    /// authorization needed.
+    #[zbus(out_args("floors"))]
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_value,
+        reason = "D-Bus method: signature set by the interface macro"
+    )]
+    fn preview_cpu_stages(&self, idle: u8, stages: Vec<StageWire>) -> Result<Vec<FloorWire>, MsiError> {
+        let curve = staged_from_wire(idle, &stages)?;
+        Ok(floors_to_wire(&curve.raised_floors()))
+    }
+
     /// Owner's Cooler Boost choice. Turning it off fails with `InvalidArgument` while S4 forces it.
     async fn set_cooler_boost(
         &self,
@@ -645,6 +751,43 @@ mod tests {
     }
 
     #[test]
+    fn staged_curve_round_trips_and_invalid_curves_are_rejected() {
+        let wire = vec![(50, 46, 30), (60, 56, 45), (70, 66, 70)];
+        let curve = staged_from_wire(0, &wire).unwrap();
+        assert_eq!(stages_to_wire(&curve), wire);
+        assert_eq!(curve.idle(), 0);
+        for (idle, stages) in [
+            (0, vec![]),
+            (0, vec![(50, 50, 30)]),
+            (0, vec![(50, 49, 30)]),
+            (0, vec![(60, 56, 45), (50, 46, 30)]),
+            (0, vec![(50, 46, 40), (60, 56, 30)]),
+            (0, vec![(50, 46, 101)]),
+            (31, vec![(50, 46, 30)]),
+            (0, vec![(19, 15, 30)]),
+        ] {
+            assert!(
+                matches!(staged_from_wire(idle, &stages), Err(MsiError::InvalidArgument(_))),
+                "{idle} {stages:?}"
+            );
+        }
+        let too_many: Vec<StageWire> = vec![(50, 46, 30); 80];
+        assert!(matches!(
+            staged_from_wire(0, &too_many),
+            Err(MsiError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn floors_wire_is_floor_temp_floor_speed_curve_speed() {
+        let quiet = staged_from_wire(0, &[(40, 36, 20), (90, 80, 100)]).unwrap();
+        assert_eq!(
+            floors_to_wire(&quiet.raised_floors()),
+            [(60, 30, 20), (75, 50, 20), (85, 100, 20)]
+        );
+    }
+
+    #[test]
     fn telemetry_prefers_ec_temperatures_and_omits_unknowns() {
         let r = Readings {
             sample: Some(Sample {
@@ -686,8 +829,8 @@ mod tests {
                 "npu_pct"
             ]
         );
-        assert_eq!(f64::try_from(&*m["cpu_temp"]).unwrap(), 55.0);
-        assert_eq!(f64::try_from(&*m["gpu_temp"]).unwrap(), 41.0);
+        assert!((f64::try_from(&*m["cpu_temp"]).unwrap() - 55.0).abs() < 1e-9);
+        assert!((f64::try_from(&*m["gpu_temp"]).unwrap() - 41.0).abs() < 1e-9);
         assert_eq!(u32::try_from(&*m["fan1_rpm"]).unwrap(), 2200);
         assert_eq!(u8::try_from(&*m["cpu_fan_target_pct"]).unwrap(), 37);
     }

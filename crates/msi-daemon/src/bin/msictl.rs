@@ -9,7 +9,9 @@ use std::process::ExitCode;
 
 use futures_util::StreamExt as _;
 use msi_core::fan_profile::FanProfile;
-use msi_daemon::client::{MsiCenter1Proxy, RaisedWire, SpecWire, TableWire};
+use msi_daemon::client::{
+    CpuStagesWire, FloorWire, MsiCenter1Proxy, RaisedWire, SpecWire, StageWire, TableWire,
+};
 use msi_daemon::ec::FACTORY_CPU;
 use zbus::OwnedVariant;
 
@@ -21,6 +23,13 @@ const USAGE: &str = "usage: msictl [--session] <command>
                                  auto = MSI factory curve driven by the EC)
   factory                        hand the fans back to the EC (factory tables, fan mode auto)
   curve show [cpu|gpu]           curve parameters and the resulting EC table
+  stages show                    CPU staged curve (any number of stages), floors, state
+  stages set <idle%> <UP:DOWN:SPEED>...
+                                 CPU staged curve: each stage starts at UP °C, falls back below DOWN °C,
+                                 fan SPEED %. Example: stages set 20 55:50:30 65:60:45 75:70:70 85:80:100
+  stages preview <idle%> <UP:DOWN:SPEED>...
+                                 validate and show the safety floors without applying
+  stages reset                   drop the staged curve (back to the exponential custom curve)
   charge-limit [50..100]         show or set the battery charge limit
   telemetry [--watch]            one telemetry sample, or one per second until Ctrl+C
   --session                      talk to a daemon on the session bus (development)";
@@ -32,14 +41,60 @@ enum Cmd {
     Fan(Option<FanProfile>),
     Factory,
     CurveShow(Vec<String>),
+    StagesShow,
+    StagesSet {
+        idle: u8,
+        stages: Vec<StageWire>,
+        preview: bool,
+    },
+    StagesReset,
     ChargeLimit(Option<u8>),
-    Telemetry { watch: bool },
+    Telemetry {
+        watch: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Cli {
     session: bool,
     cmd: Cmd,
+}
+
+/// Parses `UP:DOWN:SPEED` (°C, °C, %) into a wire stage. Range checks are the daemon's (S3).
+fn parse_stage(text: &str) -> Result<StageWire, String> {
+    let bad = || format!("stage must be UP:DOWN:SPEED (°C:°C:%), got {text:?}");
+    let mut parts = text.split(':');
+    let mut next = || -> Result<u8, String> {
+        parts
+            .next()
+            .ok_or_else(bad)?
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| bad())
+    };
+    let stage = (next()?, next()?, next()?);
+    if parts.next().is_some() {
+        return Err(bad());
+    }
+    Ok(stage)
+}
+
+fn parse_stages_set(idle: &str, stages: &[&str], preview: bool) -> Result<Cmd, String> {
+    let idle = idle
+        .parse::<u8>()
+        .map_err(|_| format!("idle speed must be a number in 0..100, got {idle:?}"))?;
+    if stages.is_empty() {
+        return Err("at least one stage UP:DOWN:SPEED is required".into());
+    }
+    let stages = stages
+        .iter()
+        .map(|t| parse_stage(t))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Cmd::StagesSet {
+        idle,
+        stages,
+        preview,
+    })
 }
 
 fn parse(args: &[String]) -> Result<Cli, String> {
@@ -63,6 +118,10 @@ fn parse(args: &[String]) -> Result<Cli, String> {
         ["factory"] => Cmd::Factory,
         ["curve", "show"] => Cmd::CurveShow(vec!["cpu".into(), "gpu".into()]),
         ["curve", "show", fan @ ("cpu" | "gpu")] => Cmd::CurveShow(vec![(*fan).to_owned()]),
+        ["stages", "show"] => Cmd::StagesShow,
+        ["stages", "reset"] => Cmd::StagesReset,
+        ["stages", "set", idle, stages @ ..] => parse_stages_set(idle, stages, false)?,
+        ["stages", "preview", idle, stages @ ..] => parse_stages_set(idle, stages, true)?,
         ["charge-limit"] => Cmd::ChargeLimit(None),
         ["charge-limit", n] => Cmd::ChargeLimit(Some(
             n.parse()
@@ -124,6 +183,42 @@ fn format_curve(
             "  ! step {step} (from {temp} °C) raised {curve} → {applied} % by the safety floor {floor_s} % at {floor_t} °C"
         );
     }
+    out
+}
+
+fn format_floors(floors: &[FloorWire]) -> String {
+    let mut out = String::new();
+    for (temp, floor, curve) in floors {
+        let _ = writeln!(
+            out,
+            "  ! from {temp} °C the safety floor (S2) holds the fan at {floor} % (the stages give {curve} %)"
+        );
+    }
+    out
+}
+
+/// The staged CPU curve as a table, one row per stage, plus its state and the floors that take over.
+fn format_stages(view: &CpuStagesWire) -> String {
+    let (idle, stages, floors, saved, active, supported) = view;
+    let mut out = String::new();
+    let state = match (saved, active) {
+        (_, true) => "active",
+        (true, false) => "saved, not active (select the custom fan profile)",
+        (false, _) => "not saved: starting point generated from the custom curve",
+    };
+    let _ = writeln!(out, "cpu staged curve: {state}, {} stage(s)", stages.len());
+    if !supported {
+        let _ = writeln!(
+            out,
+            "  ! live CPU control unavailable on this firmware: staged curves are refused"
+        );
+    }
+    let _ = writeln!(out, "  stage   up ≥ °C   down < °C   speed %");
+    let _ = writeln!(out, "  idle          -          -   {idle:>7}");
+    for (i, (up, down, speed)) in stages.iter().enumerate() {
+        let _ = writeln!(out, "  {:>5}   {up:>7}   {down:>9}   {speed:>7}", i + 1);
+    }
+    out.push_str(&format_floors(floors));
     out
 }
 
@@ -299,6 +394,29 @@ async fn run(cli: Cli) -> zbus::Result<()> {
                 print!("{}", format_curve(&fan, &spec, &table, &raised, &origin));
             }
         }
+        Cmd::StagesShow => print!("{}", format_stages(&p.cpu_stages().await?)),
+        Cmd::StagesSet {
+            idle,
+            stages,
+            preview,
+        } => {
+            if preview {
+                let floors = p.preview_cpu_stages(idle, &stages).await?;
+                println!("valid: idle {idle} %, {} stage(s), nothing applied", stages.len());
+                print!("{}", format_floors(&floors));
+            } else {
+                let floors = p.set_cpu_stages(idle, &stages).await?;
+                println!(
+                    "cpu staged curve applied: idle {idle} %, {} stage(s); fan profile is now custom",
+                    stages.len()
+                );
+                print!("{}", format_floors(&floors));
+            }
+        }
+        Cmd::StagesReset => {
+            p.reset_cpu_stages().await?;
+            println!("cpu staged curve removed");
+        }
         Cmd::ChargeLimit(None) => println!("{} %", p.charge_limit().await?),
         Cmd::ChargeLimit(Some(n)) => {
             p.set_charge_limit(n).await?;
@@ -369,6 +487,24 @@ mod tests {
             p(&["curve", "show", "gpu"]),
             Ok(Cmd::CurveShow(vec!["gpu".into()]))
         );
+        assert_eq!(p(&["stages", "show"]), Ok(Cmd::StagesShow));
+        assert_eq!(p(&["stages", "reset"]), Ok(Cmd::StagesReset));
+        assert_eq!(
+            p(&["stages", "set", "20", "55:50:30", "65:60:45"]),
+            Ok(Cmd::StagesSet {
+                idle: 20,
+                stages: vec![(55, 50, 30), (65, 60, 45)],
+                preview: false
+            })
+        );
+        assert_eq!(
+            p(&["stages", "preview", "0", "70:65:50"]),
+            Ok(Cmd::StagesSet {
+                idle: 0,
+                stages: vec![(70, 65, 50)],
+                preview: true
+            })
+        );
         assert_eq!(p(&["charge-limit"]), Ok(Cmd::ChargeLimit(None)));
         assert_eq!(p(&["charge-limit", "80"]), Ok(Cmd::ChargeLimit(Some(80))));
         assert_eq!(p(&["telemetry"]), Ok(Cmd::Telemetry { watch: false }));
@@ -386,6 +522,14 @@ mod tests {
             &["fan", "Turbo"],
             &["fan", "auto", "now"],
             &["charge-limit", "x"],
+            &["stages"],
+            &["stages", "set", "20"],
+            &["stages", "set", "x", "55:50:30"],
+            &["stages", "set", "20", "55:50"],
+            &["stages", "set", "20", "55:50:30:1"],
+            &["stages", "set", "20", "55:50:300"],
+            &["stages", "set", "20", "a:b:c"],
+            &["stages", "show", "cpu"],
             &["reboot"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
@@ -443,6 +587,37 @@ mod tests {
             "{list}"
         );
         assert!(list.contains("Personnalisé"), "{list}");
+    }
+
+    #[test]
+    fn formats_the_staged_curve_and_its_floors() {
+        let view: CpuStagesWire = (
+            20,
+            vec![(55, 50, 30), (65, 60, 45), (90, 85, 100)],
+            vec![(75, 50, 45)],
+            true,
+            true,
+            true,
+        );
+        let out = format_stages(&view);
+        assert!(out.starts_with("cpu staged curve: active, 3 stage(s)"), "{out}");
+        assert!(out.contains("idle") && out.contains("     20"), "{out}");
+        assert!(
+            out.lines()
+                .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["3", "90", "85", "100"]),
+            "{out}"
+        );
+        assert!(
+            out.contains("from 75 °C the safety floor (S2) holds the fan at 50 % (the stages give 45 %)"),
+            "{out}"
+        );
+        assert!(!out.contains("unavailable"), "{out}");
+        let unsaved: CpuStagesWire = (0, vec![(60, 56, 40)], vec![], false, false, false);
+        let out = format_stages(&unsaved);
+        assert!(out.contains("not saved"), "{out}");
+        assert!(out.contains("live CPU control unavailable"), "{out}");
+        let inactive: CpuStagesWire = (0, vec![(60, 56, 40)], vec![], true, false, true);
+        assert!(format_stages(&inactive).contains("saved, not active"));
     }
 
     #[test]

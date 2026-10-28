@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use zbus::OwnedVariant;
 
-pub use crate::service::{RaisedWire, SpecWire, TableWire};
+pub use crate::service::{CpuStagesWire, FloorWire, RaisedWire, SpecWire, StageWire, TableWire};
 
 /// Proxy of `org.blazorde.MsiCenter1` (generates `MsiCenter1Proxy`).
 #[zbus::proxy(
@@ -29,6 +29,14 @@ pub trait MsiCenter1 {
     fn reset_fan_curve(&self, fan: &str) -> zbus::Result<()>;
     /// See the interface documentation.
     fn preview_fan_curve(&self, spec: &SpecWire) -> zbus::Result<(TableWire, Vec<RaisedWire>)>;
+    /// See the interface documentation.
+    fn cpu_stages(&self) -> zbus::Result<CpuStagesWire>;
+    /// See the interface documentation.
+    fn set_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> zbus::Result<Vec<FloorWire>>;
+    /// See the interface documentation.
+    fn reset_cpu_stages(&self) -> zbus::Result<()>;
+    /// See the interface documentation.
+    fn preview_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> zbus::Result<Vec<FloorWire>>;
     /// See the interface documentation.
     fn set_cooler_boost(&self, enabled: bool) -> zbus::Result<()>;
     /// See the interface documentation.

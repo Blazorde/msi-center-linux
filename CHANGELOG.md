@@ -4,6 +4,23 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ## [Unreleased]
 
+### Added
+- **Courbe à paliers du ventilo CPU** ([ADR-0013](docs/adr/0013-staged-cpu-fan-curve.md)) : autant de paliers
+  que vous voulez (1 à 79), chacun avec **sa** température de montée, sa puissance et **sa** température de
+  retombée, plus une puissance au repos. Le daemon pilote le ventilo CPU en direct (ADR-0010) : le plafond de
+  7 paliers de l'EC ne s'applique pas ; le GPU garde ses 7 paliers. Rampes +5 %/s / −1 %/s, planchers S2
+  appliqués en `max()` et **signalés** (jamais silencieux), paliers chauds de l'EC inchangés, S4/S5/S7/S9
+  inchangés. Entrée validée telle quelle (S1/S3), refusée sans pilotage en direct et en lecture seule.
+  - `msi-core` : module `staged` (`StagedCurve`, `StageSelector`, `StagedPilot`), `hybrid::CpuCurve`,
+    `CpuDriver`, `hybrid_cpu_table_for`.
+  - Daemon : stockée par profil de performance (`state.toml` **v3**, la v2 se charge telle quelle), active
+    sous le profil de ventilation Personnalisé, dernière édition gagnante face à la courbe exponentielle.
+    D-Bus (compatible, ajouts) : `CpuStages`, `SetCpuStages`, `ResetCpuStages`, `PreviewCpuStages`.
+  - `msictl stages show | set <repos%> <UP:DOWN:PUISSANCE>… | preview … | reset`.
+  - App : éditeur de paliers sous la courbe personnalisée (ajouter, insérer, supprimer, champs par palier,
+    validation en français, planchers S2 expliqués), graphique en escalier avec retombée en pointillés et
+    repère de la température ; pris en charge par le mode démo. Masqué face à un ancien daemon.
+
 ## [0.1.0] - 2026-10-26
 
 ### Added

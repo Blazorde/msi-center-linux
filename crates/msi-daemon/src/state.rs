@@ -6,6 +6,10 @@
 //! Fan profiles (`[fan_profiles]`, version 2): the owner's choice per performance profile; absent = the
 //! profile's default ([`Profile::default_fan_profile`]). A version 1 file has no `[fan_profiles]` table: every
 //! profile with a custom curve then gets the `custom` fan profile, so it behaves exactly as before.
+//!
+//! Staged CPU curves (`[staged.<profile>]`, version 3, ADR-0013): one per performance profile, any number of
+//! stages. A version 2 file has none and loads unchanged; an older daemon reading a version 3 file ignores the
+//! table (the CPU then falls back to its exponential curve, which is always safe).
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -15,7 +19,9 @@ use std::path::{Path, PathBuf};
 use msi_core::battery::ChargeLimit;
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
 use msi_core::fan_profile::{FanCurveSource, FanProfile};
+use msi_core::hybrid::CpuCurve;
 use msi_core::profile::Profile;
+use msi_core::staged::{Stage, StagedCurve};
 use serde::{Deserialize, Serialize};
 
 use crate::ec::Fan;
@@ -40,6 +46,9 @@ pub struct Settings {
     pub curves: HashMap<(Profile, Fan), FanCurveSpec>,
     /// Fan profile chosen per performance profile, when it differs from its default.
     pub fan_profiles: HashMap<Profile, FanProfile>,
+    /// Staged CPU curve (fan profile `custom`) of one performance profile. When present it replaces the
+    /// exponential custom curve of the CPU fan; the GPU keeps its own.
+    pub staged: HashMap<Profile, StagedCurve>,
 }
 
 impl Default for Settings {
@@ -52,6 +61,7 @@ impl Default for Settings {
             charge_limit: None,
             curves: HashMap::new(),
             fan_profiles: HashMap::new(),
+            staged: HashMap::new(),
         }
     }
 }
@@ -100,6 +110,29 @@ impl Settings {
     #[must_use]
     pub fn is_custom(&self, profile: Profile, _fan: Fan) -> bool {
         self.fan_profile(profile) == FanProfile::Custom
+    }
+
+    /// Saved staged CPU curve of `profile`, in force or not (the editor's source).
+    #[must_use]
+    pub fn staged_curve(&self, profile: Profile) -> Option<&StagedCurve> {
+        self.staged.get(&profile)
+    }
+
+    /// `true` when the CPU fan of `profile` follows the owner's staged curve: fan profile `custom` and a saved
+    /// staged curve.
+    #[must_use]
+    pub fn is_staged(&self, profile: Profile) -> bool {
+        self.fan_profile(profile) == FanProfile::Custom && self.staged.contains_key(&profile)
+    }
+
+    /// The curve that drives the live CPU target in `profile`: the staged curve when [`Self::is_staged`], else
+    /// the exponential curve of its fan profile ([`Self::curve`]).
+    #[must_use]
+    pub fn cpu_curve(&self, profile: Profile) -> CpuCurve {
+        match self.staged.get(&profile).filter(|_| self.is_staged(profile)) {
+            Some(curve) => CpuCurve::Staged(curve.clone()),
+            None => CpuCurve::Exponential(self.curve(profile, Fan::Cpu)),
+        }
     }
 
     /// Profile for the given power source when the AC switch is on.
@@ -152,6 +185,49 @@ impl CurveRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct StageRecord {
+    up: u8,
+    down: u8,
+    speed: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct StagedRecord {
+    idle: u8,
+    stages: Vec<StageRecord>,
+}
+
+impl StagedRecord {
+    fn from_curve(curve: &StagedCurve) -> Self {
+        Self {
+            idle: curve.idle(),
+            stages: curve
+                .stages()
+                .iter()
+                .map(|s| StageRecord {
+                    up: s.up,
+                    down: s.down,
+                    speed: s.speed,
+                })
+                .collect(),
+        }
+    }
+
+    fn to_curve(&self) -> Result<StagedCurve, String> {
+        let stages = self
+            .stages
+            .iter()
+            .map(|s| Stage {
+                up: s.up,
+                down: s.down,
+                speed: s.speed,
+            })
+            .collect();
+        StagedCurve::new(self.idle, stages).map_err(|e| e.to_string())
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StateFile {
     #[serde(default)]
@@ -165,9 +241,12 @@ struct StateFile {
     curves: BTreeMap<String, BTreeMap<String, CurveRecord>>,
     /// Absent in version 1 files (migrated, see the module documentation).
     fan_profiles: Option<BTreeMap<String, String>>,
+    /// Staged CPU curves, absent before version 3.
+    #[serde(default)]
+    staged: BTreeMap<String, StagedRecord>,
 }
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 fn parse_profile(value: Option<&String>, key: &str, default: Profile, warnings: &mut Vec<String>) -> Profile {
     match value.map(|v| v.parse::<Profile>()) {
@@ -210,6 +289,7 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
         charge_limit: None,
         curves: HashMap::new(),
         fan_profiles: HashMap::new(),
+        staged: HashMap::new(),
     };
     if let Some(v) = file.charge_limit {
         match ChargeLimit::new(v) {
@@ -233,6 +313,18 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
                 }
                 Err(e) => warnings.push(format!("curves.{profile_name}.{fan_name}: {e}")),
             }
+        }
+    }
+    for (profile_name, record) in &file.staged {
+        let Ok(profile) = profile_name.parse::<Profile>() else {
+            warnings.push(format!("staged.{profile_name}: unknown profile"));
+            continue;
+        };
+        match record.to_curve() {
+            Ok(curve) => {
+                s.staged.insert(profile, curve);
+            }
+            Err(e) => warnings.push(format!("staged.{profile_name}: {e}")),
         }
     }
     if let Some(map) = &file.fan_profiles {
@@ -282,6 +374,11 @@ pub fn render(s: &Settings) -> Result<String, toml::ser::Error> {
         charge_limit: s.charge_limit.map(ChargeLimit::get),
         curves,
         fan_profiles: Some(fan_profiles),
+        staged: s
+            .staged
+            .iter()
+            .map(|(p, c)| (p.as_str().to_owned(), StagedRecord::from_curve(c)))
+            .collect(),
     };
     toml::to_string(&file)
 }
@@ -374,6 +471,7 @@ mod tests {
             charge_limit: Some(ChargeLimit::new(80).unwrap()),
             curves: HashMap::new(),
             fan_profiles: HashMap::new(),
+            staged: HashMap::new(),
         };
         s.curves.insert((Profile::Eco, Fan::Gpu), custom());
         s.set_fan_profile(Profile::Eco, FanProfile::Custom);
@@ -508,6 +606,152 @@ mod tests {
         assert_eq!(w.len(), 2, "{w:?}");
         assert_eq!(s.fan_profile(Profile::Eco), FanProfile::Silent);
         assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Auto);
+    }
+
+    fn staged() -> StagedCurve {
+        StagedCurve::new(
+            0,
+            vec![
+                Stage {
+                    up: 50,
+                    down: 46,
+                    speed: 30,
+                },
+                Stage {
+                    up: 58,
+                    down: 52,
+                    speed: 38,
+                },
+                Stage {
+                    up: 66,
+                    down: 60,
+                    speed: 55,
+                },
+                Stage {
+                    up: 74,
+                    down: 68,
+                    speed: 75,
+                },
+                Stage {
+                    up: 80,
+                    down: 72,
+                    speed: 90,
+                },
+                Stage {
+                    up: 85,
+                    down: 78,
+                    speed: 100,
+                },
+                Stage {
+                    up: 90,
+                    down: 82,
+                    speed: 100,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn staged_curves_round_trip_with_any_number_of_stages() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("state.toml"));
+        let mut s = Settings::default();
+        s.staged.insert(Profile::Gaming, staged());
+        // The widest curve: one stage per degree.
+        let widest = StagedCurve::new(
+            0,
+            (22..=100u8)
+                .map(|t| Stage {
+                    up: t,
+                    down: t - 2,
+                    speed: 100,
+                })
+                .collect(),
+        )
+        .unwrap();
+        s.staged.insert(Profile::Eco, widest.clone());
+        s.set_fan_profile(Profile::Gaming, FanProfile::Custom);
+        store.save(&s).unwrap();
+        let text = std::fs::read_to_string(store.path()).unwrap();
+        assert!(text.contains("version = 3"), "{text}");
+        let (loaded, w) = store.load();
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(loaded, s);
+        assert_eq!(loaded.staged_curve(Profile::Eco), Some(&widest));
+        assert_eq!(
+            loaded.staged_curve(Profile::Gaming).map(|c| c.stages().len()),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn staged_curve_drives_the_cpu_only_under_the_custom_fan_profile() {
+        let mut s = Settings::default();
+        s.staged.insert(Profile::Gaming, staged());
+        // Saved but not selected: Turbo's exponential curve stays in force.
+        assert!(!s.is_staged(Profile::Gaming));
+        assert_eq!(
+            s.cpu_curve(Profile::Gaming),
+            CpuCurve::Exponential(CurvePreset::Aggressive.spec())
+        );
+        s.set_fan_profile(Profile::Gaming, FanProfile::Custom);
+        assert!(s.is_staged(Profile::Gaming));
+        assert_eq!(s.cpu_curve(Profile::Gaming), CpuCurve::Staged(staged()));
+        // The GPU does not follow it: it keeps its own exponential curve.
+        assert_eq!(s.curve(Profile::Gaming, Fan::Gpu), CurvePreset::Aggressive.spec());
+        // Another profile is untouched.
+        assert!(!s.is_staged(Profile::Eco));
+        assert_eq!(
+            s.cpu_curve(Profile::Eco),
+            CpuCurve::Exponential(CurvePreset::Silent.spec())
+        );
+    }
+
+    #[test]
+    fn s3_invalid_staged_curves_are_dropped_with_a_warning() {
+        let (s, w) = parse(
+            r"
+            [staged.eco]
+            idle = 0
+            stages = [{ up = 60, down = 50, speed = 40 }, { up = 55, down = 52, speed = 50 }]
+            [staged.gaming]
+            idle = 50
+            stages = [{ up = 60, down = 50, speed = 40 }]
+            [staged.turbo]
+            idle = 0
+            stages = [{ up = 60, down = 50, speed = 40 }]
+            [staged.balanced]
+            idle = 0
+            stages = []
+            ",
+        );
+        assert!(s.staged.is_empty());
+        assert_eq!(w.len(), 4, "{w:?}");
+        assert!(w.iter().any(|m| m.contains("strictly increasing")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("idle speed")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("unknown profile")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("at least one stage")), "{w:?}");
+    }
+
+    #[test]
+    fn version_2_files_load_without_staged_curves() {
+        let (s, w) = parse(
+            r#"
+            version = 2
+            profile = "gaming"
+            [fan_profiles]
+            gaming = "custom"
+            "#,
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert!(s.staged.is_empty());
+        assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Custom);
+        assert!(!s.is_staged(Profile::Gaming));
+        assert_eq!(
+            s.cpu_curve(Profile::Gaming),
+            CpuCurve::Exponential(CurvePreset::Aggressive.spec())
+        );
     }
 
     #[test]

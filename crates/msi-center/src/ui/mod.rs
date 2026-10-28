@@ -10,6 +10,7 @@ mod home;
 mod perf;
 mod prefs;
 mod profiles;
+mod stages;
 pub mod style;
 mod widgets;
 mod window;
