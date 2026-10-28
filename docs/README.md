@@ -1,6 +1,7 @@
 # Documentation — sommaire
 
-> Cette arborescence est pensée pour être publiée telle quelle en wiki GitHub (`docs/README.md` = page d'accueil).
+> Cette arborescence est publiée en [wiki GitHub](https://github.com/Blazorde/msi-center-linux/wiki) par
+> `scripts/wiki-sync.sh` (`docs/README.md` = page d'accueil). Modifier la doc ici, jamais dans le wiki.
 > Les docs humaines sont en français. Le guide agent est [`CLAUDE.md`](../CLAUDE.md) (anglais).
 
 ## 🎯 Produit
