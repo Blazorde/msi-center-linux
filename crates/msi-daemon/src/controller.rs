@@ -11,18 +11,21 @@
 //! | S7 | [`Controller::apply_profile`] reads back tables, fan mode and shift mode; mismatch → factory + `auto` + event |
 //! | S8 | [`Controller::new`]: unknown firmware or missing curve files → read-only, no EC write at all |
 //! | S9 | [`Controller::tick`] feeds one `StallDetector` per fan (0 % at a filtered ≥ 70 °C for 30 s) → factory + `auto`, read-only until restart |
+//! | ADR-0013 | Staged CPU curve: [`Controller::set_cpu_stages`] (S3 on input by construction, S2 floors reported by [`Controller::cpu_stages`]) |
 //! | ADR-0010 | CPU fan driven live: factory thresholds kept, [`Controller::tick`] writes only `cpu/fan_curve_speeds` (from `msi_core::hybrid`) when the vector changes, read back (S7) |
 //!
 //! # Hybrid CPU control (ADR-0010)
 //!
 //! The EC ignores written CPU thresholds, so when the factory tables of the firmware are known the CPU table
-//! keeps them and only its speeds are ours: [`msi_core::hybrid::hybrid_cpu_table`] of the live target that
-//! [`msi_core::hybrid::CpuFanPilot`] computes from the filtered CPU temperature. Every tick updates the
+//! keeps them and only its speeds are ours: [`msi_core::hybrid::hybrid_cpu_table_for`] of the live target that
+//! [`msi_core::hybrid::CpuDriver`] computes from the filtered CPU temperature, on the exponential curve of the
+//! fan profile or, under `custom`, on the owner's staged curve (any number of stages, ADR-0013). Every tick updates the
 //! filter and the target; the speeds are written only while our curve is in force (`applied`: profile
 //! applied and verified, not handed back, not tripped, EC still in `advanced` with the factory thresholds)
 //! and only when the vector changes, then read back (S7: mismatch → factory + `auto` + event). The drift
 //! check compares the EC with the last vector written. Firmware without known factory tables: the CPU table
-//! is generated like the GPU one (previous behaviour).
+//! is generated like the GPU one (previous behaviour) and staged curves are refused. The GPU always keeps its
+//! 7-step EC table.
 //!
 //! # Fan profiles
 //!
@@ -38,8 +41,9 @@ use msi_core::battery::ChargeLimit;
 use msi_core::curve::FanCurveSpec;
 use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
 use msi_core::fan_profile::FanProfile;
-use msi_core::hybrid::{CpuFanPilot, TempFilter, hybrid_cpu_table};
+use msi_core::hybrid::{CpuCurve, CpuDriver, TempFilter, hybrid_cpu_table_for};
 use msi_core::profile::{GpuMode, Profile};
+use msi_core::staged::{FloorRaise, StagedCurve};
 use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
 use msi_core::supervisor::{BoostDecision, SensorReading, ThermalSupervisor};
 use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, StepCurve, TableWrite, generate, write_plan};
@@ -206,6 +210,25 @@ pub struct FanCurveView {
     pub custom: bool,
 }
 
+/// Staged CPU curve as `CpuStages` reports it.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent flags: saved by the owner, in force, supported by the firmware"
+)]
+pub struct CpuStagesView {
+    /// The curve: the saved one, else the 6 stages of the preset the custom curve starts from.
+    pub curve: StagedCurve,
+    /// S2 floors that take over from the stages (shown, never silent).
+    pub floors: Vec<FloorRaise>,
+    /// `true` when the owner saved this curve (otherwise it is only the editor's starting point).
+    pub saved: bool,
+    /// `true` when the CPU fan follows it now (fan profile `custom` with a saved staged curve).
+    pub active: bool,
+    /// `true` when the firmware allows live CPU control, so a staged curve can be applied.
+    pub supported: bool,
+}
+
 /// The daemon state. See the module documentation.
 #[derive(Debug)]
 #[allow(
@@ -228,7 +251,7 @@ pub struct Controller {
     auto_applied: bool,
     stall: [StallDetector; 2],
     cpu_filter: TempFilter,
-    cpu_pilot: CpuFanPilot,
+    cpu_pilot: CpuDriver,
     cpu_live: Option<GeneratedCurve>,
     supervisor: ThermalSupervisor,
     boost_forced: bool,
@@ -288,7 +311,7 @@ impl Controller {
                 auto_applied: false,
                 stall: [StallDetector::new(); 2],
                 cpu_filter: TempFilter::new(),
-                cpu_pilot: CpuFanPilot::new(),
+                cpu_pilot: CpuDriver::new(),
                 cpu_live: None,
                 supervisor: ThermalSupervisor::new(),
                 boost_forced: false,
@@ -600,21 +623,15 @@ impl Controller {
         self.factory.map(|f| f.cpu)
     }
 
-    /// Live CPU target for `spec`: the pilot's last output kept within the curve's range (the profile may
-    /// have changed since), or the curve's start speed before any output.
-    fn cpu_target(&self, spec: &FanCurveSpec) -> u8 {
-        self.cpu_pilot.output().map_or_else(
-            || CpuFanPilot::initial(spec),
-            |o| o.clamp(spec.idle(), spec.params().max()),
-        )
-    }
-
-    /// Table of `fan` in `profile`: hybrid live vector for the CPU (ADR-0010), generated table otherwise.
+    /// Table of `fan` in `profile`: hybrid live vector for the CPU (ADR-0010, exponential or staged curve),
+    /// generated table otherwise.
     fn curve_for(&self, profile: Profile, fan: Fan) -> Result<GeneratedCurve, msi_core::table::TableError> {
-        let spec = self.settings.curve(profile, fan);
         match (fan, self.hybrid_base()) {
-            (Fan::Cpu, Some(base)) => hybrid_cpu_table(&spec, &base, self.cpu_target(&spec)),
-            _ => generate(&spec),
+            (Fan::Cpu, Some(base)) => {
+                let curve = self.settings.cpu_curve(profile);
+                hybrid_cpu_table_for(&curve, &base, self.cpu_pilot.target(&curve))
+            }
+            _ => generate(&self.settings.curve(profile, fan)),
         }
     }
 
@@ -748,6 +765,10 @@ impl Controller {
         self.handed_back = false;
         let profile = self.settings.profile;
         self.settings.curves.insert((profile, fan), spec);
+        if fan == Fan::Cpu {
+            // The last edit wins: an exponential CPU curve replaces the staged one.
+            self.settings.staged.remove(&profile);
+        }
         self.settings.set_fan_profile(profile, FanProfile::Custom);
         self.save();
         self.apply_profile(profile)?;
@@ -769,6 +790,82 @@ impl Controller {
         self.handed_back = false;
         let profile = self.settings.profile;
         self.settings.curves.remove(&(profile, fan));
+        if fan == Fan::Cpu {
+            self.settings.staged.remove(&profile);
+        }
+        let any_left = Fan::ALL
+            .iter()
+            .any(|&f| self.settings.curves.contains_key(&(profile, f)))
+            || self.settings.staged.contains_key(&profile);
+        if !any_left && self.settings.fan_profile(profile) == FanProfile::Custom {
+            self.settings
+                .set_fan_profile(profile, profile.default_fan_profile());
+        }
+        self.save();
+        self.apply_profile(profile)
+    }
+
+    /// Staged CPU curve of the selected profile as the editor shows it: the saved one, else the 6 stages of
+    /// the preset the custom curve starts from. `floors` lists the S2 floors that take over from the stages.
+    ///
+    /// # Errors
+    /// [`ControlError::InvalidArgument`] if the stored curve does not convert (cannot happen: validated on load).
+    pub fn cpu_stages(&self) -> Result<CpuStagesView, ControlError> {
+        let profile = self.settings.profile;
+        let saved = self.settings.staged_curve(profile).cloned();
+        let curve = if let Some(curve) = &saved {
+            curve.clone()
+        } else {
+            let spec = self.settings.custom_curve(profile, Fan::Cpu);
+            let table = generate(&spec).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+            StagedCurve::from_step_curve(&table.curve)
+                .map_err(|e| ControlError::InvalidArgument(e.to_string()))?
+        };
+        Ok(CpuStagesView {
+            floors: curve.raised_floors(),
+            curve,
+            saved: saved.is_some(),
+            active: self.settings.is_staged(profile) && !self.auto_applied,
+            supported: self.hybrid_base().is_some(),
+        })
+    }
+
+    /// Sets the staged CPU curve of the selected profile (any number of stages), switches that profile to the
+    /// `custom` fan profile, saves and applies it. The GPU keeps its own curve. An invalid curve cannot reach
+    /// this point ([`StagedCurve`] is validated on construction, S3).
+    ///
+    /// # Errors
+    /// [`ControlError::ReadOnly`]; [`ControlError::InvalidArgument`] when the firmware has no known factory
+    /// tables (the CPU fan cannot be driven live there, ADR-0010); or as [`Self::apply_profile`].
+    pub fn set_cpu_stages(&mut self, curve: StagedCurve) -> Result<CpuStagesView, ControlError> {
+        self.writable()?;
+        if self.hybrid_base().is_none() {
+            return Err(ControlError::InvalidArgument(
+                "staged CPU curves need live CPU fan control, which this firmware does not support".into(),
+            ));
+        }
+        self.handed_back = false;
+        let profile = self.settings.profile;
+        self.settings.staged.insert(profile, curve);
+        self.settings.set_fan_profile(profile, FanProfile::Custom);
+        self.save();
+        self.apply_profile(profile)?;
+        self.cpu_stages()
+    }
+
+    /// Removes the staged CPU curve of the selected profile and applies the profile: the CPU follows its
+    /// exponential curve again. With no custom curve left, the profile goes back to its default fan profile.
+    /// Nothing is written when there was no staged curve.
+    ///
+    /// # Errors
+    /// As [`Self::set_fan_curve`].
+    pub fn reset_cpu_stages(&mut self) -> Result<(), ControlError> {
+        self.writable()?;
+        let profile = self.settings.profile;
+        if self.settings.staged.remove(&profile).is_none() {
+            return Ok(());
+        }
+        self.handed_back = false;
         let any_left = Fan::ALL
             .iter()
             .any(|&f| self.settings.curves.contains_key(&(profile, f)));
@@ -857,8 +954,8 @@ impl Controller {
         let filtered = self
             .cpu_filter
             .update(cpu_temp.as_ref().ok().copied().filter(|&t| t > 0));
-        let spec = self.settings.curve(self.settings.profile, Fan::Cpu);
-        let target = self.cpu_pilot.update(&spec, filtered, now_ms);
+        let curve = self.settings.cpu_curve(self.settings.profile);
+        let target = self.cpu_pilot.update(&curve, filtered, now_ms);
         let mut readings = Readings {
             fan_rpm: sample
                 .as_ref()
@@ -879,7 +976,7 @@ impl Controller {
             if self.applied {
                 self.check_stall(now, &readings);
             }
-            self.drive_cpu(&spec, target);
+            self.drive_cpu(&curve, target);
             self.auto_switch();
             if (self.applied || self.auto_applied) && self.ticks % DRIFT_CHECK_EVERY == 0 {
                 self.check_drift();
@@ -896,14 +993,14 @@ impl Controller {
     /// ADR-0010: writes the CPU speed vector for `target` when it differs from the one in force. Only while our
     /// curve is applied and the EC is still in `advanced` with the factory thresholds (otherwise the drift
     /// check re-applies); only `cpu/fan_curve_speeds` is written, then read back (S7).
-    fn drive_cpu(&mut self, spec: &FanCurveSpec, target: u8) {
+    fn drive_cpu(&mut self, curve: &CpuCurve, target: u8) {
         let (Some(base), Some(live)) = (self.hybrid_base(), self.cpu_live.as_ref()) else {
             return;
         };
         if !self.applied || self.handed_back || self.tripped.is_some() {
             return;
         }
-        let next = match hybrid_cpu_table(spec, &base, target) {
+        let next = match hybrid_cpu_table_for(curve, &base, target) {
             Ok(g) => g,
             Err(e) => {
                 tracing::error!(error = %e, target, "hybrid CPU table rejected: not written");
