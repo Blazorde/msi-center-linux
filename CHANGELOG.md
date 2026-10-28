@@ -5,6 +5,8 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 ## [Unreleased]
 
 ### Added
+- **Wiki GitHub** : la doc `docs/` est publiée sur le [wiki](https://github.com/Blazorde/msi-center-linux/wiki)
+  par `scripts/wiki-sync.sh` (pages à plat, liens réécrits, captures, barre latérale ; `--dry-run` pour un aperçu).
 - **Courbe à paliers du ventilo CPU** ([ADR-0013](docs/adr/0013-staged-cpu-fan-curve.md)) : autant de paliers
   que vous voulez (1 à 79), chacun avec **sa** température de montée, sa puissance et **sa** température de
   retombée, plus une puissance au repos. Le daemon pilote le ventilo CPU en direct (ADR-0010) : le plafond de
