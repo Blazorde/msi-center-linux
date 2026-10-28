@@ -111,6 +111,23 @@ Personnalisé » si un autre profil de ventilation est actif) enregistre la cour
 profil actif et **passe ce profil en Personnalisé** ; **Revenir au preset** la supprime (sans courbe
 personnalisée restante, le profil revient à son profil de ventilation par défaut).
 
+### Courbe à paliers du CPU
+
+Sous l'éditeur exponentiel, **Courbe à paliers (CPU)** permet autant de paliers que vous voulez (jusqu'à 79).
+Chaque palier a trois réglages : la température où il **monte** (« Monte à ≥ »), la **puissance** du
+ventilateur, et la température où il **retombe** (« Retombe sous ») vers le palier précédent. Entre les deux, le
+ventilateur reste sur le palier : c'est la retombée en température propre à chaque palier. Une puissance au
+repos s'applique sous le premier palier.
+
+**Ajouter un palier** crée le suivant (5 °C plus haut, 10 points plus vite) ; le bouton « + » d'une ligne en
+insère un entre deux paliers, la corbeille le supprime. Les valeurs hors règles (retombée au-dessus de la
+montée, puissance qui diminue d'un palier à l'autre, moins de 2 °C entre retombée et montée…) sont expliquées
+et bloquent **Appliquer**. Si vos paliers sont plus lents qu'un plancher de sécurité (30 % dès 60 °C, 50 % dès
+75 °C, 100 % dès 85 °C), le plancher prend le relais et l'éditeur l'affiche. **Appliquer** enregistre la courbe
+pour le profil actif et le passe en Personnalisé ; **Supprimer la courbe à paliers** revient à la courbe
+exponentielle. Le GPU garde ses 7 paliers. En ligne de commande : `msictl stages set 20 55:50:30 65:60:45
+75:70:70 85:80:100` (repos 20 %, puis `montée:retombée:puissance` par palier).
+
 Le bouton **Rendre la main à l'EC** (courbes d'usine) n'apparaît que si le service fournit la méthode
 `RestoreFactory` (l'app le détecte par introspection).
 
