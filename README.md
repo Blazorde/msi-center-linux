@@ -36,7 +36,8 @@ Détails : [docs/architecture/overview.md](docs/architecture/overview.md).
 
 ## Documentation
 
-Tout est dans [`docs/`](docs/README.md), organisé pour devenir le wiki GitHub.
+Tout est dans le [wiki](https://github.com/Blazorde/msi-center-linux/wiki), généré depuis [`docs/`](docs/README.md)
+(`scripts/wiki-sync.sh`).
 
 ## Développement
 

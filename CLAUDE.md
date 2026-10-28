@@ -21,7 +21,7 @@ Product spec: `.claude/PRPs/prds/msi-center-linux.prd.md`. Next work: `/prp-plan
 | `kernel/` | Fork of `msi-ec` with fan curve sysfs (DKMS) | C |
 | `packaging/arch` | PKGBUILD | sh |
 | `systemd/` | Units, D-Bus service files, polkit policy | ini/xml |
-| `docs/` | Human docs → future wiki. ADRs in `docs/adr/` | md |
+| `docs/` | Human docs, source of the GitHub wiki (`scripts/wiki-sync.sh`). ADRs in `docs/adr/` | md |
 
 ## Commands
 
@@ -30,6 +30,7 @@ scripts/ci.sh        # fmt --check, clippy -D warnings, test, extension checks, 
 scripts/ext-check.sh # GNOME extension only (offline, ~1 s)
 scripts/ext-smoke.sh # GNOME extension end-to-end in an isolated headless shell with a mock msi-daemon
 scripts/package.sh   # Arch packages → dist/ (makepkg in a temp dir, installs nothing)
+scripts/wiki-sync.sh # committed docs/ → GitHub wiki (--dry-run to preview)
 ```
 
 Run it before declaring work done. There is **no GitHub Actions** (quota unavailable, ADR-0007): `scripts/ci.sh`
@@ -70,5 +71,6 @@ which rewrites the EC. The extension itself never auto-starts the daemon (`NO_AU
 
 ## Docs
 
-Keep docs in sync with code in the same PR. Update `CHANGELOG.md` (`[Unreleased]`) for user-visible changes.
+Keep docs in sync with code in the same PR. The wiki is generated from `docs/`: never edit it by hand; a new
+`docs/*.md` needs a page name in `PAGES` (`scripts/wiki-sync.sh`). Update `CHANGELOG.md` (`[Unreleased]`) for user-visible changes.
 Update the PRD phase table status when a phase starts/completes.
