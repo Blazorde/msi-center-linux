@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use msi_core::curve::{CurvePreset, FanCurveParams};
 use msi_core::fan_profile::FanProfile;
-use msi_core::hybrid::hybrid_cpu_table;
+use msi_core::hybrid::{CpuCurve, hybrid_cpu_table, hybrid_cpu_table_for};
+use msi_core::staged::Stage;
 use msi_core::table::TableWrite;
 use tempfile::TempDir;
 
@@ -1142,4 +1143,291 @@ fn set_fan_profile_takes_control_back_after_restore_factory() {
     assert!(!r.ctl.is_handed_back());
     assert_eq!(r.ec.state().fan_mode, FanMode::Advanced);
     assert_eq!(r.ec.state().gpu, expected(CurvePreset::Aggressive));
+}
+
+// ---- ADR-0013: staged CPU curve ----
+
+/// 4 stages: 50 °C 30 %, 60 °C 45 %, 70 °C 70 %, 80 °C 100 %; each falls back 4 °C under its rise.
+fn four_stages() -> StagedCurve {
+    StagedCurve::new(
+        0,
+        vec![
+            Stage {
+                up: 50,
+                down: 46,
+                speed: 30,
+            },
+            Stage {
+                up: 60,
+                down: 56,
+                speed: 45,
+            },
+            Stage {
+                up: 70,
+                down: 66,
+                speed: 70,
+            },
+            Stage {
+                up: 80,
+                down: 76,
+                speed: 100,
+            },
+        ],
+    )
+    .unwrap()
+}
+
+/// CPU table under hybrid control for a live `target` on a staged curve.
+fn expected_staged_cpu(curve: &StagedCurve, target: u8) -> msi_core::table::RawTables {
+    hybrid_cpu_table_for(&CpuCurve::Staged(curve.clone()), &FACTORY_CPU, target)
+        .unwrap()
+        .curve
+        .tables()
+}
+
+/// Ticks `n` seconds at `cpu` °C from second `from`; returns the last readings.
+fn hold(r: &mut Rig, from: u64, n: u64, cpu: u8) -> Readings {
+    set_temps(&r.ec, Some(cpu), Some(40));
+    tick_secs(&mut r.ctl, from, n - 1);
+    r.ctl.tick(Clock((from + n - 1) * SEC))
+}
+
+#[test]
+fn staged_cpu_curve_follows_its_stages_and_falls_back_per_stage() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    let curve = four_stages();
+    let view = r.ctl.set_cpu_stages(curve.clone()).unwrap();
+    assert!(view.saved && view.active && view.supported);
+    assert!(view.floors.is_empty());
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Custom);
+    // Applied before any temperature is known: the fan spins at the first stage's speed.
+    assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 30));
+    let cpu = r.ec.state().cpu;
+    assert_eq!((cpu.up, cpu.down), (FACTORY_CPU.up, FACTORY_CPU.down));
+    // The GPU keeps its own 7-step table.
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::Silent));
+
+    // 44 °C: under the first stage → idle.
+    let readings = hold(&mut r, 0, 12, 44);
+    assert_eq!(readings.cpu_fan_target, Some(0));
+    assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 0));
+    // 55 °C: stage 0 (50 → 30 %).
+    let readings = hold(&mut r, 12, 30, 55);
+    assert_eq!(readings.cpu_fan_target, Some(30));
+    // 65 °C: stage 1 (45 %), reached by +5 %/s from the start speed.
+    let readings = hold(&mut r, 42, 30, 65);
+    assert_eq!(readings.cpu_fan_target, Some(45));
+    assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 45));
+    // FanCurve("cpu") is the live vector, and the view says it follows the staged curve.
+    assert_eq!(r.ctl.fan_curve(Fan::Cpu).unwrap().table, r.ec.state().cpu);
+    // Cooling to 58 °C (between stage 1's fall-back, 56, and its rise, 60): stage 1 holds.
+    let before = cpu_writes(&r.ec).len();
+    let readings = hold(&mut r, 72, 40, 58);
+    assert_eq!(readings.cpu_fan_target, Some(45));
+    assert_eq!(cpu_writes(&r.ec).len(), before, "no write while the stage holds");
+    // 54 °C: under 56 → back to stage 0 (30 %), ramping down by −1 %/s.
+    let readings = hold(&mut r, 112, 40, 54);
+    assert_eq!(readings.cpu_fan_target, Some(30));
+    // 44 °C: under stage 0's fall-back (46) → idle.
+    let readings = hold(&mut r, 152, 20, 44);
+    assert_eq!(readings.cpu_fan_target, Some(0));
+    // Every vector written by the loop was kernel-valid and S2-safe, and only speeds were written.
+    for w in cpu_writes(&r.ec) {
+        let TableWrite::Speeds(speeds) = w else {
+            panic!("only speeds may be written: {w:?}")
+        };
+        StepCurve::new(speeds, FACTORY_CPU.up, FACTORY_CPU.down).unwrap();
+        assert!(
+            speeds[4] >= 60 && speeds[5] == 100 && speeds[6] == 100,
+            "{speeds:?}"
+        );
+    }
+    assert!(r.ctl.take_events().is_empty());
+}
+
+#[test]
+fn staged_curve_hot_steps_follow_the_stages_at_their_entry_temperature() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    let curve = four_stages();
+    r.ctl.set_cpu_stages(curve.clone()).unwrap();
+    // Factory hot steps are entered at 77 / 83 / 90 °C: 70 % (stage 2), 100 %, 100 %.
+    let speeds = r.ec.state().cpu.speeds;
+    assert_eq!(speeds[4..], [70, 100, 100]);
+    assert_eq!(speeds[..4], [30, 30, 30, 50]);
+}
+
+#[test]
+fn staged_curve_s2_floor_takes_over_from_a_quiet_stage_and_is_reported() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    let quiet = StagedCurve::new(
+        0,
+        vec![
+            Stage {
+                up: 40,
+                down: 36,
+                speed: 20,
+            },
+            Stage {
+                up: 90,
+                down: 80,
+                speed: 100,
+            },
+        ],
+    )
+    .unwrap();
+    let view = r.ctl.set_cpu_stages(quiet).unwrap();
+    // Nothing is silent: the three S2 floors above the 20 % stage are reported.
+    let floors: Vec<(u8, u8, u8)> = view
+        .floors
+        .iter()
+        .map(|f| (f.floor.temp, f.floor.speed, f.curve_speed))
+        .collect();
+    assert_eq!(floors, [(60, 30, 20), (75, 50, 20), (85, 100, 20)]);
+    // At 65 °C the stage asks 20 %, the floor 30 %: the fan runs at 30 %.
+    let readings = hold(&mut r, 0, 40, 65);
+    assert_eq!(readings.cpu_fan_target, Some(30));
+    // At 78 °C the floor is 50 %.
+    let readings = hold(&mut r, 40, 60, 78);
+    assert_eq!(readings.cpu_fan_target, Some(50));
+}
+
+#[test]
+fn staged_cpu_curve_is_saved_reapplied_after_a_restart_and_applies_only_under_custom() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    let curve = four_stages();
+    r.ctl.set_cpu_stages(curve.clone()).unwrap();
+    let mut ctl = restart(&r);
+    assert_eq!(ctl.settings().staged_curve(Profile::Eco), Some(&curve));
+    assert_eq!(ctl.settings().fan_profile(Profile::Eco), FanProfile::Custom);
+    ctl.set_profile(Profile::Eco).unwrap();
+    assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 30));
+    // Picking another fan profile keeps the staged curve but stops following it.
+    ctl.set_fan_profile(FanProfile::Silent).unwrap();
+    assert_eq!(r.ec.state().cpu, expected_cpu_initial(CurvePreset::Silent));
+    let view = ctl.cpu_stages().unwrap();
+    assert!(view.saved && !view.active);
+    ctl.set_fan_profile(FanProfile::Custom).unwrap();
+    assert!(ctl.cpu_stages().unwrap().active);
+    assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 30));
+}
+
+#[test]
+fn staged_curves_are_per_performance_profile() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    assert!(!r.ctl.cpu_stages().unwrap().saved);
+    assert_eq!(r.ec.state().cpu, expected_cpu_initial(CurvePreset::Aggressive));
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    assert!(r.ctl.cpu_stages().unwrap().active);
+}
+
+#[test]
+fn an_exponential_cpu_edit_replaces_the_staged_curve_and_reset_removes_it() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    // The GPU edit leaves the staged CPU curve alone.
+    r.ctl.set_fan_curve(Fan::Gpu, quiet_custom()).unwrap();
+    assert!(r.ctl.cpu_stages().unwrap().active);
+    // The last CPU edit wins.
+    r.ctl
+        .set_fan_curve(Fan::Cpu, CurvePreset::Progressive.spec())
+        .unwrap();
+    let view = r.ctl.cpu_stages().unwrap();
+    assert!(!view.saved && !view.active);
+    assert_eq!(r.ec.state().cpu, expected_cpu_initial(CurvePreset::Progressive));
+
+    // Staged again, then reset: back to the exponential curves, still custom for the GPU.
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    r.ctl.reset_cpu_stages().unwrap();
+    assert!(!r.ctl.cpu_stages().unwrap().saved);
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Custom);
+    // No custom curve left at all → back to the profile's default fan profile.
+    r.ctl.reset_fan_curve(Fan::Cpu).unwrap();
+    r.ctl.reset_fan_curve(Fan::Gpu).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    r.ctl.reset_cpu_stages().unwrap();
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Silent);
+    assert_eq!(r.ec.state().cpu, expected_cpu_initial(CurvePreset::Silent));
+    // Resetting nothing writes nothing.
+    let writes = r.ec.state().writes.len();
+    r.ctl.reset_cpu_stages().unwrap();
+    assert_eq!(r.ec.state().writes.len(), writes);
+}
+
+#[test]
+fn reset_fan_curve_cpu_also_removes_the_staged_curve() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    r.ctl.reset_fan_curve(Fan::Cpu).unwrap();
+    assert!(!r.ctl.cpu_stages().unwrap().saved);
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Silent);
+}
+
+#[test]
+fn cpu_stages_view_starts_from_the_preset_table() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    let view = r.ctl.cpu_stages().unwrap();
+    assert!(!view.saved && !view.active && view.supported);
+    let table = generate(&CurvePreset::Progressive.spec()).unwrap().curve;
+    assert_eq!(view.curve, StagedCurve::from_step_curve(&table).unwrap());
+    assert_eq!(view.curve.stages().len(), 6);
+    assert!(view.floors.is_empty());
+}
+
+#[test]
+fn staged_curves_are_refused_without_factory_tables_and_change_nothing() {
+    let mut r = rig_with(
+        MemoryState {
+            fw_version: "14K2EMS1.109".into(),
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    assert!(!r.ctl.cpu_stages().unwrap().supported);
+    let writes = r.ec.state().writes.len();
+    let err = r.ctl.set_cpu_stages(four_stages()).unwrap_err();
+    assert!(matches!(err, ControlError::InvalidArgument(_)), "{err}");
+    assert!(r.ctl.settings().staged.is_empty());
+    assert_eq!(r.ctl.status().fan_profile, FanProfile::Silent);
+    assert_eq!(r.ec.state().writes.len(), writes);
+}
+
+#[test]
+fn staged_curves_are_refused_in_read_only_mode() {
+    let mut r = rig_with(
+        MemoryState {
+            fw_version: "14K2EMS1.999".into(),
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    assert!(matches!(
+        r.ctl.set_cpu_stages(four_stages()),
+        Err(ControlError::ReadOnly(_))
+    ));
+    assert!(matches!(r.ctl.reset_cpu_stages(), Err(ControlError::ReadOnly(_))));
+    assert_eq!(r.ec.state().writes.len(), 0);
+}
+
+#[test]
+fn staged_curve_live_write_failure_falls_back_to_auto() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    // S7 applies to staged writes like to exponential ones: a corrupt read-back hands the fans back.
+    r.ec.state().corrupt_readback = Some(Fan::Cpu);
+    hold(&mut r, 0, 12, 55);
+    assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
+    assert!(kinds(&r.ctl.take_events()).contains(&EventKind::ReadbackMismatch));
+    assert!(!r.ctl.is_applied());
 }

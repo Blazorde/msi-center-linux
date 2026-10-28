@@ -13,6 +13,7 @@ use zbus::OwnedVariant as OwnedValue;
 use crate::curve::{CurveSpec, Generated, RaisedWire, SpecWire, TableWire};
 use crate::errors::{AppError, Service};
 use crate::model::{self, ClipEntry, ClipWire, DaemonStatus, Fan, Scope};
+use crate::stages::{CpuStagesWire, FloorWire, StageWire, StagedState};
 
 /// Bus name of the daemon.
 pub const DAEMON_NAME: &str = "org.blazorde.MsiCenter1";
@@ -50,6 +51,14 @@ pub trait MsiCenter1 {
     fn reset_fan_curve(&self, fan: &str) -> zbus::Result<()>;
     /// `PreviewFanCurve`.
     fn preview_fan_curve(&self, spec: &SpecWire) -> zbus::Result<(TableWire, Vec<RaisedWire>)>;
+    /// `CpuStages` (ADR-0013).
+    fn cpu_stages(&self) -> zbus::Result<CpuStagesWire>;
+    /// `SetCpuStages` (ADR-0013): returns the S2 floors that take over from the stages.
+    fn set_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> zbus::Result<Vec<FloorWire>>;
+    /// `ResetCpuStages` (ADR-0013).
+    fn reset_cpu_stages(&self) -> zbus::Result<()>;
+    /// `PreviewCpuStages` (ADR-0013).
+    fn preview_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> zbus::Result<Vec<FloorWire>>;
     /// `SetCoolerBoost`.
     fn set_cooler_boost(&self, enabled: bool) -> zbus::Result<()>;
     /// `SetChargeLimit`.
@@ -283,6 +292,38 @@ impl Daemon {
             .await
             .map_err(|e| de(&e))?;
         Generated::from_wire(&table, &raised).ok_or_else(|| bad_reply("PreviewFanCurve"))
+    }
+
+    /// `CpuStages`: the staged CPU curve of the selected profile (ADR-0013). Daemons older than ADR-0013
+    /// answer `UnknownMethod`, which [`AppError::from_zbus`] maps to `Unavailable`: callers that only want to
+    /// know whether staged curves are offered treat any error as "not offered".
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors, or a malformed reply.
+    pub async fn cpu_stages(&self) -> Result<StagedState> {
+        let wire = self.proxy.cpu_stages().await.map_err(|e| de(&e))?;
+        StagedState::from_wire(&wire).ok_or_else(|| bad_reply("CpuStages"))
+    }
+
+    /// `SetCpuStages` (switches the selected profile to the custom fan profile). Returns the number of S2
+    /// floors that take over from the stages.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors (`InvalidArgument` names the violated rule).
+    pub async fn set_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> Result<usize> {
+        self.proxy
+            .set_cpu_stages(idle, stages)
+            .await
+            .map(|floors| floors.len())
+            .map_err(|e| de(&e))
+    }
+
+    /// `ResetCpuStages`.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors.
+    pub async fn reset_cpu_stages(&self) -> Result<()> {
+        self.proxy.reset_cpu_stages().await.map_err(|e| de(&e))
     }
 
     /// `SetCoolerBoost`.

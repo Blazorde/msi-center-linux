@@ -12,10 +12,12 @@ use msi_center::dbus::FanCurveState;
 use msi_center::errors::Service;
 use msi_center::format::{self, NNBSP};
 use msi_center::model::{self, DaemonStatus, Fan, Telemetry};
+use msi_center::stages::StagedState;
 use msi_core::fan_profile::FanProfile;
 
 use super::fanchart::FanChart;
 use super::profiles::{FanProfileSwitch, Variant};
+use super::stages::StagesEditor;
 use super::widgets::{Ctx, Debounce, Gate, glass, hint, page_header, page_scroller, section_title};
 
 #[derive(Debug, Default)]
@@ -26,6 +28,8 @@ struct State {
     custom: Option<CurveSpec>,
     edit: Option<CurveSpec>,
     preview: Option<Generated>,
+    /// The staged CPU curve (ADR-0013), when the fan is the CPU and the service offers it.
+    staged: Option<StagedState>,
     error: Option<String>,
     seq: u64,
     temps: Telemetry,
@@ -89,6 +93,7 @@ pub struct Fans {
     fan_switch: adw::ToggleGroup,
     origin: gtk::Label,
     chart: FanChart,
+    staged: Rc<StagesEditor>,
     cells: Vec<[gtk::Label; 7]>,
     report: gtk::Revealer,
     report_list: gtk::Box,
@@ -400,6 +405,10 @@ impl Fans {
         editor.append(&actions);
         content.append(&glass(&editor));
 
+        // Staged CPU curve (ADR-0013): unlimited stages, each with its own fall-back temperature.
+        let staged = StagesEditor::new(ctx, chart.clone());
+        content.append(&staged.root);
+
         let boost = adw::SwitchRow::builder()
             .title("Cooler Boost")
             .subtitle("Ventilateurs au maximum, quelle que soit la courbe")
@@ -422,6 +431,7 @@ impl Fans {
             fan_switch,
             origin,
             chart,
+            staged,
             cells,
             report,
             report_list,
@@ -456,6 +466,12 @@ impl Fans {
                 .and_then(|s| s.default_fan_profile.parse().ok());
             if let Some(fp) = default {
                 a.apply_fan_profile(fp);
+            }
+        });
+        let w = Rc::downgrade(self);
+        self.staged.connect_changed(move || {
+            if let Some(p) = w.upgrade() {
+                p.load();
             }
         });
         let w = Rc::downgrade(self);
@@ -535,12 +551,18 @@ impl Fans {
                     let c = d.fan_curve(fan).await?;
                     // Older daemons have no CustomFanCurve: the editor then starts from the curve in force.
                     let custom = d.custom_fan_curve(fan).await.ok().map(|(spec, _)| spec);
-                    Ok((c, custom))
+                    // Older daemons have no CpuStages: the staged editor is then hidden.
+                    let staged = if fan == Fan::Cpu {
+                        d.cpu_stages().await.ok()
+                    } else {
+                        None
+                    };
+                    Ok((c, custom, staged))
                 })
                 .await;
             let Some(p) = w.upgrade() else { return };
             match res {
-                Ok((c, custom)) => {
+                Ok((c, custom, staged)) => {
                     let mut s = p.state.borrow_mut();
                     if s.fan() != fan {
                         return;
@@ -549,8 +571,10 @@ impl Fans {
                     s.custom = custom;
                     s.loaded = Some(c);
                     s.preview = None;
+                    s.staged = staged.clone();
                     s.error = None;
                     drop(s);
+                    p.staged.set_state(staged, fan == Fan::Cpu);
                     p.refresh();
                 }
                 Err(e) if !e.is_unavailable() => ctx.error(&e),
@@ -741,6 +765,7 @@ impl Fans {
             .as_ref()
             .is_some_and(|old| old.profile != s.profile || old.fan_profile != s.fan_profile);
         self.state.borrow_mut().status = Some(s.clone());
+        self.staged.set_read_only(s.read_only);
         self.syncing.set(true);
         self.boost.set_active(s.cooler_boost);
         self.syncing.set(false);
@@ -798,11 +823,18 @@ impl Fans {
             .map_or("?", |st| model::profile_label(&st.profile));
         let auto = s.is_auto();
         let fp = s.fan_profile();
+        let staged_now = (fan == Fan::Cpu && !auto)
+            .then(|| s.staged.as_ref().filter(|st| st.active))
+            .flatten();
         let origin = match (&s.loaded, fp) {
             (None, _) => "Chargement…".to_owned(),
             (Some(_), Some(FanProfile::Auto)) => {
                 format!("Courbe d'usine MSI (Auto), gérée par le contrôleur, profil {profile}.")
             }
+            (Some(_), _) if staged_now.is_some() => format!(
+                "Courbe à paliers du profil {profile} ({}).",
+                staged_now.map_or_else(String::new, |st| msi_center::stages::summary(&st.curve))
+            ),
             (Some(l), _) if l.custom => format!("Courbe personnalisée du profil {profile}."),
             (Some(_), Some(fp)) => format!("Ventilation {} du profil {profile}.", fp.label()),
             (Some(_), None) => format!("Preset du profil {profile}."),
@@ -847,6 +879,13 @@ impl Fans {
             .set_sensitive(dirty && s.error.is_none() && s.preview.is_some() && !read_only);
         let is_custom = fp == Some(FanProfile::Custom) || s.loaded.as_ref().is_some_and(|l| l.custom);
         self.editor_labels(is_custom || fp.is_none());
+        if staged_now.is_some() {
+            self.editor_hint.set_label(&format!(
+                "{} La courbe à paliers du CPU est en vigueur : appliquer cette courbe exponentielle la \
+                 remplace pour le CPU.",
+                self.editor_hint.label()
+            ));
+        }
         self.revert.set_sensitive(dirty);
         self.reset.set_sensitive(!read_only && is_custom);
 

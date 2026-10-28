@@ -27,7 +27,8 @@
 //! - The target is a function of the real (filtered) temperature: rising temperature raises steps 0–3 before the
 //!   EC changes step. S4 (Cooler Boost at 95 °C) and S9 (stalled fan) are unchanged.
 
-use crate::curve::{FanCurveSpec, STEP_COUNT};
+use crate::curve::{FanCurveSpec, MAX_SPEED, STEP_COUNT};
+use crate::staged::{StagedCurve, StagedPilot};
 use crate::table::{
     GeneratedCurve, RaisedPoint, RawTables, SPEED_FLOORS, SafetyReport, SpeedFloor, StepCurve, TableError,
 };
@@ -147,6 +148,13 @@ impl CpuFanPilot {
         spec.params().min()
     }
 
+    /// Takes `output` (%) as the previous output, e.g. when another kind of curve was driving the fan. The
+    /// idle state is recomputed from the next temperature.
+    fn seed(&mut self, output: u8) {
+        self.output = Some(output.min(MAX_SPEED));
+        self.pending_since_ms = None;
+    }
+
     /// Computes the next output (%) for `spec` at the filtered temperature `filtered` (`None` = not known
     /// yet: hold the previous output, or [`Self::initial`]).
     ///
@@ -207,6 +215,120 @@ impl CpuFanPilot {
     }
 }
 
+/// The curve that drives the live CPU target: the exponential curve of a preset or of the owner (ADR-0006), or
+/// the owner's staged curve with any number of stages (ADR-0013).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CpuCurve {
+    /// Exponential curve.
+    Exponential(FanCurveSpec),
+    /// Staged curve.
+    Staged(StagedCurve),
+}
+
+impl CpuCurve {
+    /// Output to use before any temperature is known: the curve's start speed (the fan spins).
+    #[must_use]
+    pub fn initial(&self) -> u8 {
+        match self {
+            Self::Exponential(spec) => CpuFanPilot::initial(spec),
+            Self::Staged(curve) => curve.start_speed(),
+        }
+    }
+
+    /// Speed (%) below the curve's start (0 = fan stopped).
+    #[must_use]
+    pub fn idle(&self) -> u8 {
+        match self {
+            Self::Exponential(spec) => spec.idle(),
+            Self::Staged(curve) => curve.idle(),
+        }
+    }
+
+    /// Highest speed (%) the pilot can ask for.
+    #[must_use]
+    pub fn max_speed(&self) -> u8 {
+        match self {
+            Self::Exponential(spec) => spec.params().max(),
+            Self::Staged(curve) => curve.max_speed(),
+        }
+    }
+
+    /// Curve value (%) at `temp` °C, before the hot floors of [`hybrid_cpu_table_for`]. Staged curves include
+    /// the S2 floors here.
+    #[must_use]
+    pub fn speed_percent(&self, temp: u8) -> u8 {
+        match self {
+            Self::Exponential(spec) => spec.params().speed_percent(temp),
+            Self::Staged(curve) => curve.effective_speed(temp),
+        }
+    }
+}
+
+/// Live CPU pilot for either kind of [`CpuCurve`]. Keeps the output when the owner switches from one kind to
+/// the other, so the fan does not drop to a start speed while the new curve takes over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CpuDriver {
+    exponential: CpuFanPilot,
+    staged: StagedPilot,
+    staged_active: Option<bool>,
+}
+
+impl CpuDriver {
+    /// A driver with no output yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            exponential: CpuFanPilot::new(),
+            staged: StagedPilot::new(),
+            staged_active: None,
+        }
+    }
+
+    /// Forgets every output.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Last output (%) of the pilot in use, `None` before the first [`Self::update`].
+    #[must_use]
+    pub const fn output(&self) -> Option<u8> {
+        match self.staged_active {
+            Some(true) => self.staged.output(),
+            Some(false) => self.exponential.output(),
+            None => None,
+        }
+    }
+
+    /// Live target for `curve`: the last output kept within the curve's range (the curve may have changed
+    /// since), or the curve's start speed before any output.
+    #[must_use]
+    pub fn target(&self, curve: &CpuCurve) -> u8 {
+        self.output()
+            .map_or_else(|| curve.initial(), |o| o.clamp(curve.idle(), curve.max_speed()))
+    }
+
+    /// Computes the next output (%) for `curve` at the filtered temperature `filtered`. See
+    /// [`CpuFanPilot::update`] and [`StagedPilot::update`].
+    pub fn update(&mut self, curve: &CpuCurve, filtered: Option<f64>, now_ms: u64) -> u8 {
+        let staged = matches!(curve, CpuCurve::Staged(_));
+        if self.staged_active != Some(staged) {
+            if let Some(previous) = self.output() {
+                if staged {
+                    self.staged.seed(previous);
+                } else {
+                    self.exponential.seed(previous);
+                }
+            }
+            self.staged.restart_selection();
+            self.staged_active = Some(staged);
+        }
+        match curve {
+            CpuCurve::Exponential(spec) => self.exponential.update(spec, filtered, now_ms),
+            CpuCurve::Staged(c) => self.staged.update(c, filtered),
+        }
+    }
+}
+
 /// The CPU table to write for a live `target` (%) under `spec`, keeping the thresholds of `base` (the factory
 /// CPU tables, which the EC uses whatever is written):
 ///
@@ -226,11 +348,24 @@ pub fn hybrid_cpu_table(
     base: &RawTables,
     target: u8,
 ) -> Result<GeneratedCurve, TableError> {
-    let params = spec.params();
+    hybrid_cpu_table_for(&CpuCurve::Exponential(*spec), base, target)
+}
+
+/// [`hybrid_cpu_table`] for either kind of curve: the hot steps follow `curve` at their entry temperature,
+/// whether it is exponential or staged.
+///
+/// # Errors
+///
+/// As [`hybrid_cpu_table`].
+pub fn hybrid_cpu_table_for(
+    curve: &CpuCurve,
+    base: &RawTables,
+    target: u8,
+) -> Result<GeneratedCurve, TableError> {
     let up = base.up;
     let mut speeds = [target; STEP_COUNT];
     for (i, speed) in speeds.iter_mut().enumerate().skip(FIRST_HOT_STEP) {
-        *speed = target.max(params.speed_percent(up[i - 1]));
+        *speed = target.max(curve.speed_percent(up[i - 1]));
     }
     let mut raised = Vec::new();
     for (index, speed) in speeds.iter_mut().enumerate() {
@@ -499,5 +634,154 @@ mod tests {
             .map(|&t| p.speed_percent_celsius(t))
             .collect();
         assert_eq!(at, [40, 44, 51, 59, 69, 79, 90, 100]);
+    }
+
+    fn staged_curve() -> StagedCurve {
+        use crate::staged::Stage;
+        StagedCurve::new(
+            0,
+            vec![
+                Stage {
+                    up: 50,
+                    down: 46,
+                    speed: 30,
+                },
+                Stage {
+                    up: 60,
+                    down: 56,
+                    speed: 45,
+                },
+                Stage {
+                    up: 70,
+                    down: 66,
+                    speed: 70,
+                },
+                Stage {
+                    up: 80,
+                    down: 76,
+                    speed: 100,
+                },
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn hybrid_table_for_a_staged_curve_follows_its_stages_on_the_hot_steps() {
+        // Factory entries of the hot steps: 77, 83 and 90 °C → 70 %, 100 %, 100 % on this curve.
+        let curve = CpuCurve::Staged(staged_curve());
+        let g = hybrid_cpu_table_for(&curve, &FACTORY, 45).unwrap();
+        assert_eq!(g.curve.speeds(), [45, 45, 45, 50, 70, 100, 100]);
+        assert_eq!((g.curve.up(), g.curve.down()), (FACTORY.up, FACTORY.down));
+        let raised: Vec<(usize, u8, u8)> = g
+            .report
+            .raised
+            .iter()
+            .map(|r| (r.index, r.curve_speed, r.applied_speed))
+            .collect();
+        assert_eq!(raised, [(3, 45, 50)]);
+    }
+
+    #[test]
+    fn hybrid_table_for_a_quiet_staged_curve_keeps_the_hot_steps_safe() {
+        use crate::staged::Stage;
+        let quiet = StagedCurve::new(
+            0,
+            vec![
+                Stage {
+                    up: 40,
+                    down: 36,
+                    speed: 20,
+                },
+                Stage {
+                    up: 90,
+                    down: 80,
+                    speed: 100,
+                },
+            ],
+        )
+        .unwrap();
+        let g = hybrid_cpu_table_for(&CpuCurve::Staged(quiet), &FACTORY, 0).unwrap();
+        assert_eq!(g.curve.speeds(), [0, 30, 30, 50, 60, 100, 100]);
+    }
+
+    #[test]
+    fn hybrid_table_for_an_exponential_curve_is_hybrid_cpu_table() {
+        for preset in CurvePreset::ALL {
+            let spec = preset.spec();
+            for target in [0, 30, 55, 100] {
+                assert_eq!(
+                    hybrid_cpu_table_for(&CpuCurve::Exponential(spec), &FACTORY, target),
+                    hybrid_cpu_table(&spec, &FACTORY, target),
+                    "{preset:?} {target}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn staged_target_above_100_is_rejected() {
+        assert!(matches!(
+            hybrid_cpu_table_for(&CpuCurve::Staged(staged_curve()), &FACTORY, 101),
+            Err(TableError::SpeedOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn cpu_curve_accessors() {
+        let exp = CpuCurve::Exponential(silent());
+        assert_eq!((exp.initial(), exp.idle(), exp.max_speed()), (30, 0, 100));
+        assert_eq!(exp.speed_percent(60), 32);
+        let staged = CpuCurve::Staged(staged_curve());
+        assert_eq!(
+            (staged.initial(), staged.idle(), staged.max_speed()),
+            (30, 0, 100)
+        );
+        assert_eq!(staged.speed_percent(65), 45);
+        assert_eq!(staged.speed_percent(40), 0);
+    }
+
+    #[test]
+    fn driver_keeps_the_output_when_the_curve_kind_changes() {
+        let mut d = CpuDriver::new();
+        assert_eq!(d.output(), None);
+        let exp = CpuCurve::Exponential(silent());
+        assert_eq!(d.target(&exp), 30);
+        // Ramp 30 → 40 %, then the last 2 % wait out the 20 s dead band.
+        for s in 0..40 {
+            d.update(&exp, Some(70.0), s * 1000);
+        }
+        assert_eq!(d.output(), Some(42));
+        // Staged at 70 °C asks 70 %: it takes over from 42 %, ramping by the slew rate, not from 30 %.
+        let staged = CpuCurve::Staged(staged_curve());
+        assert_eq!(d.update(&staged, Some(70.0), 40_000), 42 + SLEW_UP_PCT);
+        assert_eq!(d.output(), Some(47));
+        assert_eq!(d.target(&staged), 47);
+        // And back: the exponential pilot (42 % at 70 °C) takes over from 47 %, ramping down.
+        assert_eq!(d.update(&exp, Some(70.0), 41_000), 47 - SLEW_DOWN_PCT);
+        d.reset();
+        assert_eq!(d.output(), None);
+    }
+
+    #[test]
+    fn driver_target_stays_within_the_new_curve_range() {
+        let mut d = CpuDriver::new();
+        let staged = CpuCurve::Staged(staged_curve());
+        for _ in 0..30 {
+            d.update(&staged, Some(85.0), 0);
+        }
+        assert_eq!(d.output(), Some(100));
+        let aggressive = CpuCurve::Exponential(CurvePreset::Aggressive.spec());
+        assert_eq!(d.target(&aggressive), 100);
+        let capped = CpuCurve::Exponential(
+            FanCurveSpec::new(
+                crate::curve::FanCurveParams::new(50, 90, 30, 60, 2.0).unwrap(),
+                0,
+                [50, 57, 64, 70, 76, 82],
+                4,
+            )
+            .unwrap(),
+        );
+        assert_eq!(d.target(&capped), 60);
     }
 }

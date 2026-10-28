@@ -6,8 +6,10 @@
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
 use msi_core::ec::{CONF_G2_5, FACTORY_14K2EMS1_110};
 use msi_core::hybrid::{
-    CpuFanPilot, FIRST_HOT_STEP, HOT_STEP_FLOORS, SLEW_DOWN_PCT, SLEW_UP_PCT, TempFilter, hybrid_cpu_table,
+    CpuCurve, CpuFanPilot, FIRST_HOT_STEP, HOT_STEP_FLOORS, SLEW_DOWN_PCT, SLEW_UP_PCT, TempFilter,
+    hybrid_cpu_table, hybrid_cpu_table_for,
 };
+use msi_core::staged::{MAX_STAGES, Stage, StageSelector, StagedCurve, StagedPilot, safety_floor};
 use msi_core::supervisor::{BOOST_ON_TEMP, BoostDecision, SensorReading, ThermalSupervisor};
 use msi_core::table::{RawTables, SPEED_FLOORS, StepCurve, generate, write_plan, write_plan_raw};
 use proptest::prelude::*;
@@ -34,6 +36,38 @@ fn valid_spec() -> impl Strategy<Value = FanCurveSpec> {
             FanCurveSpec::new(params, idle, up, h).expect("strategy only builds valid specs")
         })
     })
+}
+
+/// A valid staged curve with 1 to 24 stages and any fall-back gap.
+fn valid_staged() -> impl Strategy<Value = StagedCurve> {
+    (1usize..=24)
+        .prop_flat_map(|n| {
+            (
+                proptest::collection::btree_set(22u8..=100, n),
+                proptest::collection::vec(2u8..=60, n),
+                proptest::collection::vec(0u8..=100, n),
+            )
+        })
+        .prop_flat_map(|(ups, gaps, mut speeds)| {
+            speeds.sort_unstable();
+            let first = speeds[0];
+            (Just((ups, gaps, speeds)), 0..=first)
+        })
+        .prop_map(|((ups, gaps, speeds), idle)| {
+            // down[i] = up[i] − gap, kept above the previous down (strictly increasing), ≥ 20 and ≤ up − 2.
+            let mut prev_down = 19u8;
+            let stages: Vec<Stage> = ups
+                .into_iter()
+                .zip(gaps)
+                .zip(speeds)
+                .map(|((up, gap), speed)| {
+                    let down = up.saturating_sub(gap).max(prev_down + 1).min(up - 2);
+                    prev_down = down;
+                    Stage { up, down, speed }
+                })
+                .collect();
+            StagedCurve::new(idle, stages).expect("strategy only builds valid staged curves")
+        })
 }
 
 /// Any table the kernel accepts (not necessarily S2-safe, like the factory one).
@@ -249,6 +283,123 @@ proptest! {
             if let Some(v) = f.update(Some(t)) {
                 prop_assert!((v - f64::from(base)).abs() < 1e-9, "{} vs {}", v, base);
             }
+        }
+    }
+
+    // ---- Staged curves (ADR-0013) ----
+
+    #[test]
+    fn staged_accepted_curves_respect_s1_and_s3(
+        idle in 0u8..=105,
+        raw in proptest::collection::vec((18u8..=32, 16u8..=32, 0u8..=105), 0..5),
+    ) {
+        let stages: Vec<Stage> = raw.into_iter().map(|(up, down, speed)| Stage { up, down, speed }).collect();
+        if let Ok(c) = StagedCurve::new(idle, stages) {
+            let s = c.stages();
+            prop_assert!(!s.is_empty() && s.len() <= MAX_STAGES);
+            prop_assert!(c.idle() <= s[0].speed);
+            for st in s {
+                prop_assert!((20..=100).contains(&st.up) && (20..=100).contains(&st.down));
+                prop_assert!(st.up - st.down >= 2 && st.speed <= 100);
+            }
+            for w in s.windows(2) {
+                prop_assert!(w[1].up > w[0].up && w[1].down > w[0].down && w[1].speed >= w[0].speed);
+            }
+        }
+    }
+
+    #[test]
+    fn staged_effective_speed_meets_s2_never_decreases_and_floors_are_reported(c in valid_staged()) {
+        let mut prev = 0;
+        for temp in 0..=120u8 {
+            let s = c.effective_speed(temp);
+            prop_assert!(s >= prev, "decreases at {} °C", temp);
+            prop_assert!(s >= c.ascending_speed(temp) && s >= safety_floor(f64::from(temp)));
+            prev = s;
+        }
+        for floor in SPEED_FLOORS {
+            prop_assert!(c.effective_speed(floor.temp) >= floor.speed);
+        }
+        let raised = c.raised_floors();
+        for floor in SPEED_FLOORS {
+            let below = c.ascending_speed(floor.temp) < floor.speed;
+            prop_assert_eq!(raised.iter().any(|r| r.floor == floor), below, "{:?}", floor);
+        }
+    }
+
+    #[test]
+    fn staged_selector_is_consistent_and_never_below_the_ascending_stage(
+        c in valid_staged(),
+        temps in proptest::collection::vec(0u8..=120, 1..200),
+    ) {
+        let mut sel = StageSelector::new();
+        for t in temps {
+            let at = f64::from(t);
+            let stage = sel.update(&c, at);
+            let stages = c.stages();
+            match stage {
+                // In force: not under its fall-back, and the next stage is not yet reached.
+                Some(i) => {
+                    prop_assert!(at >= f64::from(stages[i].down), "{} under down of {}", t, i);
+                    if let Some(next) = stages.get(i + 1) {
+                        prop_assert!(at < f64::from(next.up), "{} reached stage {}", t, i + 1);
+                    }
+                }
+                None => prop_assert!(at < f64::from(stages[0].up)),
+            }
+            // Cooling can only keep a stage longer than heating would: never lower than the ascending one.
+            prop_assert!(stage >= c.ascending_stage(t), "{} °C: {:?} < {:?}", t, stage, c.ascending_stage(t));
+        }
+    }
+
+    #[test]
+    fn staged_pilot_output_stays_in_range_and_moves_gently(
+        c in valid_staged(),
+        temps in proptest::collection::vec(proptest::option::of(0u8..=120), 1..200),
+    ) {
+        let mut filter = TempFilter::new();
+        let mut pilot = StagedPilot::new();
+        let (start, factory) = (c.start_speed(), FACTORY_14K2EMS1_110.cpu);
+        let mut prev: Option<u8> = None;
+        for t in temps {
+            let filtered = filter.update(t);
+            let out = pilot.update(&c, filtered);
+            prop_assert!(out <= 100);
+            // Same writable, S2-safe vector as the exponential pilot, for any output.
+            let g = hybrid_cpu_table_for(&CpuCurve::Staged(c.clone()), &factory, out.clamp(c.idle(), c.max_speed()))
+                .expect("every output is writable");
+            assert_safe(&g.curve);
+            if let (Some(p), Some(temp)) = (prev, filtered) {
+                let stage = pilot.stage();
+                let target = stage.map_or(c.idle(), |i| c.stages()[i].speed).max(safety_floor(temp));
+                if target >= start {
+                    // Only a start (from under the first stage's speed) may jump up.
+                    prop_assert!(out <= p.saturating_add(SLEW_UP_PCT).max(start), "{} -> {}", p, out);
+                    prop_assert!(out >= p.saturating_sub(SLEW_DOWN_PCT), "{} -> {}", p, out);
+                } else {
+                    // Idle or floor-only: follows the target directly.
+                    prop_assert_eq!(out, target);
+                }
+            }
+            prev = Some(out);
+        }
+    }
+
+    #[test]
+    fn staged_hybrid_vector_is_always_valid_and_safe(c in valid_staged(), target in 0u8..=100) {
+        let factory = FACTORY_14K2EMS1_110.cpu;
+        let target = target.clamp(c.idle(), c.max_speed());
+        let curve = CpuCurve::Staged(c);
+        let g = hybrid_cpu_table_for(&curve, &factory, target).expect("every target in idle..=max is writable");
+        let t = g.curve;
+        prop_assert_eq!((t.up(), t.down()), (factory.up, factory.down));
+        assert_safe(&t);
+        let s = t.speeds();
+        prop_assert_eq!(s[0], target);
+        prop_assert!(s[6] >= 80);
+        for (h, &floor) in HOT_STEP_FLOORS.iter().enumerate() {
+            let i = FIRST_HOT_STEP + h;
+            prop_assert!(s[i] >= floor.max(curve.speed_percent(factory.up[i - 1])).max(target));
         }
     }
 }

@@ -157,6 +157,48 @@ Argument de sécurité :
 - Firmware sans tables d'usine connues (`.104`–`.109`) : pas de pilotage hybride, la table CPU générée est
   écrite comme pour le GPU (comportement précédent).
 
+## Courbe à paliers du CPU (ADR-0013)
+
+Le ventilo CPU est déjà piloté en direct (ci-dessus) : il peut donc suivre une **courbe à paliers** de 1 à
+**79** paliers, ce que les 7 paliers de l'EC ne permettent pas. Le GPU ne change pas. Chaque palier a sa
+température de montée `up`, sa température de retombée `down` et sa vitesse `speed` ; une vitesse de repos
+`idle` s'applique sous le premier palier.
+
+```text
+ vitesse
+  100 │                              ┌─────────
+   70 │                    ┌─────────┘ palier 3   monte à up₃, retombe sous down₃ (< up₃)
+   45 │          ┌─────────┘ palier 2
+   30 │  ┌───────┘ palier 1
+    0 │──┘ repos
+      └──────────────────────────────────────── °C
+```
+
+- **Entrée validée telle quelle (S1, S3, rejet sans correction)** : `up` et `down` dans 20–100 °C, `up − down`
+  ≥ 2 °C (comme les tables EC : une sonde qui oscille de ±1 °C ferait pomper le ventilo), `up` strictement
+  croissants, `down` strictement croissants, vitesses ≤ 100 % et **jamais décroissantes**, repos ≤ vitesse du
+  premier palier, au plus 79 paliers.
+- **Palier en vigueur** (`StageSelector`, filtre de température d'ADR-0010) : il retombe tant que
+  `T < down` du palier courant, puis monte tant que `T ≥ up` du suivant. Entre `down` et `up`, le palier
+  courant est conservé : c'est la retombée propre à chaque palier. Température illisible → palier le plus chaud.
+- **Consigne** (`StagedPilot`) : vitesse du palier (repos sous le premier), puis **`max` avec le plancher S2 à
+  la température** (30 % dès 60 °C, 50 % dès 75 °C, 100 % dès 85 °C), puis les rampes d'ADR-0010 : +5 %/s en
+  montée, −1 %/s en descente, seuls sauts l'arrêt et le démarrage (vers la vitesse du premier palier).
+- **S2 signalé, jamais silencieux** : `StagedCurve::raised_floors()` liste les planchers au-dessus des paliers
+  à leur température ; `SetCpuStages` / `PreviewCpuStages` les renvoient et l'app les affiche (« ▲ S2 » sur le
+  graphique). Une courbe plus lente n'est pas rejetée : comme pour la courbe exponentielle, S2 est une
+  transformation documentée, S3 porte sur ce que le propriétaire saisit.
+- **Vecteur EC** : inchangé (`hybrid_cpu_table_for`) : seuils d'usine, paliers 0–3 = consigne, paliers 4–6 ≥
+  max(consigne, courbe à leur température d'entrée, 60 / 80 / 100 %), S2 sur les seuils d'usine, `StepCurve::new`
+  avant toute écriture, relecture S7. Les paliers chauds sont donc sûrs dans l'EC même si le daemon se fige
+  (S5, S6), et S4 / S9 sont inchangés.
+- **Refusée** sans pilotage en direct (firmware sans tables d'usine connues : `InvalidArgument`) et en lecture
+  seule (`ReadOnly`) : rien ne pourrait suivre la courbe.
+- Tests : propriétés de `msi-core` (`staged_*` : S1/S3 sur toute courbe acceptée, S2 jamais en dessous du
+  plancher, planchers signalés, sélecteur cohérent, sortie bornée et douce, vecteur EC toujours valide et
+  sûr), tests du contrôleur (« ADR-0013 »), D-Bus de bout en bout (`msi-daemon/tests/dbus.rs`,
+  `msi-center/tests/dbus.rs`).
+
 ## Profils de ventilation
 
 Demande du propriétaire (2026-10-26) : « des profils de courbes, genre silencieux, auto, courbes que tu fais toi
@@ -222,6 +264,8 @@ interdit de corriger). Résolution :
   que l'UI affiche. Rien n'est silencieux. Un plancher `(Tf, Sf)` relève le palier montant à `Tf` et tous les
   suivants (S1 conservé) ; si le premier seuil est au-dessus de 60 °C, c'est le palier 0 (`idle`) qui est relevé.
 - Une table brute saisie palier par palier n'est **pas** relevée : si elle viole S1 ou S2, elle est rejetée.
+- Une **courbe à paliers du CPU** (ADR-0013) suit la règle de la courbe générée : validée telle quelle (S1, S3),
+  S2 appliqué en `max()` sur la consigne et signalé (`raised_floors`).
 
 ## Filtre anti-pics de S4
 

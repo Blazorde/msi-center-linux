@@ -24,6 +24,10 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 | `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
 | `ResetFanCurve` | `s fan` | – | `set-fan-curve` | idem |
 | `PreviewFanCurve` | `(yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
+| `CpuStages` | – | `y idle, a(yyy) stages, a(yyy) floors, b saved, b active, b supported` | – | – |
+| `SetCpuStages` | `y idle, a(yyy) stages` | `a(yyy) floors` | `set-fan-curve` | `InvalidArgument` (règle violée, ou firmware sans pilotage en direct), `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
+| `ResetCpuStages` | – | – | `set-fan-curve` | `ReadOnly`, `SafetyFallback` |
+| `PreviewCpuStages` | `y idle, a(yyy) stages` | `a(yyy) floors` | – | `InvalidArgument` |
 | `SetCoolerBoost` | `b enabled` | – | `set-fan-curve` | `InvalidArgument` (forcé par S4), `ReadOnly`, `SafetyFallback` |
 | `RestoreFactory` | – | – | `set-fan-curve` | `ReadOnly` (S8), `SafetyFallback` (une étape a échoué ; `auto` tenté quand même) |
 | `SetChargeLimit` | `y limit` (50–100) | – | `set-battery` | `InvalidArgument`, `ReadOnly`, `Hardware` |
@@ -39,6 +43,8 @@ renvoyer `Internal`.
 |---|---|---|
 | spec | `(yyyyydayy)` | `idle` %, `t0` °C, `t1` °C, `min` %, `max` %, `k`, `up` (6 seuils °C), `hysteresis` °C |
 | table | `(ayayay)` | `speeds` (7 %), `up` (6 °C), `down` (6 °C) : la table écrite dans l'EC. Pour `cpu` en pilotage hybride ([ADR-0010](../adr/0010-hybrid-cpu-fan-control.md)) : le **vecteur en vigueur**, seuils d'usine, paliers 0–3 à la consigne en direct (voir Sémantique) |
+| stage | `(yyy)` | un palier de la courbe à paliers du CPU : `up` °C (montée), `down` °C (retombée), `speed` % |
+| floor | `(yyy)` | plancher S2 qui prend le relais des paliers : `floor_temp` °C, `floor_speed` %, `curve_speed` % (ce que les paliers donnent à cette température en montée) |
 | raised | `a(yyyyyy)` | par palier relevé par S2 : `step`, `entry_temp` (°C, 0 pour le palier 0), `curve_speed`, `applied_speed`, `floor_temp`, `floor_speed` |
 
 Bornes de `spec` (S3, rejet sans correction) : voir [fan-safety.md](../hardware/fan-safety.md#du-modèle-à-la-table-ec-modèle-par-paliers-mesuré).
@@ -127,10 +133,33 @@ son contrôle polkit et ses erreurs typées.
   `spec` ne s'appliquent qu'au GPU. `PreviewFanCurve` (sans ventilo) renvoie toujours la table par paliers de
   la courbe, celle du GPU. Le pilotage s'arrête dès que l'EC n'est plus sur nos tables (`RestoreFactory`,
   repli S7, S9, lecture seule). Compatible : signatures inchangées.
+- **Courbe à paliers du CPU** ([ADR-0013](../adr/0013-staged-cpu-fan-curve.md), ajoutée le 2026-10-27,
+  compatible : méthodes nouvelles, signatures existantes inchangées ;
+  [fan-safety.md](../hardware/fan-safety.md#courbe-à-paliers-du-cpu-adr-0013)) : une vitesse de repos et de 1
+  à **79** paliers `(up, down, speed)`. Le palier est atteint à `up` et quitté sous `down` (retombée propre à
+  chaque palier). Règles (S1/S3, rejet sans correction → `InvalidArgument` qui nomme la règle) : `up` et `down`
+  dans 20–100 °C, `up − down` ≥ 2 °C, `up` strictement croissants, `down` strictement croissants, vitesses
+  ≤ 100 % et jamais décroissantes, repos ≤ vitesse du premier palier.
+  - **`CpuStages`** : la courbe du profil choisi. `saved` faux : rien d'enregistré, la courbe renvoyée est le
+    point de départ de l'éditeur (6 paliers tirés de la courbe personnalisée du CPU). `active` : la courbe
+    pilote le ventilo CPU maintenant (enregistrée **et** profil de ventilation `custom`). `supported` faux :
+    firmware sans tables d'usine connues, donc pas de pilotage en direct ; les paliers sont alors refusés.
+    `floors` : voir type floor.
+  - **`SetCpuStages`** : valide, enregistre pour le profil choisi, **passe ce profil en `custom`** et applique.
+    Les planchers S2 qui prennent le relais sont renvoyés dans `floors` (jamais cachés) : une courbe plus lente
+    qu'un plancher n'est pas rejetée, la consigne vaut `max(palier, plancher)`. **`PreviewCpuStages`** fait la
+    même validation sans rien écrire. **`ResetCpuStages`** supprime la courbe (sans effet si aucune ; sans
+    autre courbe personnalisée, le profil revient à son profil de ventilation par défaut).
+  - **Dernière édition gagnante** : `SetFanCurve("cpu", …)` et `ResetFanCurve("cpu")` suppriment la courbe à
+    paliers du profil choisi ; `SetCpuStages` remplace la courbe exponentielle du CPU. Le GPU garde sa courbe
+    à 7 paliers.
+  - Le vecteur écrit dans l'EC est celui de l'ADR-0010 (`FanCurve("cpu")` le renvoie, `custom` vrai) ; la
+    consigne suit les paliers avec les rampes +5 %/s / −1 %/s.
 - **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
   au choix du propriétaire.
 - **Persistance** : profil, `AutoProfileOnPower`, limite de charge, profil de ventilation par profil
-  (`[fan_profiles]`) et courbes personnalisées dans `/var/lib/msi-center/state.toml` (version 2 ; un fichier
+  (`[fan_profiles]`) et courbes personnalisées dans `/var/lib/msi-center/state.toml` (version 3 : ajoute les
+  courbes à paliers `[staged.<profil>]`, un fichier version 2 se charge tel quel ; un fichier
   version 1 est migré : un profil qui avait une courbe personnalisée passe en `custom`), ré-appliqués au démarrage, après la sortie de veille et quand l'EC a perdu
   les tables (vérifié toutes les 10 s).
 - **Lecture seule** : S8 (firmware absent de la liste ou attributs de courbe absents) → toutes les méthodes qui

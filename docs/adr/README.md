@@ -17,3 +17,4 @@ Un ADR accepté n'est pas modifié : on en crée un nouveau qui le remplace (`Su
 | [0010](0010-hybrid-cpu-fan-control.md) | Ventilo CPU hybride : seuils d'usine, paliers bas modulés en direct par le daemon | Proposé |
 | [0011](0011-gtk-app-runtime-and-glass-style.md) | App GTK : D-Bus sur un thread tokio, verre dépoli simulé sans sous-classe, rendu hors dGPU | Proposé |
 | [0012](0012-fan-profiles.md) | Profils de ventilation : Auto persisté, choix retenu par profil, `SetFanCurve` = Personnalisé | Proposé |
+| [0013](0013-staged-cpu-fan-curve.md) | Courbe à paliers du ventilo CPU : autant de paliers que souhaité, retombée propre à chaque palier, piloté en direct | Proposé |
