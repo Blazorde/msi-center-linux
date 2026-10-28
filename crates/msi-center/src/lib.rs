@@ -14,6 +14,7 @@ pub mod format;
 pub mod gpu_env;
 pub mod model;
 pub mod settings;
+pub mod stages;
 
 /// Application id (also the D-Bus name of the app and the desktop file id).
 pub const APP_ID: &str = "org.blazorde.MsiCenter";

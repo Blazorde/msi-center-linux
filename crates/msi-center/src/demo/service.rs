@@ -16,7 +16,9 @@ use std::time::Duration;
 use msi_core::curve::FanCurveSpec;
 use msi_core::ec::FACTORY_14K2EMS1_110;
 use msi_core::fan_profile::{FanCurveSource, FanProfile};
+use msi_core::hybrid::CpuCurve;
 use msi_core::profile::Profile;
+use msi_core::staged::{FloorRaise, StagedCurve};
 use msi_core::table::{GeneratedCurve, generate};
 use zbus::object_server::SignalEmitter;
 use zbus::{Connection, OwnedVariant as OwnedValue, interface};
@@ -25,6 +27,7 @@ use super::{DemoClip, DemoState, ProfileOutcome};
 use crate::curve::{RaisedWire, SpecWire, TableWire};
 use crate::dbus::{CLIPD_PATH, DAEMON_PATH};
 use crate::model::{ClipWire, Fan};
+use crate::stages::{FloorWire, StageWire, curve_from_wire, stages_to_wire};
 
 /// Errors of the fake services, named like the real ones.
 #[derive(Debug, zbus::DBusError)]
@@ -50,6 +53,8 @@ struct DaemonInner {
     state: DemoState,
     tick: u64,
     custom: HashMap<(&'static str, &'static str), FanCurveSpec>,
+    /// Staged CPU curve per profile (ADR-0013).
+    staged: HashMap<&'static str, StagedCurve>,
     cpu_temp: f64,
 }
 
@@ -98,6 +103,13 @@ fn to_wire(g: &GeneratedCurve) -> (TableWire, Vec<RaisedWire>) {
     (table, raised)
 }
 
+fn floors_to_wire(floors: &[FloorRaise]) -> Vec<FloorWire> {
+    floors
+        .iter()
+        .map(|f| (f.floor.temp, f.floor.speed, f.curve_speed))
+        .collect()
+}
+
 fn parse_fan(fan: &str) -> Result<Fan, DemoError> {
     Fan::ALL
         .into_iter()
@@ -126,14 +138,37 @@ impl DaemonInner {
         (spec, fp == FanProfile::Custom)
     }
 
-    /// Live CPU target % (ADR-0010) at the current CPU temperature.
+    /// Staged CPU curve of the selected profile when it is in force (fan profile `custom`).
+    fn staged_in_force(&self) -> Option<&StagedCurve> {
+        (self.state.fan_profile() == FanProfile::Custom)
+            .then(|| self.staged.get(self.state.profile.as_str()))
+            .flatten()
+    }
+
+    /// The curve driving the live CPU target: the staged one when in force, else the exponential one.
+    fn cpu_curve(&self) -> CpuCurve {
+        self.staged_in_force().map_or_else(
+            || CpuCurve::Exponential(self.spec(Fan::Cpu).0),
+            |c| CpuCurve::Staged(c.clone()),
+        )
+    }
+
+    /// Live CPU target % (ADR-0010, ADR-0013) at the current CPU temperature.
     fn cpu_target(&self) -> u8 {
-        let (spec, _) = self.spec(Fan::Cpu);
-        let p = spec.params();
-        if self.cpu_temp < f64::from(p.t0()) {
-            spec.idle()
-        } else {
-            p.speed_percent_celsius(self.cpu_temp)
+        match self.cpu_curve() {
+            CpuCurve::Exponential(spec) => {
+                let p = spec.params();
+                if self.cpu_temp < f64::from(p.t0()) {
+                    spec.idle()
+                } else {
+                    p.speed_percent_celsius(self.cpu_temp)
+                }
+            }
+            staged @ CpuCurve::Staged(_) => {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamped")]
+                let t = self.cpu_temp.floor().clamp(0.0, 255.0) as u8;
+                staged.speed_percent(t)
+            }
         }
     }
 
@@ -152,9 +187,11 @@ impl DaemonInner {
     fn generated(&self, fan: Fan) -> Result<GeneratedCurve, DemoError> {
         let (spec, _) = self.spec(fan);
         match fan {
-            Fan::Cpu => {
-                msi_core::hybrid::hybrid_cpu_table(&spec, &FACTORY_14K2EMS1_110.cpu, self.cpu_target())
-            }
+            Fan::Cpu => msi_core::hybrid::hybrid_cpu_table_for(
+                &self.cpu_curve(),
+                &FACTORY_14K2EMS1_110.cpu,
+                self.cpu_target(),
+            ),
             Fan::Gpu => generate(&spec),
         }
         .map_err(invalid)
@@ -271,6 +308,11 @@ impl DemoDaemon {
             let mut i = self.inner();
             let key = (i.state.profile.as_str(), fan.as_str());
             i.custom.insert(key, spec);
+            if fan == Fan::Cpu {
+                // Last edit wins: the exponential curve replaces the staged one.
+                let profile = i.state.profile.as_str();
+                i.staged.remove(profile);
+            }
             i.state.set_fan_profile(FanProfile::Custom);
             to_wire(&i.generated(fan)?)
         };
@@ -289,6 +331,75 @@ impl DemoDaemon {
             let mut i = self.inner();
             let profile = i.state.profile.as_str();
             i.custom.remove(&(profile, fan.as_str()));
+            if fan == Fan::Cpu {
+                i.staged.remove(profile);
+            }
+            let any_left = i.staged.contains_key(profile)
+                || Fan::ALL
+                    .iter()
+                    .any(|f| i.custom.contains_key(&(profile, f.as_str())));
+            if !any_left && i.state.fan_profile() == FanProfile::Custom {
+                let default = i.state.profile.default_fan_profile();
+                i.state.set_fan_profile(default);
+            }
+        }
+        let _ = self.fan_profile_changed(&e).await;
+        let _ = self.fan_mode_changed(&e).await;
+        Ok(())
+    }
+
+    #[zbus(out_args("idle", "stages", "floors", "saved", "active", "supported"))]
+    #[allow(
+        clippy::type_complexity,
+        reason = "zbus splits out arguments only from an inline tuple"
+    )]
+    fn cpu_stages(&self) -> Result<(u8, Vec<StageWire>, Vec<FloorWire>, bool, bool, bool), DemoError> {
+        let i = self.inner();
+        let saved = i.staged.get(i.state.profile.as_str()).cloned();
+        let curve = if let Some(c) = &saved {
+            c.clone()
+        } else {
+            let generated = generate(&i.custom_spec(Fan::Cpu)).map_err(invalid)?;
+            StagedCurve::from_step_curve(&generated.curve).map_err(invalid)?
+        };
+        let active = saved.is_some() && i.state.fan_profile() == FanProfile::Custom;
+        Ok((
+            curve.idle(),
+            stages_to_wire(&curve),
+            floors_to_wire(&curve.raised_floors()),
+            saved.is_some(),
+            active,
+            true,
+        ))
+    }
+
+    #[zbus(out_args("floors"))]
+    async fn set_cpu_stages(
+        &self,
+        idle: u8,
+        stages: Vec<StageWire>,
+        #[zbus(signal_emitter)] e: SignalEmitter<'_>,
+    ) -> Result<Vec<FloorWire>, DemoError> {
+        let curve = curve_from_wire(idle, &stages).map_err(invalid)?;
+        let floors = floors_to_wire(&curve.raised_floors());
+        {
+            let mut i = self.inner();
+            let profile = i.state.profile.as_str();
+            i.staged.insert(profile, curve);
+            i.state.set_fan_profile(FanProfile::Custom);
+        }
+        let _ = self.fan_profile_changed(&e).await;
+        let _ = self.fan_mode_changed(&e).await;
+        Ok(floors)
+    }
+
+    async fn reset_cpu_stages(&self, #[zbus(signal_emitter)] e: SignalEmitter<'_>) -> Result<(), DemoError> {
+        {
+            let mut i = self.inner();
+            let profile = i.state.profile.as_str();
+            if i.staged.remove(profile).is_none() {
+                return Ok(());
+            }
             let any_left = Fan::ALL
                 .iter()
                 .any(|f| i.custom.contains_key(&(profile, f.as_str())));
@@ -300,6 +411,13 @@ impl DemoDaemon {
         let _ = self.fan_profile_changed(&e).await;
         let _ = self.fan_mode_changed(&e).await;
         Ok(())
+    }
+
+    #[zbus(out_args("floors"))]
+    #[allow(clippy::unused_self, reason = "D-Bus method")]
+    fn preview_cpu_stages(&self, idle: u8, stages: Vec<StageWire>) -> Result<Vec<FloorWire>, DemoError> {
+        let curve = curve_from_wire(idle, &stages).map_err(invalid)?;
+        Ok(floors_to_wire(&curve.raised_floors()))
     }
 
     #[zbus(out_args("table", "raised"))]

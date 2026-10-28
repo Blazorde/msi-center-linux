@@ -13,6 +13,19 @@ use gtk::prelude::*;
 use msi_center::chart::{self, Frame, Padding};
 use msi_center::curve::{CurveSpec, Generated, Table};
 use msi_center::format::NNBSP;
+use msi_center::stages;
+use msi_core::staged::StagedCurve;
+
+/// A staged CPU curve (ADR-0013), drawn instead of the 7-step table.
+#[derive(Debug, Clone)]
+pub struct StagedData {
+    /// The curve shown (the draft being edited when it is valid, else the one in force).
+    pub curve: StagedCurve,
+    /// The curve in force, drawn thin under an unapplied preview.
+    pub applied: Option<StagedCurve>,
+    /// Whether `curve` is an unapplied preview (drawn dashed).
+    pub preview: bool,
+}
 
 /// What to draw.
 #[derive(Debug, Default, Clone)]
@@ -25,6 +38,8 @@ pub struct ChartData {
     pub spec: Option<CurveSpec>,
     /// Current temperature.
     pub temp: Option<f64>,
+    /// Staged CPU curve; when set it replaces the table and the exponential curve.
+    pub staged: Option<StagedData>,
 }
 
 impl ChartData {
@@ -103,7 +118,33 @@ impl FanChart {
     }
 }
 
+fn describe_staged(s: &StagedData, temp: Option<f64>) -> String {
+    let c = &s.curve;
+    let mut out = format!("Repos : {}{NNBSP}%", c.idle());
+    for (i, st) in c.stages().iter().enumerate() {
+        let _ = write!(
+            out,
+            " ; palier {} dès {}{NNBSP}°C : {}{NNBSP}%, retombée sous {}{NNBSP}°C",
+            i + 1,
+            st.up,
+            st.speed,
+            st.down
+        );
+    }
+    if let Some(t) = temp {
+        let _ = write!(
+            out,
+            ". Température actuelle {t:.0}{NNBSP}°C, {}{NNBSP}%.",
+            stages::speed_at(c, t)
+        );
+    }
+    out
+}
+
 fn describe(d: &ChartData) -> String {
+    if let Some(s) = &d.staged {
+        return describe_staged(s, d.temp);
+    }
     let Some(g) = d.shown() else {
         return "Aucune courbe chargée.".to_owned();
     };
@@ -188,6 +229,11 @@ fn draw(area: &gtk::DrawingArea, cr: &cairo::Context, w: f64, h: f64, d: &ChartD
     let _ = cr.stroke();
     cr.set_dash(&[], 0.0);
 
+    if let Some(s) = &d.staged {
+        draw_staged(cr, &f, s, d.temp, (fr, fgc, fb));
+        return;
+    }
+
     // Exponential curve (dotted).
     if let Some(spec) = &d.spec {
         let pts: Vec<(f64, f64)> = (20u8..=100)
@@ -268,48 +314,119 @@ fn draw(area: &gtk::DrawingArea, cr: &cairo::Context, w: f64, h: f64, d: &ChartD
     // Live marker.
     if let Some(temp) = d.temp {
         let m = chart::marker(table, temp);
-        let (x, y) = f.point((m.temp, m.speed));
-        ink(0.55);
-        cr.set_line_width(1.0);
-        cr.set_dash(&[3.0, 3.0], 0.0);
-        cr.move_to(x.round() + 0.5, f.y0);
-        cr.line_to(x.round() + 0.5, f.y0 + f.h);
-        let _ = cr.stroke();
-        cr.set_dash(&[], 0.0);
-        cr.set_source_rgba(RED.0, RED.1, RED.2, 0.18);
-        cr.arc(x, y, 13.0, 0.0, std::f64::consts::TAU);
-        let _ = cr.fill();
-        cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
-        cr.arc(x, y, 7.0, 0.0, std::f64::consts::TAU);
-        let _ = cr.fill();
-        cr.set_source_rgba(RED.0, RED.1, RED.2, 1.0);
-        cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
-        let _ = cr.fill();
-        cr.set_font_size(11.0);
-        cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
-        let label = format!("{temp:.0}{NNBSP}°C · {:.0}{NNBSP}%", m.speed);
-        let align = if x > f.x0 + f.w * 0.75 { 1.0 } else { 0.0 };
-        let dx = if align > 0.5 { -16.0 } else { 16.0 };
-        let ty = (y - 16.0).max(f.y0 + 14.0);
-        // Label on a small glass pill, legible over the grid and the hatching.
-        if let Ok(ext) = cr.text_extents(&label) {
-            let (pw, ph) = (ext.width() + 14.0, 20.0);
-            let px = if align > 0.5 {
-                x + dx - ext.width() - 7.0
-            } else {
-                x + dx - 7.0
-            };
-            let py = ty - 14.0;
-            rounded(cr, px, py, pw, ph, ph / 2.0);
-            let dark = (fr + fgc + fb) / 3.0 > 0.5;
-            if dark {
-                cr.set_source_rgba(0.11, 0.11, 0.17, 0.88);
-            } else {
-                cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
-            }
-            let _ = cr.fill();
+        live_marker(cr, &f, (fr, fgc, fb), m.temp, m.speed);
+    }
+}
+
+/// Vertical line, dot and label at the current temperature and the speed asked for there.
+#[allow(clippy::many_single_char_names, reason = "geometry")]
+fn live_marker(cr: &cairo::Context, f: &Frame, (fr, fgc, fb): Rgb, temp: f64, speed: f64) {
+    let ink = |a: f64| cr.set_source_rgba(fr, fgc, fb, a);
+    let (x, y) = f.point((temp, speed));
+    ink(0.55);
+    cr.set_line_width(1.0);
+    cr.set_dash(&[3.0, 3.0], 0.0);
+    cr.move_to(x.round() + 0.5, f.y0);
+    cr.line_to(x.round() + 0.5, f.y0 + f.h);
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+    cr.set_source_rgba(RED.0, RED.1, RED.2, 0.18);
+    cr.arc(x, y, 13.0, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
+    cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+    cr.arc(x, y, 7.0, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
+    cr.set_source_rgba(RED.0, RED.1, RED.2, 1.0);
+    cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
+    let _ = cr.fill();
+    cr.set_font_size(11.0);
+    cr.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
+    let label = format!("{temp:.0}{NNBSP}°C · {speed:.0}{NNBSP}%");
+    let align = if x > f.x0 + f.w * 0.75 { 1.0 } else { 0.0 };
+    let dx = if align > 0.5 { -16.0 } else { 16.0 };
+    let ty = (y - 16.0).max(f.y0 + 14.0);
+    // Label on a small glass pill, legible over the grid and the hatching.
+    if let Ok(ext) = cr.text_extents(&label) {
+        let (pw, ph) = (ext.width() + 14.0, 20.0);
+        let px = if align > 0.5 {
+            x + dx - ext.width() - 7.0
+        } else {
+            x + dx - 7.0
+        };
+        let py = ty - 14.0;
+        rounded(cr, px, py, pw, ph, ph / 2.0);
+        let dark = (fr + fgc + fb) / 3.0 > 0.5;
+        if dark {
+            cr.set_source_rgba(0.11, 0.11, 0.17, 0.88);
+        } else {
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
         }
-        ink(0.95);
-        text(cr, &label, x + dx, ty, align);
+        let _ = cr.fill();
+    }
+    ink(0.95);
+    text(cr, &label, x + dx, ty, align);
+}
+
+/// The staged CPU curve: accent fill, dashed way down, thick stages, "▲ S2" where a floor takes over, and the
+/// live marker. Same visual language as the step chart.
+fn draw_staged(cr: &cairo::Context, f: &Frame, s: &StagedData, temp: Option<f64>, fg: Rgb) {
+    let ink = |a: f64| cr.set_source_rgba(fg.0, fg.1, fg.2, a);
+
+    // The curve in force, thin, when a preview is drawn over it.
+    if s.preview
+        && let Some(a) = &s.applied
+    {
+        ink(0.35);
+        cr.set_line_width(1.5);
+        path(cr, f, &stages::rising_path(a));
+        let _ = cr.stroke();
+    }
+
+    // Soft accent fill under the stages.
+    let rise = stages::rising_path(&s.curve);
+    path(cr, f, &rise);
+    cr.line_to(f.x(chart::T_MAX), f.y(0.0));
+    cr.line_to(f.x(chart::T_MIN), f.y(0.0));
+    cr.close_path();
+    let fill = cairo::LinearGradient::new(0.0, f.y0, 0.0, f.y0 + f.h);
+    fill.add_color_stop_rgba(0.0, RED.0, RED.1, RED.2, 0.20);
+    fill.add_color_stop_rgba(1.0, ORANGE.0, ORANGE.1, ORANGE.2, 0.02);
+    let _ = cr.set_source(&fill);
+    let _ = cr.fill();
+
+    // Way down (dashed): each stage is left at its own fall-back temperature.
+    cr.set_source_rgba(RED.0, RED.1, RED.2, 0.45);
+    cr.set_line_width(1.5);
+    cr.set_dash(&[5.0, 4.0], 0.0);
+    path(cr, f, &stages::falling_path(&s.curve));
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+
+    // Stages (thick, sunset gradient).
+    let grad = cairo::LinearGradient::new(f.x0, 0.0, f.x0 + f.w, 0.0);
+    grad.add_color_stop_rgb(0.0, ORANGE.0, ORANGE.1, ORANGE.2);
+    grad.add_color_stop_rgb(0.7, RED.0, RED.1, RED.2);
+    grad.add_color_stop_rgb(1.0, 0.45, 0.12, 0.14);
+    let _ = cr.set_source(&grad);
+    cr.set_line_width(3.5);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.set_line_cap(cairo::LineCap::Round);
+    if s.preview {
+        cr.set_dash(&[10.0, 5.0], 0.0);
+    }
+    path(cr, f, &rise);
+    let _ = cr.stroke();
+    cr.set_dash(&[], 0.0);
+
+    // Floors that take over from the stages: "▲ S2" on the floor, never silent.
+    cr.set_font_size(12.0);
+    for r in s.curve.raised_floors() {
+        let (x, y) = f.point((f64::from(r.floor.temp), f64::from(r.floor.speed)));
+        cr.set_source_rgba(RED.0, RED.1, RED.2, 1.0);
+        text(cr, "▲ S2", x, (y - 8.0).max(f.y0 + 10.0), 0.5);
+    }
+
+    if let Some(temp) = temp {
+        live_marker(cr, f, fg, temp, f64::from(stages::speed_at(&s.curve, temp)));
     }
 }

@@ -187,6 +187,91 @@ async fn fan_profiles_round_trip_against_the_real_daemon() {
 }
 
 #[tokio::test]
+async fn staged_cpu_curve_round_trips_against_the_real_daemon() {
+    use msi_center::stages::{Draft, stages_to_wire};
+    let h = daemon().await;
+    let d = &h.daemon;
+    d.set_profile("eco").await.unwrap();
+
+    // Starting point: nothing saved, nothing in force, and a curve that always validates.
+    let start = d.cpu_stages().await.unwrap();
+    assert!(!start.saved && !start.active && start.supported);
+    assert_ne!(d.status().await.unwrap().fan_profile, "custom");
+
+    // Ten stages, more than the EC's seven steps; S2 takes over at 85 °C (the stage there gives 90 %).
+    let mut draft = Draft {
+        idle: 0,
+        stages: Vec::new(),
+    };
+    while draft.add().is_some() {}
+    let curve = draft.validate().unwrap();
+    assert_eq!(curve.stages().len(), 10);
+    let floors = d
+        .set_cpu_stages(curve.idle(), &stages_to_wire(&curve))
+        .await
+        .unwrap();
+    assert_eq!(floors, curve.raised_floors().len());
+    assert_eq!(floors, 1);
+    assert_eq!(d.status().await.unwrap().fan_profile, "custom");
+
+    let now = d.cpu_stages().await.unwrap();
+    assert!(now.saved && now.active);
+    assert_eq!(now.curve, curve);
+    assert!(d.fan_curve(Fan::Cpu).await.unwrap().generated.table.is_live_cpu());
+
+    // Rules are the daemon's: a bad curve is rejected with the rule, and nothing changes.
+    let err = d.set_cpu_stages(0, &[(50, 50, 30)]).await.unwrap_err();
+    assert!(matches!(err, AppError::InvalidArgument(_)), "{err:?}");
+    assert_eq!(d.cpu_stages().await.unwrap().curve, curve);
+
+    d.reset_cpu_stages().await.unwrap();
+    let after = d.cpu_stages().await.unwrap();
+    assert!(!after.saved && !after.active);
+    assert_ne!(d.status().await.unwrap().fan_profile, "custom");
+}
+
+#[tokio::test]
+async fn the_demo_daemon_serves_staged_curves_like_the_real_one() {
+    use msi_center::stages::{Draft, stages_to_wire};
+    let links = msi_center::demo::service::connect(0).await.unwrap();
+    let d = Daemon::new(&links.daemon).await.unwrap();
+    let start = d.cpu_stages().await.unwrap();
+    assert!(!start.saved && !start.active && start.supported);
+
+    let mut draft = Draft {
+        idle: 10,
+        stages: Vec::new(),
+    };
+    while draft.add().is_some() {}
+    let curve = draft.validate().unwrap();
+    let floors = d
+        .set_cpu_stages(curve.idle(), &stages_to_wire(&curve))
+        .await
+        .unwrap();
+    assert_eq!(floors, curve.raised_floors().len());
+    let now = d.cpu_stages().await.unwrap();
+    assert!(now.saved && now.active);
+    assert_eq!(now.curve, curve);
+    assert_eq!(d.status().await.unwrap().fan_profile, "custom");
+    assert!(d.fan_curve(Fan::Cpu).await.unwrap().generated.table.is_live_cpu());
+    assert!(matches!(
+        d.set_cpu_stages(0, &[(50, 50, 30)]).await,
+        Err(AppError::InvalidArgument(_))
+    ));
+
+    // Last edit wins: the exponential curve replaces the staged one.
+    let (spec, _) = d.custom_fan_curve(Fan::Cpu).await.unwrap();
+    d.set_fan_curve(Fan::Cpu, &spec).await.unwrap();
+    assert!(!d.cpu_stages().await.unwrap().saved);
+
+    d.set_cpu_stages(curve.idle(), &stages_to_wire(&curve))
+        .await
+        .unwrap();
+    d.reset_cpu_stages().await.unwrap();
+    assert!(!d.cpu_stages().await.unwrap().saved);
+}
+
+#[tokio::test]
 async fn errors_are_mapped() {
     let h = daemon_with(
         MemoryState::default(),
