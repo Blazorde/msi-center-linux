@@ -37,6 +37,12 @@ impl FsRoot {
     pub fn proc(&self, rel: impl AsRef<Path>) -> PathBuf {
         self.base.join("proc").join(rel)
     }
+
+    /// Path of `rel` under `<base>/run` (tmpfs: cleared at boot).
+    #[must_use]
+    pub fn run(&self, rel: impl AsRef<Path>) -> PathBuf {
+        self.base.join("run").join(rel)
+    }
 }
 
 /// Reads a small text attribute and trims surrounding whitespace.

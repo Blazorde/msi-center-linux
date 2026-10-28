@@ -16,7 +16,7 @@ use msi_daemon::ec::FACTORY_CPU;
 use zbus::OwnedVariant;
 
 const USAGE: &str = "usage: msictl [--session] <command>
-  status                         profile, fan mode, Cooler Boost, battery, dGPU, firmware
+  status                         profile, fan mode, Cooler Boost, battery, dGPU, CPU power limits, firmware
   profile <eco|balanced|gaming>  apply a profile
   fan [silent|auto|balanced|turbo|custom]
                                  show or set the fan profile of the current profile (remembered per profile;
@@ -327,6 +327,11 @@ async fn status(p: &MsiCenter1Proxy<'_>) -> zbus::Result<()> {
         }
     );
     println!("dGPU             {}", p.gpu_state().await?);
+    // An older daemon has no such property: not an error.
+    match p.cpu_power_limits().await {
+        Ok((0, _)) | Err(_) => println!("CPU power        firmware (not controlled)"),
+        Ok((pl1, pl2)) => println!("CPU power        PL1 {pl1} W / PL2 {pl2} W"),
+    }
     println!("EC firmware      {}", p.firmware_version().await?);
     if p.read_only().await? {
         let reason = p.read_only_reason().await?;

@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use crate::curve::CurvePreset;
 use crate::ec::ShiftMode;
+use crate::power_limit::PowerLimits;
 
 /// User-facing profile. Parsed from / displayed as `eco`, `balanced`, `gaming`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,7 +29,21 @@ pub enum GpuMode {
     Active,
 }
 
-/// State the daemon applies for a profile, in order: curve → EC shift mode → GPU.
+/// CPU power limits of Éco (ADR-0014): quiet and cool, on battery first.
+pub const ECO_CPU_POWER: PowerLimits = preset(20, 35);
+
+/// CPU power limits of Équilibré (ADR-0014): the 185H's base power with short bursts, no 160 W spikes.
+pub const BALANCED_CPU_POWER: PowerLimits = preset(35, 60);
+
+/// Compile-time checked preset (an invalid one fails the build).
+const fn preset(pl1_w: u32, pl2_w: u32) -> PowerLimits {
+    match PowerLimits::from_watts(pl1_w, pl2_w) {
+        Ok(l) => l,
+        Err(_) => panic!("invalid CPU power preset"),
+    }
+}
+
+/// State the daemon applies for a profile, in order: curve → EC shift mode → CPU power limits → GPU.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProfileTarget {
     /// Fan curve preset.
@@ -37,6 +52,8 @@ pub struct ProfileTarget {
     pub shift_mode: ShiftMode,
     /// dGPU power state.
     pub gpu: GpuMode,
+    /// CPU package power limits, capped to the firmware's; `None` = the firmware's own (ADR-0014).
+    pub cpu_power: Option<PowerLimits>,
 }
 
 impl Profile {
@@ -61,16 +78,19 @@ impl Profile {
                 curve: CurvePreset::Silent,
                 shift_mode: ShiftMode::Eco,
                 gpu: GpuMode::Removed,
+                cpu_power: Some(ECO_CPU_POWER),
             },
             Self::Balanced => ProfileTarget {
                 curve: CurvePreset::Progressive,
                 shift_mode: ShiftMode::Comfort,
                 gpu: GpuMode::RuntimeSuspend,
+                cpu_power: Some(BALANCED_CPU_POWER),
             },
             Self::Gaming => ProfileTarget {
                 curve: CurvePreset::Aggressive,
                 shift_mode: ShiftMode::Turbo,
                 gpu: GpuMode::Active,
+                cpu_power: None,
             },
         }
     }
@@ -102,6 +122,7 @@ impl FromStr for Profile {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -134,7 +155,8 @@ mod tests {
             ProfileTarget {
                 curve: CurvePreset::Silent,
                 shift_mode: ShiftMode::Eco,
-                gpu: GpuMode::Removed
+                gpu: GpuMode::Removed,
+                cpu_power: Some(ECO_CPU_POWER)
             }
         );
         assert_eq!(
@@ -142,7 +164,8 @@ mod tests {
             ProfileTarget {
                 curve: CurvePreset::Progressive,
                 shift_mode: ShiftMode::Comfort,
-                gpu: GpuMode::RuntimeSuspend
+                gpu: GpuMode::RuntimeSuspend,
+                cpu_power: Some(BALANCED_CPU_POWER)
             }
         );
         assert_eq!(
@@ -150,9 +173,22 @@ mod tests {
             ProfileTarget {
                 curve: CurvePreset::Aggressive,
                 shift_mode: ShiftMode::Turbo,
-                gpu: GpuMode::Active
+                gpu: GpuMode::Active,
+                cpu_power: None
             }
         );
+    }
+
+    #[test]
+    fn cpu_power_presets_lower_the_firmware_limits() {
+        let firmware = PowerLimits::from_watts(110, 160).unwrap();
+        assert_eq!(ECO_CPU_POWER, PowerLimits::from_watts(20, 35).unwrap());
+        assert_eq!(BALANCED_CPU_POWER, PowerLimits::from_watts(35, 60).unwrap());
+        for p in Profile::ALL {
+            if let Some(l) = p.target().cpu_power {
+                assert_eq!(l.capped(firmware), l, "{p}");
+            }
+        }
     }
 
     #[test]

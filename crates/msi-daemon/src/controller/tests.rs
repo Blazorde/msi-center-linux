@@ -1431,3 +1431,86 @@ fn staged_curve_live_write_failure_falls_back_to_auto() {
     assert!(kinds(&r.ctl.take_events()).contains(&EventKind::ReadbackMismatch));
     assert!(!r.ctl.is_applied());
 }
+
+fn rapl_zone(r: &Path, zone: &str) {
+    let d = format!("sys/class/powercap/{zone}");
+    write(r, &format!("{d}/name"), "package-0\n");
+    write(r, &format!("{d}/constraint_0_name"), "long_term\n");
+    write(r, &format!("{d}/constraint_1_name"), "short_term\n");
+    write(r, &format!("{d}/constraint_0_power_limit_uw"), "110000000\n");
+    write(r, &format!("{d}/constraint_1_power_limit_uw"), "160000000\n");
+}
+
+fn rig_with_rapl() -> Rig {
+    let Rig { dir, ec, ctl } = rig_with(MemoryState::default(), |r| {
+        rapl_zone(r, "intel-rapl:0");
+        rapl_zone(r, "intel-rapl-mmio:0");
+    });
+    let ctl = ctl.with_rapl(Rapl::new(FsRoot::new(dir.path())));
+    Rig { dir, ec, ctl }
+}
+
+fn pl(r: &Rig, zone: &str) -> (String, String) {
+    let d = format!("sys/class/powercap/{zone}");
+    (
+        read(r.dir.path(), &format!("{d}/constraint_0_power_limit_uw")),
+        read(r.dir.path(), &format!("{d}/constraint_1_power_limit_uw")),
+    )
+}
+
+fn watts(pl1: u64, pl2: u64) -> (String, String) {
+    ((pl1 * 1_000_000).to_string(), (pl2 * 1_000_000).to_string())
+}
+
+#[test]
+fn adr_0014_each_profile_applies_its_cpu_power_limits_and_gaming_the_firmware_ones() {
+    let mut r = rig_with_rapl();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    for z in crate::rapl::ZONES {
+        assert_eq!(pl(&r, z), watts(35, 60), "{z}");
+    }
+    assert_eq!(
+        r.ctl.status().cpu_power,
+        Some(msi_core::profile::BALANCED_CPU_POWER)
+    );
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    assert_eq!(pl(&r, "intel-rapl:0"), watts(20, 35));
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    assert_eq!(pl(&r, "intel-rapl:0"), watts(110, 160));
+    // Fan profile Auto still gets the profile's power limits.
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    assert_eq!(pl(&r, "intel-rapl-mmio:0"), watts(35, 60));
+}
+
+#[test]
+fn adr_0014_changed_limits_are_reapplied_and_shutdown_restores_the_firmware_ones() {
+    let mut r = rig_with_rapl();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    // The firmware rewrites both zones (one alone changes nothing: the CPU obeys the lowest).
+    for z in crate::rapl::ZONES {
+        let d = format!("sys/class/powercap/{z}");
+        write(
+            r.dir.path(),
+            &format!("{d}/constraint_1_power_limit_uw"),
+            "160000000\n",
+        );
+    }
+    for _ in 0..DRIFT_CHECK_EVERY {
+        r.ctl.tick(Clock(0));
+    }
+    for z in crate::rapl::ZONES {
+        assert_eq!(pl(&r, z), watts(35, 60), "{z}");
+    }
+    r.ctl.shutdown();
+    for z in crate::rapl::ZONES {
+        assert_eq!(pl(&r, z), watts(110, 160), "{z}");
+    }
+}
+
+#[test]
+fn adr_0014_without_rapl_nothing_is_written_and_status_is_none() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    assert_eq!(r.ctl.status().cpu_power, None);
+}

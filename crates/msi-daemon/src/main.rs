@@ -26,6 +26,7 @@ use msi_daemon::gpu::{Dgpu, GpuManager};
 use msi_daemon::notify::Notifier;
 use msi_daemon::polkit::PolkitAuthorizer;
 use msi_daemon::power::PowerSupply;
+use msi_daemon::rapl::Rapl;
 use msi_daemon::service::{BUS_NAME, MsiCenter, OBJECT_PATH};
 use msi_daemon::state::{DEFAULT_STATE_PATH, StateStore};
 use msi_daemon::telemetry::dgpu::{DgpuPolicy, NvmlBackend};
@@ -333,13 +334,14 @@ async fn run(state: &Path) -> anyhow::Result<()> {
         .discover()
         .map_or_else(|| "0000:01:00.0".to_owned(), |d| d.gpu.address);
     let sampler = Sampler::new(root.clone(), NvmlBackend::new(bus_id), DgpuPolicy::Off);
-    let (mut ctl, warnings) = Controller::new(
+    let (ctl, warnings) = Controller::new(
         Box::new(ec),
-        PowerSupply::new(root),
+        PowerSupply::new(root.clone()),
         gpu,
         Some(Box::new(sampler)),
         StateStore::new(state),
     );
+    let mut ctl = ctl.with_rapl(Rapl::new(root));
     for w in warnings {
         tracing::warn!("settings: {w}");
     }
