@@ -18,7 +18,7 @@ use zbus::OwnedVariant;
 const USAGE: &str = "usage: msictl [--session] <command>
   status                         profile, fan mode, Cooler Boost, battery, dGPU, CPU power limits, firmware
   profile <eco|balanced|gaming>  apply a profile
-  fan [silent|auto|balanced|turbo|custom]
+  fan [silent|auto|balanced|turbo|cool|custom]
                                  show or set the fan profile of the current profile (remembered per profile;
                                  auto = MSI factory curve driven by the EC)
   factory                        hand the fans back to the EC (factory tables, fan mode auto)

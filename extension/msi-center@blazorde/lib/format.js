@@ -52,6 +52,7 @@ export const FAN_PROFILES = [
     {id: 'auto', label: 'Auto', short: 'Auto', icon: 'emblem-system-symbolic'},
     {id: 'balanced', label: 'Équilibré', short: 'Équilibré', icon: 'weather-windy-symbolic'},
     {id: 'turbo', label: 'Turbo', short: 'Turbo', icon: 'weather-tornado-symbolic'},
+    {id: 'cool', label: 'Frais', short: 'Frais', icon: 'weather-snow-symbolic'},
     {id: 'custom', label: 'Personnalisé', short: 'Perso', icon: 'document-edit-symbolic'},
 ];
 

@@ -309,11 +309,14 @@ pub enum CurvePreset {
     Progressive,
     /// Agressif (Gaming): never off (30 %), 100 % from 74 °C.
     Aggressive,
+    /// Frais: never off (35 %), quiet up to 60 °C, then a steep linear rise to 100 % at 78 °C, so the CPU stays
+    /// under 80 °C as long as the fans can hold it.
+    Cool,
 }
 
 impl CurvePreset {
     /// All presets.
-    pub const ALL: [Self; 3] = [Self::Silent, Self::Progressive, Self::Aggressive];
+    pub const ALL: [Self; 4] = [Self::Silent, Self::Progressive, Self::Aggressive, Self::Cool];
 
     /// Stable name (D-Bus, state file).
     #[must_use]
@@ -322,6 +325,7 @@ impl CurvePreset {
             Self::Silent => "silent",
             Self::Progressive => "progressive",
             Self::Aggressive => "aggressive",
+            Self::Cool => "cool",
         }
     }
 
@@ -332,6 +336,7 @@ impl CurvePreset {
             Self::Silent => (52, 88, 30, 100, 2.5, 0, [52, 60, 67, 75, 83, 85], 4),
             Self::Progressive => (48, 85, 30, 100, 2.2, 0, [48, 56, 64, 71, 79, 85], 4),
             Self::Aggressive => (40, 74, 40, 100, 1.4, 30, [40, 47, 54, 61, 68, 74], 3),
+            Self::Cool => (60, 78, 45, 100, 1.0, 35, [55, 60, 65, 70, 74, 78], 3),
         };
         FanCurveSpec {
             params: FanCurveParams { t0, t1, min, max, k },
@@ -540,6 +545,6 @@ mod tests {
     #[test]
     fn preset_names_are_stable() {
         let names: Vec<&str> = CurvePreset::ALL.iter().map(|p| p.as_str()).collect();
-        assert_eq!(names, ["silent", "progressive", "aggressive"]);
+        assert_eq!(names, ["silent", "progressive", "aggressive", "cool"]);
     }
 }
