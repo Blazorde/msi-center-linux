@@ -91,6 +91,8 @@ async function walk(ext) {
     ind.menu.open();
     await sleep(1200);
     check(ind.menu.box.get_child_at_index(0).contains(ind._pills.get('eco').pill), 'profile pills are the first menu item');
+    check(ind._curvesItem.visible && ind._curvesItem.menu.numMenuItems === 2,
+        `saved curves submenu: ${ind._curvesItem.menu.numMenuItems} entries`);
     await shot('menu', ind.menu.box);
     const pending = ind._setProfile('gaming');
     check(ind._pills.get('gaming').pill.checked && ind._pending === 'gaming', 'optimistic highlight before the reply');
@@ -114,7 +116,7 @@ async function walk(ext) {
     ind._sync();
 
     // Fan profiles: chip row under the pills, default of Gaming = Turbo, optimistic switch + rollback
-    check(ind._fanRow.visible && ind._fanChips.size === 5, 'fan profile chips shown');
+    check(ind._fanRow.visible && ind._fanChips.size === 7, `fan profile chips shown: ${ind._fanChips.size}`);
     check(ind._fanChips.get('turbo').chip.checked, `Gaming → fan profile ${ind._daemon.props.FanProfile}`);
     const fanPending = ind._setFanProfile('auto');
     check(ind._fanChips.get('auto').chip.checked && ind._fanPending === 'auto', 'fan chip: optimistic highlight');
@@ -193,6 +195,14 @@ async function walk(ext) {
     await pop._delete([...pop._selected]);
     await sleep(500);
     check(pop._clips.length === 5, `after delete: ${pop._clips.length}`);
+    // Clear everything except pinned: the first press only arms, the second one clears.
+    const pinned = pop._clips.filter(c => c.pinned).length;
+    await pop._clearUnpinned();
+    check(pop._clearArmTimeout !== 0 && pop._clips.length === 5, 'clear unpinned: first press only arms');
+    await pop._clearUnpinned();
+    await sleep(500);
+    check(pop._clearArmTimeout === 0 && pop._clips.length === pinned && pinned > 0,
+        `clear unpinned keeps the pinned clips: ${pop._clips.length} / ${pinned}`);
     pop.close();
 
     // Keyboard: arrows move between pills without leaving the menu, Enter applies
