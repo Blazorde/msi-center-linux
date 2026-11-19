@@ -93,7 +93,8 @@ la métrique.
   événements de sécurité (`SafetyEvent` : Cooler Boost forcé, retour en mode auto…), erreurs d'appel (polkit,
   `GpuBusy` avec la liste des processus qui tiennent le dGPU). Cliquer sur un bandeau le ferme.
 - **Mini-graphe** : CPU % (aire) et °C (pointillés) sur 60 s (désactivable).
-- **Cooler Boost** (`SetCoolerBoost`) : non désactivable quand la sécurité thermique le force (S4).
+- **Cooler Boost** (`SetCoolerBoost`) : non désactivable quand la sécurité thermique le force (S4) ; s'éteint
+  tout seul 30 s après que CPU et GPU sont repassés sous 75 °C.
 - **Profil auto secteur / batterie** (`SetAutoProfileOnPower`).
 - **Limite de charge** 50–100 % (`SetChargeLimit`), appliquée **au relâchement** du curseur (ou après une pause
   au clavier / à la molette). Masquée si non supportée (`ChargeLimit = 0`).

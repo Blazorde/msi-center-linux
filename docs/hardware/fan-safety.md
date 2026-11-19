@@ -249,7 +249,7 @@ après la veille. Le shift mode et le dGPU restent ceux du profil de performance
 | S1 | Seuils de montée et de descente strictement croissants, `down[i] < up[i]` avec un écart ≥ 2 °C, vitesses croissantes ou égales | `msi-core` + noyau (sauf l'écart de 2 °C) |
 | S2 | Vitesse du **palier montant** ≥ **30 %** dès 60 °C, ≥ **50 %** dès 75 °C, **100 %** dès 85 °C (planchers, quelle que soit la courbe). Table générée depuis les paramètres : paliers relevés **explicitement et signalés** (`SafetyReport`). Table saisie palier par palier : **rejetée** | `msi-core` |
 | S3 | Toute **entrée** hors bornes (paramètres de courbe, disposition, table brute) est **rejetée**, jamais « corrigée silencieusement » | `msi-core` + noyau |
-| S4 | CPU ou GPU ≥ **95 °C** sur **2 lectures consécutives** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics). Capteur illisible → forcé immédiatement | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
+| S4 | CPU ou GPU ≥ **95 °C** sur **10 lectures consécutives** (~10 s), ou ≥ **100 °C** sur 2 → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics, [ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)). Capteur illisible → forcé immédiatement. Un Cooler Boost non forcé est coupé après 30 s sous 75 °C | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
 | S5 | Arrêt du daemon (normal, signal, panic) → **tables d'usine réécrites** puis EC remis en fan mode `auto` (voir [Restitution à l'EC](#restitution-à-lec-tables-dusine)) | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost=msi-daemon --restore-factory` |
 | S6 | Watchdog systemd (`WatchdogSec=15`) : `WATCHDOG=1` après chaque tick de 1 s réussi ; daemon figé → tué, redémarré, et S5 s'applique (`ExecStopPost`) | systemd + `msi-daemon` (`notify`) |
 | S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → tables d'usine + `auto` + `SafetyEvent`. Vaut aussi pour chaque écriture en direct des vitesses CPU (ADR-0010) | `msi-daemon` |
@@ -277,12 +277,21 @@ interdit de corriger). Résolution :
 
 ## Filtre anti-pics de S4
 
-La température instantanée de l'EC (`0x68`) a des pics isolés jusqu'à ~90 °C au repos. Chaque capteur est filtré
-sur ses **deux dernières lectures** (`supervisor::ThermalSupervisor`) : Cooler Boost n'est forcé que si les deux
-sont ≥ 95 °C (minimum glissant) et n'est relâché que si les deux sont < 85 °C (maximum glissant). Un pic isolé
-est ignoré, une vraie surchauffe est prise en compte une lecture (~1 s) plus tard. Une lecture en échec force
+La température instantanée de l'EC (`0x68`) a des pics isolés jusqu'à ~90 °C au repos, et le CPU monte à
+95–98 °C pendant 2 à 10 s sous PL2 (mesuré le 2026-11-19). Chaque capteur est filtré
+(`supervisor::ThermalSupervisor`, [ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)) : Cooler Boost
+n'est forcé que si les **10 dernières lectures** (~10 s) sont toutes ≥ 95 °C (minimum glissant), ou si les
+**2 dernières** sont ≥ **100 °C** (urgence) ; il n'est relâché que si les 2 dernières sont < 85 °C (maximum
+glissant). Un pic isolé et une rafale PL2 sont ignorés, une chaleur soutenue est prise en compte en ~10 s. Une lecture en échec force
 immédiatement, sans filtre. Après le démarrage ou le retour d'un capteur, une seule lecture ne suffit ni à forcer
 ni à relâcher.
+
+## Arrêt automatique de Cooler Boost
+
+Un Cooler Boost **non forcé par S4** (app, extension, touche Fn, firmware, ou trouvé allumé au démarrage du
+daemon) est coupé dès que le CPU (température filtrée, ADR-0010) et le GPU restent **sous 75 °C pendant 30 s**
+(`supervisor::BoostAutoOff`). Événement `boost_released`, détail `auto off: …`. Jamais pendant que S4 le force,
+ni si un capteur est illisible.
 
 ## S9 : ventilo arrêté sur puce chaude
 

@@ -5,10 +5,12 @@
 //! # Spike filter
 //!
 //! The EC's instantaneous CPU temperature (register `0x68`) has isolated spikes (up to ~90 °C at idle, see
-//! `docs/hardware/ec-map.md`). Each sensor is therefore filtered over its **last two readings**:
+//! `docs/hardware/ec-map.md`), and the CPU bursts to 95–98 °C for a few seconds under PL2 (measured
+//! 2026-11-19: Cooler Boost forced for 3–10 s several times an hour). Each sensor is therefore filtered:
 //!
-//! - boost is forced only if **both** readings are ≥ [`BOOST_ON_TEMP`] (two-sample moving minimum): a single
-//!   spike is ignored, a real overheat is caught one sample (~1 s) later;
+//! - boost is forced only if the last [`FORCE_WINDOW`] readings (~10 s) are **all** ≥ [`BOOST_ON_TEMP`]
+//!   (sustained heat, not a burst), or if the last **two** readings are ≥ [`BOOST_CRITICAL_TEMP`] (a real
+//!   emergency, caught one sample later);
 //! - boost is released only if **both** readings are < [`BOOST_OFF_TEMP`] (two-sample moving maximum);
 //! - a failed reading forces boost immediately (fail-safe, no filtering);
 //! - right after start, or after a failed/absent sensor comes back, one reading is not enough to force nor
@@ -18,6 +20,11 @@
 pub const BOOST_ON_TEMP: f64 = 95.0;
 /// Cooler Boost is released only when every sensor is strictly below this temperature (°C).
 pub const BOOST_OFF_TEMP: f64 = 85.0;
+/// Two consecutive readings at or above this temperature (°C) force Cooler Boost without waiting for
+/// [`FORCE_WINDOW`]. The 185H throttles at 110 °C; bursts measured on this machine peak at 98 °C.
+pub const BOOST_CRITICAL_TEMP: f64 = 100.0;
+/// Consecutive readings (~1 s each) that must all be ≥ [`BOOST_ON_TEMP`] to force Cooler Boost.
+pub const FORCE_WINDOW: usize = 10;
 
 /// One sensor reading as seen by the daemon.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,7 +42,7 @@ pub enum SensorReading {
 enum Verdict {
     /// Absent: no opinion.
     Absent,
-    /// Failed or two consecutive readings ≥ 95 °C.
+    /// Failed, [`FORCE_WINDOW`] readings ≥ 95 °C, or two readings ≥ 100 °C.
     Hot,
     /// Last two readings below 85 °C.
     Cool,
@@ -43,10 +50,11 @@ enum Verdict {
     Hold,
 }
 
-/// Previous usable reading of one sensor.
+/// Last usable readings of one sensor, newest first (`len` of them are valid).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct SensorFilter {
-    prev: Option<f64>,
+    recent: [f64; FORCE_WINDOW],
+    len: usize,
 }
 
 impl SensorFilter {
@@ -54,18 +62,28 @@ impl SensorFilter {
         let temp = match reading {
             SensorReading::Celsius(t) if t.is_finite() => t,
             SensorReading::Celsius(_) | SensorReading::Failed => {
-                self.prev = None;
+                self.len = 0;
                 return Verdict::Hot;
             }
             SensorReading::Absent => {
-                self.prev = None;
+                self.len = 0;
                 return Verdict::Absent;
             }
         };
-        let prev = self.prev.replace(temp);
-        match prev {
-            Some(p) if p.min(temp) >= BOOST_ON_TEMP => Verdict::Hot,
-            Some(p) if p.max(temp) < BOOST_OFF_TEMP => Verdict::Cool,
+        self.recent.copy_within(..FORCE_WINDOW - 1, 1);
+        self.recent[0] = temp;
+        self.len = (self.len + 1).min(FORCE_WINDOW);
+        let last_two = (self.len >= 2).then(|| {
+            (
+                self.recent[0].min(self.recent[1]),
+                self.recent[0].max(self.recent[1]),
+            )
+        });
+        let sustained = self.len == FORCE_WINDOW && self.recent.iter().all(|&t| t >= BOOST_ON_TEMP);
+        match last_two {
+            Some((low, _)) if low >= BOOST_CRITICAL_TEMP => Verdict::Hot,
+            _ if sustained => Verdict::Hot,
+            Some((_, high)) if high < BOOST_OFF_TEMP => Verdict::Cool,
             _ => Verdict::Hold,
         }
     }
@@ -95,8 +113,14 @@ impl ThermalSupervisor {
     pub const fn new() -> Self {
         Self {
             state: BoostDecision::Released,
-            cpu: SensorFilter { prev: None },
-            gpu: SensorFilter { prev: None },
+            cpu: SensorFilter {
+                recent: [0.0; FORCE_WINDOW],
+                len: 0,
+            },
+            gpu: SensorFilter {
+                recent: [0.0; FORCE_WINDOW],
+                len: 0,
+            },
         }
     }
 
@@ -108,7 +132,8 @@ impl ThermalSupervisor {
 
     /// Feeds new readings and returns the decision to apply.
     ///
-    /// - any sensor hot (failed, or two consecutive readings ≥ [`BOOST_ON_TEMP`]) → [`BoostDecision::Forced`];
+    /// - any sensor hot (failed, [`FORCE_WINDOW`] readings ≥ [`BOOST_ON_TEMP`], or two ≥ [`BOOST_CRITICAL_TEMP`])
+    ///   → [`BoostDecision::Forced`];
     /// - every present sensor cool (last two readings < [`BOOST_OFF_TEMP`]) → [`BoostDecision::Released`];
     /// - otherwise the state is kept (hysteresis band 85–95 °C, isolated spikes).
     ///
@@ -124,6 +149,54 @@ impl ThermalSupervisor {
             self.state
         };
         self.state
+    }
+}
+
+/// A Cooler Boost that S4 did not force (turned on from the app, the Fn key, or found on at start) is switched
+/// off once every sensor stays below this temperature (°C) for [`BOOST_AUTO_OFF_MS`].
+pub const BOOST_AUTO_OFF_TEMP: f64 = 75.0;
+/// How long (ms) the sensors must stay below [`BOOST_AUTO_OFF_TEMP`] before Cooler Boost goes off by itself.
+pub const BOOST_AUTO_OFF_MS: u64 = 30_000;
+
+/// Switches off a Cooler Boost left on once the machine has cooled down (owner request 2026-11-19: « quand le
+/// cooler boost est activé je suis obligé de le désactiver à la main »). Never acts while S4 forces it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BoostAutoOff {
+    cool_since_ms: Option<u64>,
+}
+
+impl BoostAutoOff {
+    /// A timer that has seen nothing yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { cool_since_ms: None }
+    }
+
+    /// Feeds one tick. `cpu` should be spike-filtered (an isolated spike would restart the timer). Returns
+    /// `true` when Cooler Boost must be switched off now; the timer then starts over.
+    pub fn update(
+        &mut self,
+        boost_on: bool,
+        forced: bool,
+        cpu: SensorReading,
+        gpu: SensorReading,
+        now_ms: u64,
+    ) -> bool {
+        let cool = |r: SensorReading, absent_ok: bool| match r {
+            SensorReading::Celsius(t) => t.is_finite() && t < BOOST_AUTO_OFF_TEMP,
+            SensorReading::Absent => absent_ok,
+            SensorReading::Failed => false,
+        };
+        if !boost_on || forced || !cool(cpu, false) || !cool(gpu, true) {
+            self.cool_since_ms = None;
+            return false;
+        }
+        let since = *self.cool_since_ms.get_or_insert(now_ms);
+        if now_ms.saturating_sub(since) >= BOOST_AUTO_OFF_MS {
+            self.cool_since_ms = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -144,23 +217,44 @@ mod tests {
         assert_eq!(ThermalSupervisor::default().state(), Released);
     }
 
-    #[test]
-    fn s4_forces_after_two_readings_at_95_on_cpu() {
-        assert_eq!(
-            run(&[(Celsius(94.9), Absent), (Celsius(95.0), Absent)]),
-            vec![Released, Released]
-        );
-        assert_eq!(
-            run(&[(Celsius(95.0), Absent), (Celsius(95.0), Absent)]),
-            vec![Released, Forced]
-        );
+    /// `FORCE_WINDOW` readings of `(cpu, gpu)`: enough to force Cooler Boost when they are ≥ 95 °C.
+    fn sustained(cpu: SensorReading, gpu: SensorReading) -> Vec<(SensorReading, SensorReading)> {
+        vec![(cpu, gpu); FORCE_WINDOW]
+    }
+
+    /// Decisions over [`sustained`] hot readings: released until the last one.
+    fn forced_at_window_end() -> Vec<BoostDecision> {
+        let mut d = vec![Released; FORCE_WINDOW - 1];
+        d.push(Forced);
+        d
+    }
+
+    fn then(
+        mut a: Vec<(SensorReading, SensorReading)>,
+        b: &[(SensorReading, SensorReading)],
+    ) -> Vec<(SensorReading, SensorReading)> {
+        a.extend_from_slice(b);
+        a
+    }
+
+    fn expect(mut a: Vec<BoostDecision>, b: &[BoostDecision]) -> Vec<BoostDecision> {
+        a.extend_from_slice(b);
+        a
     }
 
     #[test]
-    fn s4_forces_after_two_readings_at_95_on_gpu() {
+    fn s4_forces_after_ten_readings_at_95_on_cpu() {
+        assert_eq!(run(&sustained(Celsius(95.0), Absent)), forced_at_window_end());
+        let mut almost = sustained(Celsius(95.0), Absent);
+        almost[0] = (Celsius(94.9), Absent);
+        assert_eq!(run(&almost), vec![Released; FORCE_WINDOW]);
+    }
+
+    #[test]
+    fn s4_forces_after_ten_readings_at_95_on_gpu() {
         assert_eq!(
-            run(&[(Celsius(50.0), Celsius(95.0)), (Celsius(50.0), Celsius(96.0))]),
-            vec![Released, Forced]
+            run(&sustained(Celsius(50.0), Celsius(96.0))),
+            forced_at_window_end()
         );
     }
 
@@ -180,81 +274,105 @@ mod tests {
     }
 
     #[test]
+    fn s4_short_burst_is_ignored() {
+        // PL2 burst measured 2026-11-19: 95–98 °C for a few seconds, then back to the 70s.
+        let mut steps = vec![(Celsius(70.0), Absent)];
+        steps.extend(vec![(Celsius(98.0), Absent); FORCE_WINDOW - 1]);
+        steps.push((Celsius(80.0), Absent));
+        steps.extend(vec![(Celsius(97.0), Absent); FORCE_WINDOW - 1]);
+        assert_eq!(run(&steps), vec![Released; steps.len()]);
+    }
+
+    #[test]
+    fn s4_critical_temperature_forces_after_two_readings() {
+        assert_eq!(
+            run(&[
+                (Celsius(70.0), Absent),
+                (Celsius(100.0), Absent),
+                (Celsius(101.0), Absent)
+            ]),
+            vec![Released, Released, Forced]
+        );
+        assert_eq!(
+            run(&[(Celsius(60.0), Celsius(100.0)), (Celsius(60.0), Celsius(100.0))]),
+            vec![Released, Forced]
+        );
+    }
+
+    #[test]
     fn s4_hysteresis_keeps_boost_until_both_below_85() {
-        let decisions = run(&[
-            (Celsius(96.0), Celsius(70.0)),
-            (Celsius(96.0), Celsius(70.0)),
-            (Celsius(90.0), Celsius(70.0)),
-            (Celsius(85.0), Celsius(70.0)), // 85 is not < 85
-            (Celsius(84.9), Celsius(70.0)), // previous reading still 85
-            (Celsius(84.9), Celsius(70.0)),
-        ]);
+        let decisions = run(&then(
+            sustained(Celsius(96.0), Celsius(70.0)),
+            &[
+                (Celsius(90.0), Celsius(70.0)),
+                (Celsius(85.0), Celsius(70.0)), // 85 is not < 85
+                (Celsius(84.9), Celsius(70.0)), // previous reading still 85
+                (Celsius(84.9), Celsius(70.0)),
+            ],
+        ));
         assert_eq!(
             decisions,
-            vec![Released, Forced, Forced, Forced, Forced, Released]
+            expect(forced_at_window_end(), &[Forced, Forced, Forced, Released])
         );
     }
 
     #[test]
     fn s4_downward_spike_does_not_release() {
-        let decisions = run(&[
-            (Celsius(96.0), Absent),
-            (Celsius(96.0), Absent),
-            (Celsius(40.0), Absent),
-            (Celsius(92.0), Absent),
-        ]);
-        assert_eq!(decisions, vec![Released, Forced, Forced, Forced]);
+        let decisions = run(&then(
+            sustained(Celsius(96.0), Absent),
+            &[(Celsius(40.0), Absent), (Celsius(92.0), Absent)],
+        ));
+        assert_eq!(decisions, expect(forced_at_window_end(), &[Forced, Forced]));
     }
 
     #[test]
     fn s4_release_needs_every_sensor_below_85() {
-        let decisions = run(&[
-            (Celsius(60.0), Celsius(95.0)),
-            (Celsius(60.0), Celsius(95.0)),
-            (Celsius(60.0), Celsius(86.0)),
-            (Celsius(84.0), Celsius(84.0)),
-            (Celsius(84.0), Celsius(84.0)),
-        ]);
-        assert_eq!(decisions, vec![Released, Forced, Forced, Forced, Released]);
+        let decisions = run(&then(
+            sustained(Celsius(60.0), Celsius(95.0)),
+            &[
+                (Celsius(60.0), Celsius(86.0)),
+                (Celsius(84.0), Celsius(84.0)),
+                (Celsius(84.0), Celsius(84.0)),
+            ],
+        ));
+        assert_eq!(
+            decisions,
+            expect(forced_at_window_end(), &[Forced, Forced, Released])
+        );
     }
 
     #[test]
     fn s4_hysteresis_band_does_not_force_from_released() {
-        assert_eq!(
-            run(&[
-                (Celsius(90.0), Celsius(94.0)),
-                (Celsius(90.0), Celsius(94.0)),
-                (Celsius(85.0), Absent)
-            ]),
-            vec![Released, Released, Released]
+        let steps = then(
+            sustained(Celsius(90.0), Celsius(94.0)),
+            &[(Celsius(85.0), Absent)],
         );
+        assert_eq!(run(&steps), vec![Released; steps.len()]);
     }
 
     #[test]
     fn s4_reforces_after_release() {
-        let decisions = run(&[
-            (Celsius(95.0), Absent),
-            (Celsius(95.0), Absent),
-            (Celsius(80.0), Absent),
-            (Celsius(80.0), Absent),
-            (Celsius(95.5), Absent),
-            (Celsius(95.5), Absent),
-        ]);
-        assert_eq!(
-            decisions,
-            vec![Released, Forced, Forced, Released, Released, Forced]
+        let steps = then(
+            then(
+                sustained(Celsius(95.0), Absent),
+                &[(Celsius(80.0), Absent), (Celsius(80.0), Absent)],
+            ),
+            &sustained(Celsius(95.5), Absent),
         );
+        let expected = expect(
+            expect(forced_at_window_end(), &[Forced, Released]),
+            &forced_at_window_end(),
+        );
+        assert_eq!(run(&steps), expected);
     }
 
     #[test]
     fn s4_absent_gpu_is_ignored() {
-        let decisions = run(&[
-            (Celsius(95.0), Absent),
-            (Celsius(95.0), Absent),
-            (Celsius(70.0), Absent),
-            (Celsius(70.0), Absent),
-        ]);
-        assert_eq!(decisions, vec![Released, Forced, Forced, Released]);
+        let decisions = run(&then(
+            sustained(Celsius(95.0), Absent),
+            &[(Celsius(70.0), Absent), (Celsius(70.0), Absent)],
+        ));
+        assert_eq!(decisions, expect(forced_at_window_end(), &[Forced, Released]));
     }
 
     #[test]
@@ -278,5 +396,44 @@ mod tests {
     #[test]
     fn s4_no_sensor_at_all_is_a_failure() {
         assert_eq!(run(&[(Absent, Absent)]), vec![Forced]);
+    }
+
+    #[test]
+    fn auto_off_after_30_s_below_75() {
+        let mut a = BoostAutoOff::new();
+        assert!(!a.update(true, false, Celsius(70.0), Absent, 0));
+        assert!(!a.update(true, false, Celsius(70.0), Celsius(60.0), BOOST_AUTO_OFF_MS - 1));
+        assert!(a.update(true, false, Celsius(70.0), Celsius(60.0), BOOST_AUTO_OFF_MS));
+    }
+
+    #[test]
+    fn auto_off_restarts_when_hot_again() {
+        let mut a = BoostAutoOff::new();
+        assert!(!a.update(true, false, Celsius(70.0), Absent, 0));
+        assert!(!a.update(true, false, Celsius(75.0), Absent, 20_000)); // 75 is not < 75
+        assert!(!a.update(true, false, Celsius(70.0), Absent, 25_000));
+        assert!(!a.update(true, false, Celsius(70.0), Absent, 25_000 + BOOST_AUTO_OFF_MS - 1));
+        assert!(a.update(true, false, Celsius(70.0), Absent, 25_000 + BOOST_AUTO_OFF_MS));
+    }
+
+    #[test]
+    fn auto_off_never_acts_while_forced_off_or_unreadable() {
+        let mut a = BoostAutoOff::new();
+        for t in [0, 40_000, 80_000] {
+            assert!(!a.update(true, true, Celsius(60.0), Absent, t), "forced by S4");
+        }
+        let mut a = BoostAutoOff::new();
+        for t in [0, 40_000, 80_000] {
+            assert!(!a.update(false, false, Celsius(60.0), Absent, t), "already off");
+        }
+        let mut a = BoostAutoOff::new();
+        for t in [0, 40_000, 80_000] {
+            assert!(!a.update(true, false, Failed, Absent, t), "CPU unreadable");
+            assert!(!a.update(true, false, Absent, Absent, t + 1), "CPU absent");
+            assert!(
+                !a.update(true, false, Celsius(60.0), Failed, t + 2),
+                "GPU unreadable"
+            );
+        }
     }
 }

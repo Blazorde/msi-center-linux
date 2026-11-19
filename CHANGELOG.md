@@ -4,6 +4,15 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cooler Boost ne reste plus collé** ([ADR-0015](docs/adr/0015-cooler-boost-spikes-and-auto-off.md)) : un
+  Cooler Boost non forcé par la sécurité (allumé à la main, par la touche Fn, par le firmware, ou trouvé allumé
+  au démarrage) s'éteint tout seul après 30 s sous 75 °C. Il faisait tourner les ventilos à fond (~8 000 tr/min)
+  en ignorant la courbe.
+- **Les rafales PL2 ne déclenchent plus Cooler Boost** : la sécurité S4 attend 10 s à ≥ 95 °C (ou 2 lectures à
+  ≥ 100 °C) au lieu de 2 lectures ; les pics de 95–98 °C de quelques secondes sont ignorés.
+
 ### Added
 
 - **Profil de ventilation Frais** (`cool`) : discret jusqu'à 60 °C, puis montée raide jusqu'à **100 % dès

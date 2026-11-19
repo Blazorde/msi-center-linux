@@ -11,6 +11,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use msi_core::curve::CurvePreset;
 use msi_core::ec::FanMode;
+use msi_core::supervisor::FORCE_WINDOW;
 use msi_core::table::generate;
 use msi_daemon::client::MsiCenter1Proxy;
 use msi_daemon::controller::Controller;
@@ -276,8 +277,10 @@ async fn s4_tick_forces_cooler_boost_and_emits_signals() {
     let mut telemetry = p.receive_telemetry().await.unwrap();
     let mut events = p.receive_safety_event().await.unwrap();
     h.ec.state().cpu_temp = Some(97);
-    tick(&h, 1).await;
-    tick(&h, 2).await;
+    // S4 forces after FORCE_WINDOW readings at ≥ 95 °C (sustained heat, not a PL2 burst).
+    for n in 1..=FORCE_WINDOW as u64 {
+        tick(&h, n).await;
+    }
     let ev = tokio::time::timeout(Duration::from_secs(5), events.next())
         .await
         .unwrap()
