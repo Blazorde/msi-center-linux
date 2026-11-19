@@ -271,7 +271,7 @@ pub const fn fan_profile_icon(fp: msi_core::fan_profile::FanProfile) -> &'static
         FanProfile::Balanced => "weather-windy-symbolic",
         FanProfile::Turbo => "weather-tornado-symbolic",
         FanProfile::Cool => "weather-snow-symbolic",
-        FanProfile::CoolPlus => "weather-freezing-rain-symbolic",
+        FanProfile::CoolPlus => "weather-showers-symbolic",
         FanProfile::Custom => "document-edit-symbolic",
     }
 }
