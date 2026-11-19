@@ -441,7 +441,9 @@ async fn curve_library_round_trip() {
     let h = daemon().await;
     let d = &h.daemon;
     d.set_profile("balanced").await.unwrap();
-    d.set_fan_profile(msi_core::fan_profile::FanProfile::CoolPlus).await.unwrap();
+    d.set_fan_profile(msi_core::fan_profile::FanProfile::CoolPlus)
+        .await
+        .unwrap();
     assert_eq!(d.saved_curves().await.unwrap(), Vec::<String>::new());
     assert_eq!(d.save_curves("Frais maison").await.unwrap(), ["Frais maison"]);
     assert_eq!(d.save_curves("Autre").await.unwrap(), ["Autre", "Frais maison"]);
