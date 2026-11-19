@@ -97,7 +97,8 @@ de verre en haut de **Ventilateurs** (ou dans le menu principal, section Ventila
 
 Le choix est **retenu par profil** : passer en Gaming ré-applique le profil de ventilation choisi pour Gaming.
 La tuile du choix par défaut porte un badge « Défaut » ; **Revenir au défaut** l'y remet. Turbo n'est pas
-Cooler Boost (ventilateurs à fond), qui reste un interrupteur séparé. En **Auto**, aucune courbe de MSI Center
+Cooler Boost (ventilateurs à fond), qui reste un interrupteur séparé et **s'éteint tout seul** 30 s après que
+CPU et GPU sont repassés sous 75 °C. En **Auto**, aucune courbe de MSI Center
 n'est écrite (l'EC choisit ses paliers) ; la sécurité thermique Cooler Boost reste active.
 
 ### Courbe des ventilateurs (Personnalisé)

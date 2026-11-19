@@ -157,7 +157,8 @@ son contrôle polkit et ses erreurs typées.
   - Le vecteur écrit dans l'EC est celui de l'ADR-0010 (`FanCurve("cpu")` le renvoie, `custom` vrai) ; la
     consigne suit les paliers avec les rampes +5 %/s / −1 %/s.
 - **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
-  au choix du propriétaire.
+  au choix du propriétaire. Un Cooler Boost non forcé s'éteint de lui-même après 30 s sous 75 °C (CPU et GPU) :
+  `SafetyEvent` `boost_released`, détail `auto off: …` ([ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)).
 - **Persistance** : profil, `AutoProfileOnPower`, limite de charge, profil de ventilation par profil
   (`[fan_profiles]`) et courbes personnalisées dans `/var/lib/msi-center/state.toml` (version 3 : ajoute les
   courbes à paliers `[staged.<profil>]`, un fichier version 2 se charge tel quel ; un fichier

@@ -5,6 +5,7 @@ use msi_core::curve::{CurvePreset, FanCurveParams};
 use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::{CpuCurve, hybrid_cpu_table, hybrid_cpu_table_for};
 use msi_core::staged::Stage;
+use msi_core::supervisor::{BOOST_AUTO_OFF_MS, FORCE_WINDOW};
 use msi_core::table::TableWrite;
 use tempfile::TempDir;
 
@@ -332,13 +333,18 @@ fn set_temps(ec: &MemoryEc, cpu: Option<u8>, gpu: Option<u8>) {
 }
 
 #[test]
-fn s4_forces_boost_after_two_hot_readings_and_restores_the_owner_choice() {
+fn s4_forces_boost_after_ten_hot_readings_and_restores_the_owner_choice() {
     let mut r = rig();
     r.ctl.set_profile(Profile::Balanced).unwrap();
     set_temps(&r.ec, Some(96), Some(60));
-    r.ctl.tick(Clock(0));
-    assert!(!r.ec.state().cooler_boost, "a single reading must not force");
-    r.ctl.tick(Clock(1));
+    for t in 0..FORCE_WINDOW as u64 - 1 {
+        r.ctl.tick(Clock(t));
+        assert!(
+            !r.ec.state().cooler_boost,
+            "a burst shorter than the window must not force"
+        );
+    }
+    r.ctl.tick(Clock(FORCE_WINDOW as u64));
     assert!(r.ec.state().cooler_boost);
     assert!(r.ctl.status().boost_forced);
     let events = r.ctl.take_events();
@@ -351,14 +357,81 @@ fn s4_forces_boost_after_two_hot_readings_and_restores_the_owner_choice() {
         Err(ControlError::InvalidArgument(_))
     ));
     r.ec.state().cooler_boost = false;
-    r.ctl.tick(Clock(2));
+    r.ctl.tick(Clock(20));
     assert!(r.ec.state().cooler_boost);
 
     set_temps(&r.ec, Some(80), Some(60));
-    r.ctl.tick(Clock(3));
-    r.ctl.tick(Clock(4));
+    r.ctl.tick(Clock(21));
+    r.ctl.tick(Clock(22));
     assert!(!r.ec.state().cooler_boost);
     assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostReleased]);
+}
+
+#[test]
+fn s4_ignores_a_pl2_burst() {
+    // Measured 2026-11-19: 95–98 °C for a few seconds, then back below 85 °C.
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(98), Some(50));
+    tick_secs(&mut r.ctl, 0, FORCE_WINDOW as u64 - 1);
+    set_temps(&r.ec, Some(80), Some(50));
+    tick_secs(&mut r.ctl, FORCE_WINDOW as u64, 1);
+    assert!(!r.ec.state().cooler_boost);
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn s4_forces_at_once_at_100() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(101), Some(50));
+    tick_secs(&mut r.ctl, 0, 2);
+    assert!(r.ec.state().cooler_boost);
+    assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostForced]);
+}
+
+#[test]
+fn owner_boost_goes_off_by_itself_once_cool() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(60), Some(50));
+    r.ctl.set_cooler_boost(true).unwrap();
+    let secs = BOOST_AUTO_OFF_MS / 1000;
+    // The CPU filter needs a few readings before the timer starts: give it a few seconds of margin.
+    tick_secs(&mut r.ctl, 0, secs - 1);
+    assert!(r.ec.state().cooler_boost, "not before 30 s");
+    tick_secs(&mut r.ctl, secs - 1, 10);
+    assert!(!r.ec.state().cooler_boost);
+    let events = r.ctl.take_events();
+    assert_eq!(kinds(&events), [EventKind::BoostReleased]);
+    assert!(events[0].detail.starts_with("auto off"), "{}", events[0].detail);
+    assert!(!r.ctl.status().cooler_boost);
+}
+
+#[test]
+fn owner_boost_stays_on_while_hot() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(80), Some(50));
+    r.ctl.set_cooler_boost(true).unwrap();
+    tick_secs(&mut r.ctl, 0, 120);
+    assert!(r.ec.state().cooler_boost);
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn boost_found_on_at_start_goes_off_once_cool() {
+    let mut r = rig_with(
+        MemoryState {
+            cooler_boost: true,
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(60), Some(50));
+    tick_secs(&mut r.ctl, 0, BOOST_AUTO_OFF_MS / 1000 + 10);
+    assert!(!r.ec.state().cooler_boost);
 }
 
 #[test]
@@ -534,7 +607,7 @@ fn s9_cpu_fan_stopped_at_70_for_30_s_restores_factory_and_locks() {
     assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
     // S4 still protects.
     r.ec.state().cpu_temp = Some(97);
-    tick_secs(&mut r.ctl, 100, 2);
+    tick_secs(&mut r.ctl, 100, FORCE_WINDOW as u64);
     assert!(r.ec.state().cooler_boost);
 }
 
@@ -1002,7 +1075,7 @@ fn s4_still_forces_cooler_boost_under_auto() {
     let mut r = rig();
     r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
     set_temps(&r.ec, Some(96), Some(60));
-    tick_secs(&mut r.ctl, 0, 2);
+    tick_secs(&mut r.ctl, 0, FORCE_WINDOW as u64);
     assert!(r.ec.state().cooler_boost);
     assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostForced]);
 }

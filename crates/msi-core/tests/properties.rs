@@ -10,7 +10,9 @@ use msi_core::hybrid::{
     hybrid_cpu_table, hybrid_cpu_table_for,
 };
 use msi_core::staged::{MAX_STAGES, Stage, StageSelector, StagedCurve, StagedPilot, safety_floor};
-use msi_core::supervisor::{BOOST_ON_TEMP, BoostDecision, SensorReading, ThermalSupervisor};
+use msi_core::supervisor::{
+    BOOST_CRITICAL_TEMP, BOOST_ON_TEMP, BoostDecision, FORCE_WINDOW, SensorReading, ThermalSupervisor,
+};
 use msi_core::table::{RawTables, SPEED_FLOORS, StepCurve, generate, write_plan, write_plan_raw};
 use proptest::prelude::*;
 
@@ -188,8 +190,8 @@ proptest! {
     }
 
     #[test]
-    fn s4_two_consecutive_readings_at_or_above_95_force_boost(
-        hot in proptest::collection::vec(BOOST_ON_TEMP..200.0, 2),
+    fn s4_sustained_readings_at_or_above_95_force_boost(
+        hot in proptest::collection::vec(BOOST_ON_TEMP..200.0, FORCE_WINDOW),
         other in -20.0f64..200.0,
         hot_is_cpu in any::<bool>(),
         prior in proptest::collection::vec((-20.0f64..120.0, -20.0f64..120.0), 0..10),
@@ -204,6 +206,46 @@ proptest! {
             last = sup.update(SensorReading::Celsius(cpu), SensorReading::Celsius(gpu));
         }
         prop_assert_eq!(last, BoostDecision::Forced);
+    }
+
+    #[test]
+    fn s4_two_consecutive_readings_at_or_above_100_force_boost(
+        hot in proptest::collection::vec(BOOST_CRITICAL_TEMP..200.0, 2),
+        other in -20.0f64..200.0,
+        hot_is_cpu in any::<bool>(),
+        prior in proptest::collection::vec((-20.0f64..120.0, -20.0f64..120.0), 0..10),
+    ) {
+        let mut sup = ThermalSupervisor::new();
+        for (c, g) in prior {
+            sup.update(SensorReading::Celsius(c), SensorReading::Celsius(g));
+        }
+        let mut last = BoostDecision::Released;
+        for h in hot {
+            let (cpu, gpu) = if hot_is_cpu { (h, other) } else { (other, h) };
+            last = sup.update(SensorReading::Celsius(cpu), SensorReading::Celsius(gpu));
+        }
+        prop_assert_eq!(last, BoostDecision::Forced);
+    }
+
+    #[test]
+    fn s4_bursts_below_100_shorter_than_the_window_never_force_boost(
+        base in proptest::collection::vec(20.0f64..94.9, 1..30),
+        burst in BOOST_ON_TEMP..BOOST_CRITICAL_TEMP,
+        len in 1usize..FORCE_WINDOW,
+    ) {
+        let mut sup = ThermalSupervisor::new();
+        for b in base {
+            for _ in 0..len {
+                prop_assert_eq!(
+                    sup.update(SensorReading::Celsius(burst), SensorReading::Absent),
+                    BoostDecision::Released
+                );
+            }
+            prop_assert_eq!(
+                sup.update(SensorReading::Celsius(b), SensorReading::Absent),
+                BoostDecision::Released
+            );
+        }
     }
 
     #[test]

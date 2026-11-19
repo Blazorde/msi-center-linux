@@ -47,7 +47,9 @@ use msi_core::power_limit::PowerLimits;
 use msi_core::profile::{GpuMode, Profile};
 use msi_core::staged::{FloorRaise, StagedCurve};
 use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
-use msi_core::supervisor::{BoostDecision, SensorReading, ThermalSupervisor};
+use msi_core::supervisor::{
+    BOOST_AUTO_OFF_MS, BOOST_AUTO_OFF_TEMP, BoostAutoOff, BoostDecision, SensorReading, ThermalSupervisor,
+};
 use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, StepCurve, TableWrite, generate, write_plan};
 
 use crate::ec::{EcBackend, Fan, restore_factory};
@@ -261,6 +263,7 @@ pub struct Controller {
     cpu_pilot: CpuDriver,
     cpu_live: Option<GeneratedCurve>,
     supervisor: ThermalSupervisor,
+    boost_auto_off: BoostAutoOff,
     boost_forced: bool,
     user_boost: bool,
     last_ac: Option<bool>,
@@ -299,7 +302,6 @@ impl Controller {
             ),
             Ok(fw) => (fw, None),
         };
-        let user_boost = read_only.is_none() && ec.cooler_boost().unwrap_or(false);
         let factory = CONF_G2_5.factory_tables(&fw_version);
         (
             Self {
@@ -323,8 +325,10 @@ impl Controller {
                 cpu_pilot: CpuDriver::new(),
                 cpu_live: None,
                 supervisor: ThermalSupervisor::new(),
+                boost_auto_off: BoostAutoOff::new(),
                 boost_forced: false,
-                user_boost,
+                // A Cooler Boost found on at start is not a choice to keep: BoostAutoOff switches it off.
+                user_boost: false,
                 last_ac: None,
                 ticks: 0,
                 events: Vec::new(),
@@ -1010,6 +1014,16 @@ impl Controller {
                 .supervisor
                 .update(reading(&cpu_temp, false), reading(&gpu_temp, true));
             self.enforce_boost(decision, &readings);
+            let cpu_filtered = filtered.map_or(SensorReading::Failed, SensorReading::Celsius);
+            if self.boost_auto_off.update(
+                readings.cooler_boost == Some(true),
+                self.boost_forced,
+                cpu_filtered,
+                reading(&gpu_temp, true),
+                now_ms,
+            ) {
+                self.auto_off_boost(&readings);
+            }
             if self.applied {
                 self.check_stall(now, &readings);
             }
@@ -1118,6 +1132,24 @@ impl Controller {
             "S9 fan stall: {detail}; {restored}. Check the fan, then restart msi-daemon to take control again"
         ));
         self.event(EventKind::FanStalled, f64::from(temp), detail);
+    }
+
+    /// Switches off a Cooler Boost left on once CPU and GPU stayed cool ([`BoostAutoOff`]).
+    fn auto_off_boost(&mut self, r: &Readings) {
+        if let Err(e) = self.ec.set_cooler_boost(false) {
+            tracing::error!(error = %e, "cannot switch Cooler Boost off");
+            return;
+        }
+        self.user_boost = false;
+        let hottest = f64::from(r.cpu_temp.unwrap_or(0).max(r.gpu_temp.unwrap_or(0)));
+        self.event(
+            EventKind::BoostReleased,
+            hottest,
+            format!(
+                "auto off: below {BOOST_AUTO_OFF_TEMP} °C for {} s",
+                BOOST_AUTO_OFF_MS / 1000
+            ),
+        );
     }
 
     fn enforce_boost(&mut self, decision: BoostDecision, r: &Readings) {
