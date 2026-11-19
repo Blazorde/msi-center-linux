@@ -413,7 +413,7 @@ mod tests {
         d.remove(7);
         assert_eq!(d.stages.len(), 1);
         d.remove(0);
-        assert!(d.stages.is_empty());
+        assert!(d.stages.is_empty(), "{:?}", d.stages);
     }
 
     #[test]
@@ -509,7 +509,7 @@ mod tests {
     fn floors_and_summary_read_in_french() {
         let curve = draft(0, &[(55, 50, 20), (70, 64, 30)]).validate().unwrap();
         let floors = curve.raised_floors();
-        assert!(!floors.is_empty());
+        assert!(!floors.is_empty(), "{floors:?}");
         assert!(floor_fr(&floors[0]).starts_with("Dès 60"));
         assert!(floor_fr(&floors[0]).contains("plancher de sécurité"));
         assert_eq!(

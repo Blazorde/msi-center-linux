@@ -1199,7 +1199,7 @@ fn staged_cpu_curve_follows_its_stages_and_falls_back_per_stage() {
     let curve = four_stages();
     let view = r.ctl.set_cpu_stages(curve.clone()).unwrap();
     assert!(view.saved && view.active && view.supported);
-    assert!(view.floors.is_empty());
+    assert!(view.floors.is_empty(), "{:?}", view.floors);
     assert_eq!(r.ctl.status().fan_profile, FanProfile::Custom);
     // Applied before any temperature is known: the fan spins at the first stage's speed.
     assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 30));
@@ -1243,7 +1243,8 @@ fn staged_cpu_curve_follows_its_stages_and_falls_back_per_stage() {
             "{speeds:?}"
         );
     }
-    assert!(r.ctl.take_events().is_empty());
+    let events = r.ctl.take_events();
+    assert!(events.is_empty(), "{events:?}");
 }
 
 #[test]
@@ -1380,7 +1381,7 @@ fn cpu_stages_view_starts_from_the_preset_table() {
     let table = generate(&CurvePreset::Progressive.spec()).unwrap().curve;
     assert_eq!(view.curve, StagedCurve::from_step_curve(&table).unwrap());
     assert_eq!(view.curve.stages().len(), 6);
-    assert!(view.floors.is_empty());
+    assert!(view.floors.is_empty(), "{:?}", view.floors);
 }
 
 #[test]

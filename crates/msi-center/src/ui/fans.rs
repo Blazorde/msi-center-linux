@@ -571,7 +571,7 @@ impl Fans {
                     s.custom = custom;
                     s.loaded = Some(c);
                     s.preview = None;
-                    s.staged = staged.clone();
+                    s.staged.clone_from(&staged);
                     s.error = None;
                     drop(s);
                     p.staged.set_state(staged, fan == Fan::Cpu);
@@ -889,24 +889,7 @@ impl Fans {
         self.revert.set_sensitive(dirty);
         self.reset.set_sensitive(!read_only && is_custom);
 
-        // Report.
-        while let Some(c) = self.report_list.first_child() {
-            self.report_list.remove(&c);
-        }
-        let shown = s.shown().cloned();
-        if let Some(g) = &shown {
-            for r in &g.raised {
-                self.report_list.append(
-                    &gtk::Label::builder()
-                        .label(format!("▲ {}", r.describe()))
-                        .xalign(0.0)
-                        .wrap(true)
-                        .build(),
-                );
-            }
-        }
-        self.report
-            .set_reveal_child(shown.as_ref().is_some_and(|g| !g.raised.is_empty()));
+        self.refresh_report(s.shown());
         let applied = s.loaded.as_ref().map(|l| l.generated.clone());
         let preview = if dirty { s.preview.clone() } else { None };
         // The exponential curve drawn: the one being edited, else the one in force (none under Auto).
@@ -941,6 +924,24 @@ impl Fans {
             "Modifiez un réglage : l'aperçu s'affiche en pointillés, sans rien écrire. « Appliquer en \
              Personnalisé » enregistre la courbe et passe ce profil en Personnalisé."
         });
+    }
+
+    /// Lists the steps raised by the safety floors (S2) of the table shown.
+    fn refresh_report(&self, shown: Option<&Generated>) {
+        while let Some(c) = self.report_list.first_child() {
+            self.report_list.remove(&c);
+        }
+        let raised = shown.map_or(&[][..], |g| &g.raised[..]);
+        for r in raised {
+            self.report_list.append(
+                &gtk::Label::builder()
+                    .label(format!("▲ {}", r.describe()))
+                    .xalign(0.0)
+                    .wrap(true)
+                    .build(),
+            );
+        }
+        self.report.set_reveal_child(!raised.is_empty());
     }
 
     fn refresh_table(&self) {
