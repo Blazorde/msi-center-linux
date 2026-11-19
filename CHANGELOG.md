@@ -4,6 +4,8 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-19
+
 ### Fixed
 
 - **Cooler Boost ne reste plus collé** ([ADR-0015](docs/adr/0015-cooler-boost-spikes-and-auto-off.md)) : un
@@ -27,6 +29,11 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   84 % à 67 °C, 90 % à 70 °C), 100 % dès 75 °C. App, extension et `msictl fan cool-plus`.
 - **Profil de ventilation Frais** (`cool`) : discret jusqu'à 60 °C, puis montée raide jusqu'à **100 % dès
   78 °C** pour garder le CPU sous 80 °C. Disponible dans l'app, l'extension et `msictl fan cool`.
+
+## [1.0.0] - 2026-10-28
+
+### Added
+
 - **Limites de puissance CPU par profil** ([ADR-0014](docs/adr/0014-cpu-power-limits.md)) : le firmware laisse le
   185H à 110 W / 160 W, d'où des pics à 97–99 °C et un CPU chaud même au repos. Éco passe à **20 / 35 W**,
   Équilibré à **35 / 60 W** (PL1 / PL2), Gaming garde les limites du firmware. Jamais au-dessus du firmware,
@@ -35,6 +42,11 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   `CpuPowerLimits` (ajout compatible).
 - **Wiki GitHub** : la doc `docs/` est publiée sur le [wiki](https://github.com/Blazorde/msi-center-linux/wiki)
   par `scripts/wiki-sync.sh` (pages à plat, liens réécrits, captures, barre latérale ; `--dry-run` pour un aperçu).
+
+## [0.2.0] - 2026-10-28
+
+### Added
+
 - **Courbe à paliers du ventilo CPU** ([ADR-0013](docs/adr/0013-staged-cpu-fan-curve.md)) : autant de paliers
   que vous voulez (1 à 79), chacun avec **sa** température de montée, sa puissance et **sa** température de
   retombée, plus une puissance au repos. Le daemon pilote le ventilo CPU en direct (ADR-0010) : le plafond de
