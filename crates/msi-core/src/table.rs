@@ -591,6 +591,12 @@ mod tests {
                 [40, 47, 54, 61, 68, 74],
                 [37, 44, 51, 58, 65, 71],
             ),
+            (
+                CurvePreset::Cool,
+                [35, 45, 45, 60, 76, 88, 100],
+                [55, 60, 65, 70, 74, 78],
+                [52, 57, 62, 67, 71, 75],
+            ),
         ];
         for (preset, speeds, up, down) in expected {
             let g = generate(&preset.spec()).unwrap();
@@ -608,7 +614,7 @@ mod tests {
             // Silent reaches 100 % at T1 = 88 °C, above the 85 °C floor: S2 raises step 6 (entered at 85 °C).
             let expected_raised: &[(usize, u8, u8, u8)] = match preset {
                 CurvePreset::Silent => &[(6, 86, 100, 85)],
-                CurvePreset::Progressive | CurvePreset::Aggressive => &[],
+                CurvePreset::Progressive | CurvePreset::Aggressive | CurvePreset::Cool => &[],
             };
             assert_eq!(raised, expected_raised, "{preset:?}");
         }
@@ -622,6 +628,15 @@ mod tests {
         assert_eq!(c.min_speed_at(52), 30);
         // No step larger than 25 points: no "off then full blast".
         assert!(c.speeds()[1..].windows(2).all(|w| w[1] - w[0] <= 25), "{c:?}");
+    }
+
+    #[test]
+    fn cool_preset_meets_the_owner_goals() {
+        let c = generate(&CurvePreset::Cool.spec()).unwrap().curve;
+        // Never off, quiet (≤ 45 %) below 65 °C, full speed before 80 °C.
+        assert_eq!(c.min_speed_at(40), 35);
+        assert!(c.min_speed_at(64) <= 45, "{c:?}");
+        assert_eq!(c.min_speed_at(78), 100);
     }
 
     #[test]

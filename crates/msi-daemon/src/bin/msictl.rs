@@ -18,7 +18,7 @@ use zbus::OwnedVariant;
 const USAGE: &str = "usage: msictl [--session] <command>
   status                         profile, fan mode, Cooler Boost, battery, dGPU, CPU power limits, firmware
   profile <eco|balanced|gaming>  apply a profile
-  fan [silent|auto|balanced|turbo|custom]
+  fan [silent|auto|balanced|turbo|cool|custom]
                                  show or set the fan profile of the current profile (remembered per profile;
                                  auto = MSI factory curve driven by the EC)
   factory                        hand the fans back to the EC (factory tables, fan mode auto)
@@ -584,7 +584,7 @@ mod tests {
         );
         assert!(!out.contains("live:") && !out.contains("k 2"), "{out}");
         let list = format_fan_profiles("auto", "turbo");
-        assert_eq!(list.lines().count(), 5);
+        assert_eq!(list.lines().count(), FanProfile::ALL.len());
         assert!(list.contains("* auto"), "{list}");
         assert!(
             list.lines()

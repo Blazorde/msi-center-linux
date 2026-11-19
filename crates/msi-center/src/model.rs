@@ -241,6 +241,7 @@ pub fn profile_description(p: msi_core::profile::Profile) -> String {
         CurvePreset::Silent => "arrêt sous 52 °C",
         CurvePreset::Progressive => "dès 48 °C",
         CurvePreset::Aggressive => "jamais à l'arrêt",
+        CurvePreset::Cool => "100 % dès 78 °C",
     };
     let curve = format!(
         "ventilation {} par défaut ({detail})",
@@ -268,6 +269,7 @@ pub const fn fan_profile_icon(fp: msi_core::fan_profile::FanProfile) -> &'static
         FanProfile::Auto => "emblem-system-symbolic",
         FanProfile::Balanced => "weather-windy-symbolic",
         FanProfile::Turbo => "weather-tornado-symbolic",
+        FanProfile::Cool => "weather-snow-symbolic",
         FanProfile::Custom => "document-edit-symbolic",
     }
 }
