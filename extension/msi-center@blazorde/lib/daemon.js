@@ -137,6 +137,16 @@ export class DaemonClient extends EventEmitter {
         return this.call('SetCoolerBoost', new GLib.Variant('(b)', [on]));
     }
 
+    /** @returns {Promise<string[]>} names of the curve library (ADR-0016), sorted */
+    async savedCurves() {
+        const reply = await this.call('SavedCurves', null, '(as)');
+        return reply.deepUnpack()[0];
+    }
+
+    applySavedCurves(name) {
+        return this.call('ApplySavedCurves', new GLib.Variant('(s)', [name]));
+    }
+
     setChargeLimit(limit) {
         return this.call('SetChargeLimit', new GLib.Variant('(y)', [limit]));
     }

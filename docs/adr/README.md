@@ -19,4 +19,5 @@ Un ADR accepté n'est pas modifié : on en crée un nouveau qui le remplace (`Su
 | [0012](0012-fan-profiles.md) | Profils de ventilation : Auto persisté, choix retenu par profil, `SetFanCurve` = Personnalisé | Proposé |
 | [0013](0013-staged-cpu-fan-curve.md) | Courbe à paliers du ventilo CPU : autant de paliers que souhaité, retombée propre à chaque palier, piloté en direct | Proposé |
 | [0014](0014-cpu-power-limits.md) | Limites de puissance CPU (RAPL PL1/PL2) par profil, jamais au-dessus du firmware | Proposé |
+| [0016](0016-curve-library.md) | Bibliothèque de courbes : autant de courbes nommées que souhaité, appliquées en Personnalisé | Accepté |
 | [0015](0015-cooler-boost-spikes-and-auto-off.md) | S4 ignore les rafales PL2 (10 s à ≥ 95 °C ou 2 lectures à ≥ 100 °C), Cooler Boost non forcé coupé après 30 s sous 75 °C | Accepté |

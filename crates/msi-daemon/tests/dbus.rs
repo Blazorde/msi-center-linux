@@ -345,6 +345,12 @@ async fn introspection_matches_documented_signatures() {
         r#"<arg name="stages" type="a(yyy)" direction="in"/>"#,
         r#"<method name="ResetCpuStages">"#,
         r#"<method name="PreviewCpuStages">"#,
+        r#"<method name="SavedCurves">"#,
+        r#"<arg name="names" type="as" direction="out"/>"#,
+        r#"<method name="SaveCurves">"#,
+        r#"<arg name="name" type="s" direction="in"/>"#,
+        r#"<method name="ApplySavedCurves">"#,
+        r#"<method name="DeleteSavedCurves">"#,
         r#"<property name="FanProfile" type="s" access="read"/>"#,
         r#"<property name="DefaultFanProfile" type="s" access="read"/>"#,
         r#"<arg name="holders" type="a(us)" direction="out"/>"#,
@@ -371,7 +377,7 @@ async fn introspection_matches_documented_signatures() {
     }
     let start = xml.find(r#"<interface name="org.blazorde.MsiCenter1">"#).unwrap();
     let iface = &xml[start..start + xml[start..].find("</interface>").unwrap()];
-    assert_eq!(iface.matches("<method ").count(), 16, "{iface}");
+    assert_eq!(iface.matches("<method ").count(), 20, "{iface}");
     assert_eq!(iface.matches("<signal ").count(), 2, "{iface}");
     assert_eq!(iface.matches("<property ").count(), 14, "{iface}");
 }

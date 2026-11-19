@@ -20,6 +20,8 @@ const XML = `<node><interface name="org.blazorde.MsiCenter1">
   <method name="SetCoolerBoost"><arg type="b" direction="in"/></method>
   <method name="SetChargeLimit"><arg type="y" direction="in"/></method>
   <method name="GpuHolders"><arg type="a(us)" direction="out"/></method>
+  <method name="SavedCurves"><arg type="as" direction="out"/></method>
+  <method name="ApplySavedCurves"><arg type="s" direction="in"/></method>
   <signal name="Telemetry"><arg type="a{sv}"/></signal>
   <signal name="SafetyEvent"><arg type="s"/><arg type="d"/><arg type="s"/></signal>
   <property name="Profile" type="s" access="read"/>
@@ -129,6 +131,19 @@ const impl = {
             return;
         }
         set('ChargeLimit', v);
+        inv.return_value(null);
+    },
+    SavedCurves() {
+        return ['Frais maison', 'Nuit'];
+    },
+    ApplySavedCurvesAsync([name], inv) {
+        if (!guard(inv))
+            return;
+        if (!['Frais maison', 'Nuit'].includes(name)) {
+            fail(inv, 'InvalidArgument', `no saved curves named ${name}`);
+            return;
+        }
+        set('FanProfile', 'custom');
         inv.return_value(null);
     },
     GpuHolders() {

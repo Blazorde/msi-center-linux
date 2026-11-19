@@ -1588,3 +1588,101 @@ fn adr_0014_without_rapl_nothing_is_written_and_status_is_none() {
     r.ctl.set_profile(Profile::Balanced).unwrap();
     assert_eq!(r.ctl.status().cpu_power, None);
 }
+
+// ---- ADR-0016: curve library ----
+
+#[test]
+fn saved_curves_snapshot_the_curves_in_force_and_apply_them_elsewhere() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_fan_profile(FanProfile::CoolPlus).unwrap();
+    assert_eq!(r.ctl.save_curves("  Frais maison ").unwrap(), ["Frais maison"]);
+    let writes = r.ec.state().writes.len();
+    // Saving writes nothing to the EC.
+    r.ctl.save_curves("Copie").unwrap();
+    assert_eq!(r.ec.state().writes.len(), writes);
+
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.apply_saved_curves("Frais maison").unwrap();
+    let s = r.ctl.settings();
+    assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Custom);
+    assert_eq!(s.curve(Profile::Gaming, Fan::Cpu), CurvePreset::CoolPlus.spec());
+    assert_eq!(s.curve(Profile::Gaming, Fan::Gpu), CurvePreset::CoolPlus.spec());
+    assert!(!s.is_staged(Profile::Gaming));
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::CoolPlus));
+    // Balanced keeps its own choice.
+    assert_eq!(s.fan_profile(Profile::Balanced), FanProfile::CoolPlus);
+}
+
+#[test]
+fn saved_curves_keep_the_staged_cpu_curve() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    r.ctl.save_curves("Paliers").unwrap();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.apply_saved_curves("Paliers").unwrap();
+    assert!(r.ctl.settings().is_staged(Profile::Eco));
+    assert_eq!(r.ctl.settings().staged_curve(Profile::Eco), Some(&four_stages()));
+
+    // Applying an entry without stages drops the staged curve of the target profile.
+    r.ctl.set_fan_profile(FanProfile::Turbo).unwrap();
+    r.ctl.save_curves("Turbo").unwrap();
+    r.ctl.apply_saved_curves("Turbo").unwrap();
+    assert!(!r.ctl.settings().is_staged(Profile::Eco));
+    assert_eq!(r.ctl.settings().staged_curve(Profile::Eco), None);
+}
+
+#[test]
+fn saved_curves_survive_a_restart() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.save_curves("Nuit").unwrap();
+    let (again, warnings) = StateStore::new(r.dir.path().join("state/state.toml")).load();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(again.library, r.ctl.settings().library);
+}
+
+#[test]
+fn curve_library_rejects_bad_requests() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    for bad in ["", "   ", "a\nb"] {
+        assert!(
+            matches!(r.ctl.save_curves(bad), Err(ControlError::InvalidArgument(_))),
+            "{bad:?}"
+        );
+    }
+    assert!(matches!(
+        r.ctl.apply_saved_curves("absent"),
+        Err(ControlError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        r.ctl.delete_saved_curves("absent"),
+        Err(ControlError::InvalidArgument(_))
+    ));
+    // The firmware's own curve is not ours to save.
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    assert!(matches!(
+        r.ctl.save_curves("Usine"),
+        Err(ControlError::InvalidArgument(_))
+    ));
+    assert_eq!(r.ctl.saved_curves(), Vec::<String>::new());
+}
+
+#[test]
+fn deleting_saved_curves_leaves_the_curves_in_force() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Cool).unwrap();
+    r.ctl.save_curves("A").unwrap();
+    r.ctl.save_curves("B").unwrap();
+    r.ctl.apply_saved_curves("A").unwrap();
+    let before = r.ec.state().clone();
+    assert_eq!(r.ctl.delete_saved_curves("A").unwrap(), ["B"]);
+    assert_eq!(
+        r.ctl.settings().fan_profile(Profile::Balanced),
+        FanProfile::Custom
+    );
+    assert_eq!(r.ec.state().gpu, before.gpu);
+}

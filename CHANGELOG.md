@@ -15,6 +15,10 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ### Added
 
+- **Mes courbes** ([ADR-0016](docs/adr/0016-curve-library.md)) : enregistrez autant de courbes que vous voulez
+  sous un nom (photo des courbes en vigueur : CPU, paliers, GPU) et réappliquez-les dans n'importe quel profil.
+  App (carte « Mes courbes »), extension (sous-menu), `msictl curves`. D-Bus : `SavedCurves`, `SaveCurves`,
+  `ApplySavedCurves`, `DeleteSavedCurves` (ajout compatible) ; `state.toml` version 4.
 - **Profil de ventilation Frais+** (`cool-plus`) : plus costaud que Frais entre 55 et 70 °C (≈ 60 % à 55 °C,
   84 % à 67 °C, 90 % à 70 °C), 100 % dès 75 °C. App, extension et `msictl fan cool-plus`.
 - **Profil de ventilation Frais** (`cool`) : discret jusqu'à 60 °C, puis montée raide jusqu'à **100 % dès

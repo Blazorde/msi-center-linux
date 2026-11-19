@@ -22,6 +22,7 @@ pub mod curve;
 pub mod ec;
 pub mod fan_profile;
 pub mod hybrid;
+pub mod library;
 pub mod power_limit;
 pub mod profile;
 pub mod staged;
