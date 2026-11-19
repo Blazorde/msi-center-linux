@@ -412,23 +412,8 @@ async fn run(cli: Cli) -> zbus::Result<()> {
             }
         }
         Cmd::StagesShow => print!("{}", format_stages(&p.cpu_stages().await?)),
-        Cmd::CurvesList => print!("{}", format_saved_curves(&p.saved_curves().await?)),
-        Cmd::CurvesSave(name) => {
-            let names = p.save_curves(&name).await?;
-            println!("curves of profile {} saved as {name:?}", p.profile().await?);
-            print!("{}", format_saved_curves(&names));
-        }
-        Cmd::CurvesApply(name) => {
-            p.apply_saved_curves(&name).await?;
-            println!(
-                "saved curves {name:?} applied to profile {} (fan profile custom)",
-                p.profile().await?
-            );
-        }
-        Cmd::CurvesDelete(name) => {
-            let names = p.delete_saved_curves(&name).await?;
-            println!("saved curves {name:?} deleted");
-            print!("{}", format_saved_curves(&names));
+        Cmd::CurvesList | Cmd::CurvesSave(_) | Cmd::CurvesApply(_) | Cmd::CurvesDelete(_) => {
+            curves(&p, cli.cmd).await?;
         }
         Cmd::StagesSet {
             idle,
@@ -466,6 +451,32 @@ async fn run(cli: Cli) -> zbus::Result<()> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// `msictl curves …`: the curve library (ADR-0016).
+async fn curves(p: &MsiCenter1Proxy<'_>, cmd: Cmd) -> zbus::Result<()> {
+    match cmd {
+        Cmd::CurvesList => print!("{}", format_saved_curves(&p.saved_curves().await?)),
+        Cmd::CurvesSave(name) => {
+            let names = p.save_curves(&name).await?;
+            println!("curves of profile {} saved as {name:?}", p.profile().await?);
+            print!("{}", format_saved_curves(&names));
+        }
+        Cmd::CurvesApply(name) => {
+            p.apply_saved_curves(&name).await?;
+            println!(
+                "saved curves {name:?} applied to profile {} (fan profile custom)",
+                p.profile().await?
+            );
+        }
+        Cmd::CurvesDelete(name) => {
+            let names = p.delete_saved_curves(&name).await?;
+            println!("saved curves {name:?} deleted");
+            print!("{}", format_saved_curves(&names));
+        }
+        _ => {}
     }
     Ok(())
 }
