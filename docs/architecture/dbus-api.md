@@ -18,7 +18,7 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 |---|---|---|---|---|
 | `SetProfile` | `s profile` (`eco` · `balanced` · `gaming`) | – | `set-profile` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy` (écriture sysfs dGPU en échec), `Hardware` |
 | `SetAutoProfileOnPower` | `b enabled` | – | `set-profile` | idem |
-| `SetFanProfile` | `s fan_profile` (`silent` · `auto` · `balanced` · `turbo` · `cool` · `custom`) | – | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
+| `SetFanProfile` | `s fan_profile` (`silent` · `auto` · `balanced` · `turbo` · `cool` · `cool-plus` · `custom`) | – | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
 | `CustomFanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
 | `FanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised, b custom` | – | `InvalidArgument` |
 | `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
@@ -65,7 +65,7 @@ appel ou à la boucle de 1 s).
 | Propriété | Type | Sens |
 |---|---|---|
 | `Profile` | `s` | Profil choisi |
-| `FanProfile` | `s` | Profil de ventilation du profil choisi : `silent` · `auto` · `balanced` · `turbo` · `cool` · `custom` (ajouté le 2026-10-26) |
+| `FanProfile` | `s` | Profil de ventilation du profil choisi : `silent` · `auto` · `balanced` · `turbo` · `cool` · `cool-plus` · `custom` (ajouté le 2026-10-26) |
 | `DefaultFanProfile` | `s` | Profil de ventilation par défaut du profil choisi (`eco` → `silent`, `balanced` → `balanced`, `gaming` → `turbo`) |
 | `AutoProfileOnPower` | `b` | Profil automatique au branchement/débranchement secteur (secteur : `balanced`, batterie : `eco` par défaut) |
 | `OnAcPower` | `b` | Sur secteur (`false` aussi si inconnu) |
@@ -98,7 +98,7 @@ son contrôle polkit et ses erreurs typées.
   de performance a un profil de ventilation, par défaut `DefaultFanProfile` ; `SetFanProfile` choisit celui
   du **profil choisi**, le retient pour ce profil (persisté) et l'applique. `SetProfile` applique le profil de
   ventilation retenu du nouveau profil. Choisir le profil par défaut efface la préférence.
-  - `silent` / `balanced` / `turbo` / `cool` : presets Silencieux / Progressif / Agressif / Frais (GPU : table complète ; CPU :
+  - `silent` / `balanced` / `turbo` / `cool` / `cool-plus` : presets Silencieux / Progressif / Agressif / Frais / Frais+ (GPU : table complète ; CPU :
     pilotage hybride avec cette courbe).
   - `custom` : la courbe personnalisée de chaque ventilo pour ce profil (`CustomFanCurve`) ; un ventilo jamais
     édité suit le preset du profil de ventilation par défaut.

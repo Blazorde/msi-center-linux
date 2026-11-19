@@ -312,11 +312,19 @@ pub enum CurvePreset {
     /// Frais: never off (35 %), quiet up to 60 °C, then a steep linear rise to 100 % at 78 °C, so the CPU stays
     /// under 80 °C as long as the fans can hold it.
     Cool,
+    /// Frais+: never off (40 %), linear from 50 % at 50 °C to 100 % at 75 °C (≈ 60 % at 55 °C, 84 % at 67 °C).
+    CoolPlus,
 }
 
 impl CurvePreset {
     /// All presets.
-    pub const ALL: [Self; 4] = [Self::Silent, Self::Progressive, Self::Aggressive, Self::Cool];
+    pub const ALL: [Self; 5] = [
+        Self::Silent,
+        Self::Progressive,
+        Self::Aggressive,
+        Self::Cool,
+        Self::CoolPlus,
+    ];
 
     /// Stable name (D-Bus, state file).
     #[must_use]
@@ -326,6 +334,7 @@ impl CurvePreset {
             Self::Progressive => "progressive",
             Self::Aggressive => "aggressive",
             Self::Cool => "cool",
+            Self::CoolPlus => "cool-plus",
         }
     }
 
@@ -337,6 +346,7 @@ impl CurvePreset {
             Self::Progressive => (48, 85, 30, 100, 2.2, 0, [48, 56, 64, 71, 79, 85], 4),
             Self::Aggressive => (40, 74, 40, 100, 1.4, 30, [40, 47, 54, 61, 68, 74], 3),
             Self::Cool => (60, 78, 45, 100, 1.0, 35, [55, 60, 65, 70, 74, 78], 3),
+            Self::CoolPlus => (50, 75, 50, 100, 1.0, 40, [50, 55, 60, 65, 70, 75], 3),
         };
         FanCurveSpec {
             params: FanCurveParams { t0, t1, min, max, k },
@@ -545,6 +555,9 @@ mod tests {
     #[test]
     fn preset_names_are_stable() {
         let names: Vec<&str> = CurvePreset::ALL.iter().map(|p| p.as_str()).collect();
-        assert_eq!(names, ["silent", "progressive", "aggressive", "cool"]);
+        assert_eq!(
+            names,
+            ["silent", "progressive", "aggressive", "cool", "cool-plus"]
+        );
     }
 }

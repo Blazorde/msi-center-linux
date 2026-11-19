@@ -82,9 +82,9 @@ fenêtre, `Ctrl+Q` quitte.
 
 ### Profils de ventilation
 
-Chaque profil (Éco, Équilibré, Gaming) a un **profil de ventilation**, choisi en un clic dans les six tuiles
+Chaque profil (Éco, Équilibré, Gaming) a un **profil de ventilation**, choisi en un clic dans les sept tuiles
 de verre en haut de **Ventilateurs** (ou dans le menu principal, section Ventilation, ou par les actions
-`app.fan::silent|auto|balanced|turbo|cool|custom`) :
+`app.fan::silent|auto|balanced|turbo|cool|cool-plus|custom`) :
 
 | Profil de ventilation | Ce qu'il fait | Par défaut pour |
 |---|---|---|
@@ -93,6 +93,7 @@ de verre en haut de **Ventilateurs** (ou dans le menu principal, section Ventila
 | **Équilibré** | démarrage doux, 100 % dès 85 °C | Équilibré |
 | **Turbo** | monte tôt et fort, 100 % dès 74 °C, puis redescend | Gaming |
 | **Frais** | discret jusqu'à 60 °C, puis 100 % dès 78 °C pour rester sous 80 °C | – |
+| **Frais+** | plus fort que Frais dès 50 °C (≈ 60 % à 55 °C, 84 % à 67 °C), 100 % dès 75 °C | – |
 | **Personnalisé** | votre courbe (éditeur ci-dessous), planchers de sécurité inclus | – |
 
 Le choix est **retenu par profil** : passer en Gaming ré-applique le profil de ventilation choisi pour Gaming.

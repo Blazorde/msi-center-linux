@@ -131,7 +131,7 @@ test('badgeText hides zero and caps at 99+', () => {
 });
 
 test('fan profiles: stable ids, French labels, status text', () => {
-    assert.deepEqual(FAN_PROFILES.map(p => p.id), ['silent', 'auto', 'balanced', 'turbo', 'cool', 'custom']);
+    assert.deepEqual(FAN_PROFILES.map(p => p.id), ['silent', 'auto', 'balanced', 'turbo', 'cool', 'cool-plus', 'custom']);
     assert.equal(fanProfileInfo('custom').label, 'Personnalisé');
     assert.equal(fanProfileInfo('cool').label, 'Frais');
     assert.equal(fanProfileInfo('max'), null);
