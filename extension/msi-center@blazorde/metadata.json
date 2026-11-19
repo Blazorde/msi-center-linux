@@ -5,5 +5,5 @@
   "shell-version": ["51"],
   "settings-schema": "org.gnome.shell.extensions.msi-center",
   "url": "https://github.com/Blazorde/msi-center-linux",
-  "version-name": "0.1.0"
+  "version-name": "1.1.0"
 }
