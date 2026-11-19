@@ -5,6 +5,7 @@ use msi_core::curve::{CurvePreset, FanCurveParams};
 use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::{CpuCurve, hybrid_cpu_table, hybrid_cpu_table_for};
 use msi_core::staged::Stage;
+use msi_core::supervisor::{BOOST_AUTO_OFF_MS, FORCE_WINDOW};
 use msi_core::table::TableWrite;
 use tempfile::TempDir;
 
@@ -332,13 +333,18 @@ fn set_temps(ec: &MemoryEc, cpu: Option<u8>, gpu: Option<u8>) {
 }
 
 #[test]
-fn s4_forces_boost_after_two_hot_readings_and_restores_the_owner_choice() {
+fn s4_forces_boost_after_ten_hot_readings_and_restores_the_owner_choice() {
     let mut r = rig();
     r.ctl.set_profile(Profile::Balanced).unwrap();
     set_temps(&r.ec, Some(96), Some(60));
-    r.ctl.tick(Clock(0));
-    assert!(!r.ec.state().cooler_boost, "a single reading must not force");
-    r.ctl.tick(Clock(1));
+    for t in 0..FORCE_WINDOW as u64 - 1 {
+        r.ctl.tick(Clock(t));
+        assert!(
+            !r.ec.state().cooler_boost,
+            "a burst shorter than the window must not force"
+        );
+    }
+    r.ctl.tick(Clock(FORCE_WINDOW as u64));
     assert!(r.ec.state().cooler_boost);
     assert!(r.ctl.status().boost_forced);
     let events = r.ctl.take_events();
@@ -351,14 +357,81 @@ fn s4_forces_boost_after_two_hot_readings_and_restores_the_owner_choice() {
         Err(ControlError::InvalidArgument(_))
     ));
     r.ec.state().cooler_boost = false;
-    r.ctl.tick(Clock(2));
+    r.ctl.tick(Clock(20));
     assert!(r.ec.state().cooler_boost);
 
     set_temps(&r.ec, Some(80), Some(60));
-    r.ctl.tick(Clock(3));
-    r.ctl.tick(Clock(4));
+    r.ctl.tick(Clock(21));
+    r.ctl.tick(Clock(22));
     assert!(!r.ec.state().cooler_boost);
     assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostReleased]);
+}
+
+#[test]
+fn s4_ignores_a_pl2_burst() {
+    // Measured 2026-11-19: 95–98 °C for a few seconds, then back below 85 °C.
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(98), Some(50));
+    tick_secs(&mut r.ctl, 0, FORCE_WINDOW as u64 - 1);
+    set_temps(&r.ec, Some(80), Some(50));
+    tick_secs(&mut r.ctl, FORCE_WINDOW as u64, 1);
+    assert!(!r.ec.state().cooler_boost);
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn s4_forces_at_once_at_100() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(101), Some(50));
+    tick_secs(&mut r.ctl, 0, 2);
+    assert!(r.ec.state().cooler_boost);
+    assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostForced]);
+}
+
+#[test]
+fn owner_boost_goes_off_by_itself_once_cool() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(60), Some(50));
+    r.ctl.set_cooler_boost(true).unwrap();
+    let secs = BOOST_AUTO_OFF_MS / 1000;
+    // The CPU filter needs a few readings before the timer starts: give it a few seconds of margin.
+    tick_secs(&mut r.ctl, 0, secs - 1);
+    assert!(r.ec.state().cooler_boost, "not before 30 s");
+    tick_secs(&mut r.ctl, secs - 1, 10);
+    assert!(!r.ec.state().cooler_boost);
+    let events = r.ctl.take_events();
+    assert_eq!(kinds(&events), [EventKind::BoostReleased]);
+    assert!(events[0].detail.starts_with("auto off"), "{}", events[0].detail);
+    assert!(!r.ctl.status().cooler_boost);
+}
+
+#[test]
+fn owner_boost_stays_on_while_hot() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(80), Some(50));
+    r.ctl.set_cooler_boost(true).unwrap();
+    tick_secs(&mut r.ctl, 0, 120);
+    assert!(r.ec.state().cooler_boost);
+    assert_eq!(r.ctl.take_events().len(), 0);
+}
+
+#[test]
+fn boost_found_on_at_start_goes_off_once_cool() {
+    let mut r = rig_with(
+        MemoryState {
+            cooler_boost: true,
+            ..MemoryState::default()
+        },
+        |_| {},
+    );
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    set_temps(&r.ec, Some(60), Some(50));
+    tick_secs(&mut r.ctl, 0, BOOST_AUTO_OFF_MS / 1000 + 10);
+    assert!(!r.ec.state().cooler_boost);
 }
 
 #[test]
@@ -534,7 +607,7 @@ fn s9_cpu_fan_stopped_at_70_for_30_s_restores_factory_and_locks() {
     assert_eq!(r.ec.state().fan_mode, FanMode::Auto);
     // S4 still protects.
     r.ec.state().cpu_temp = Some(97);
-    tick_secs(&mut r.ctl, 100, 2);
+    tick_secs(&mut r.ctl, 100, FORCE_WINDOW as u64);
     assert!(r.ec.state().cooler_boost);
 }
 
@@ -1002,7 +1075,7 @@ fn s4_still_forces_cooler_boost_under_auto() {
     let mut r = rig();
     r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
     set_temps(&r.ec, Some(96), Some(60));
-    tick_secs(&mut r.ctl, 0, 2);
+    tick_secs(&mut r.ctl, 0, FORCE_WINDOW as u64);
     assert!(r.ec.state().cooler_boost);
     assert_eq!(kinds(&r.ctl.take_events()), [EventKind::BoostForced]);
 }
@@ -1199,7 +1272,7 @@ fn staged_cpu_curve_follows_its_stages_and_falls_back_per_stage() {
     let curve = four_stages();
     let view = r.ctl.set_cpu_stages(curve.clone()).unwrap();
     assert!(view.saved && view.active && view.supported);
-    assert!(view.floors.is_empty());
+    assert!(view.floors.is_empty(), "{:?}", view.floors);
     assert_eq!(r.ctl.status().fan_profile, FanProfile::Custom);
     // Applied before any temperature is known: the fan spins at the first stage's speed.
     assert_eq!(r.ec.state().cpu, expected_staged_cpu(&curve, 30));
@@ -1243,7 +1316,8 @@ fn staged_cpu_curve_follows_its_stages_and_falls_back_per_stage() {
             "{speeds:?}"
         );
     }
-    assert!(r.ctl.take_events().is_empty());
+    let events = r.ctl.take_events();
+    assert!(events.is_empty(), "{events:?}");
 }
 
 #[test]
@@ -1380,7 +1454,7 @@ fn cpu_stages_view_starts_from_the_preset_table() {
     let table = generate(&CurvePreset::Progressive.spec()).unwrap().curve;
     assert_eq!(view.curve, StagedCurve::from_step_curve(&table).unwrap());
     assert_eq!(view.curve.stages().len(), 6);
-    assert!(view.floors.is_empty());
+    assert!(view.floors.is_empty(), "{:?}", view.floors);
 }
 
 #[test]
@@ -1513,4 +1587,102 @@ fn adr_0014_without_rapl_nothing_is_written_and_status_is_none() {
     let mut r = rig();
     r.ctl.set_profile(Profile::Balanced).unwrap();
     assert_eq!(r.ctl.status().cpu_power, None);
+}
+
+// ---- ADR-0016: curve library ----
+
+#[test]
+fn saved_curves_snapshot_the_curves_in_force_and_apply_them_elsewhere() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_fan_profile(FanProfile::CoolPlus).unwrap();
+    assert_eq!(r.ctl.save_curves("  Frais maison ").unwrap(), ["Frais maison"]);
+    let writes = r.ec.state().writes.len();
+    // Saving writes nothing to the EC.
+    r.ctl.save_curves("Copie").unwrap();
+    assert_eq!(r.ec.state().writes.len(), writes);
+
+    r.ctl.set_profile(Profile::Gaming).unwrap();
+    r.ctl.apply_saved_curves("Frais maison").unwrap();
+    let s = r.ctl.settings();
+    assert_eq!(s.fan_profile(Profile::Gaming), FanProfile::Custom);
+    assert_eq!(s.curve(Profile::Gaming, Fan::Cpu), CurvePreset::CoolPlus.spec());
+    assert_eq!(s.curve(Profile::Gaming, Fan::Gpu), CurvePreset::CoolPlus.spec());
+    assert!(!s.is_staged(Profile::Gaming));
+    assert_eq!(r.ec.state().gpu, expected(CurvePreset::CoolPlus));
+    // Balanced keeps its own choice.
+    assert_eq!(s.fan_profile(Profile::Balanced), FanProfile::CoolPlus);
+}
+
+#[test]
+fn saved_curves_keep_the_staged_cpu_curve() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_cpu_stages(four_stages()).unwrap();
+    r.ctl.save_curves("Paliers").unwrap();
+    r.ctl.set_profile(Profile::Eco).unwrap();
+    r.ctl.apply_saved_curves("Paliers").unwrap();
+    assert!(r.ctl.settings().is_staged(Profile::Eco));
+    assert_eq!(r.ctl.settings().staged_curve(Profile::Eco), Some(&four_stages()));
+
+    // Applying an entry without stages drops the staged curve of the target profile.
+    r.ctl.set_fan_profile(FanProfile::Turbo).unwrap();
+    r.ctl.save_curves("Turbo").unwrap();
+    r.ctl.apply_saved_curves("Turbo").unwrap();
+    assert!(!r.ctl.settings().is_staged(Profile::Eco));
+    assert_eq!(r.ctl.settings().staged_curve(Profile::Eco), None);
+}
+
+#[test]
+fn saved_curves_survive_a_restart() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.save_curves("Nuit").unwrap();
+    let (again, warnings) = StateStore::new(r.dir.path().join("state/state.toml")).load();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(again.library, r.ctl.settings().library);
+}
+
+#[test]
+fn curve_library_rejects_bad_requests() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    for bad in ["", "   ", "a\nb"] {
+        assert!(
+            matches!(r.ctl.save_curves(bad), Err(ControlError::InvalidArgument(_))),
+            "{bad:?}"
+        );
+    }
+    assert!(matches!(
+        r.ctl.apply_saved_curves("absent"),
+        Err(ControlError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        r.ctl.delete_saved_curves("absent"),
+        Err(ControlError::InvalidArgument(_))
+    ));
+    // The firmware's own curve is not ours to save.
+    r.ctl.set_fan_profile(FanProfile::Auto).unwrap();
+    assert!(matches!(
+        r.ctl.save_curves("Usine"),
+        Err(ControlError::InvalidArgument(_))
+    ));
+    assert_eq!(r.ctl.saved_curves(), Vec::<String>::new());
+}
+
+#[test]
+fn deleting_saved_curves_leaves_the_curves_in_force() {
+    let mut r = rig();
+    r.ctl.set_profile(Profile::Balanced).unwrap();
+    r.ctl.set_fan_profile(FanProfile::Cool).unwrap();
+    r.ctl.save_curves("A").unwrap();
+    r.ctl.save_curves("B").unwrap();
+    r.ctl.apply_saved_curves("A").unwrap();
+    let before = r.ec.state().clone();
+    assert_eq!(r.ctl.delete_saved_curves("A").unwrap(), ["B"]);
+    assert_eq!(
+        r.ctl.settings().fan_profile(Profile::Balanced),
+        FanProfile::Custom
+    );
+    assert_eq!(r.ec.state().gpu, before.gpu);
 }

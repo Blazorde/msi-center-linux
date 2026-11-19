@@ -42,3 +42,15 @@ ventilation par défaut, modifiable, et le choix est retenu par profil.
   profil de ventilation ; nouvelle app/extension face à un ancien daemon : sélecteur masqué.
 - En Auto, la courbe d'usine plafonne à 96 % et ne respecte pas les planchers S2 : c'est le comportement
   constructeur, choisi explicitement ; S4 (Cooler Boost à 95 °C) reste la protection.
+
+## Avenant 2026-11-19 — profil Frais
+
+Demande du propriétaire : « une courbe qui évite de dépasser les 80 degrés, ajoute un nouveau profil ». Ajout de
+`FanProfile::Cool` (`cool`, « Frais ») → `CurvePreset::Cool` (repos 35 %, 45 % jusqu'à 60 °C, linéaire jusqu'à
+100 % à 78 °C). Défaut d'aucun profil de performance. Ajout compatible sur D-Bus (nouvelle valeur de chaîne).
+
+## Avenant 2026-11-19 — profil Frais+
+
+« Rends frais plus costaud entre 55 et 70 dans un autre mode genre frais+ » : `FanProfile::CoolPlus`
+(`cool-plus`, « Frais+ ») → `CurvePreset::CoolPlus` (repos 40 %, linéaire de 50 % à 50 °C à 100 % à 75 °C).
+L'id contient un tiret (les noms d'actions `GAction` n'acceptent pas `_`).

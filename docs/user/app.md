@@ -82,9 +82,9 @@ fenêtre, `Ctrl+Q` quitte.
 
 ### Profils de ventilation
 
-Chaque profil (Éco, Équilibré, Gaming) a un **profil de ventilation**, choisi en un clic dans les cinq tuiles
+Chaque profil (Éco, Équilibré, Gaming) a un **profil de ventilation**, choisi en un clic dans les sept tuiles
 de verre en haut de **Ventilateurs** (ou dans le menu principal, section Ventilation, ou par les actions
-`app.fan::silent|auto|balanced|turbo|custom`) :
+`app.fan::silent|auto|balanced|turbo|cool|cool-plus|custom`) :
 
 | Profil de ventilation | Ce qu'il fait | Par défaut pour |
 |---|---|---|
@@ -92,11 +92,14 @@ de verre en haut de **Ventilateurs** (ou dans le menu principal, section Ventila
 | **Auto** | **courbe d'usine MSI gérée par le contrôleur** (EC), comme sous Windows | – |
 | **Équilibré** | démarrage doux, 100 % dès 85 °C | Équilibré |
 | **Turbo** | monte tôt et fort, 100 % dès 74 °C, puis redescend | Gaming |
+| **Frais** | discret jusqu'à 60 °C, puis 100 % dès 78 °C pour rester sous 80 °C | – |
+| **Frais+** | plus fort que Frais dès 50 °C (≈ 60 % à 55 °C, 84 % à 67 °C), 100 % dès 75 °C | – |
 | **Personnalisé** | votre courbe (éditeur ci-dessous), planchers de sécurité inclus | – |
 
 Le choix est **retenu par profil** : passer en Gaming ré-applique le profil de ventilation choisi pour Gaming.
 La tuile du choix par défaut porte un badge « Défaut » ; **Revenir au défaut** l'y remet. Turbo n'est pas
-Cooler Boost (ventilateurs à fond), qui reste un interrupteur séparé. En **Auto**, aucune courbe de MSI Center
+Cooler Boost (ventilateurs à fond), qui reste un interrupteur séparé et **s'éteint tout seul** 30 s après que
+CPU et GPU sont repassés sous 75 °C. En **Auto**, aucune courbe de MSI Center
 n'est écrite (l'EC choisit ses paliers) ; la sécurité thermique Cooler Boost reste active.
 
 ### Courbe des ventilateurs (Personnalisé)
@@ -128,10 +131,23 @@ pour le profil actif et le passe en Personnalisé ; **Supprimer la courbe à pal
 exponentielle. Le GPU garde ses 7 paliers. En ligne de commande : `msictl stages set 20 55:50:30 65:60:45
 75:70:70 85:80:100` (repos 20 %, puis `montée:retombée:puissance` par palier).
 
+### Mes courbes
+
+Autant de courbes que vous voulez, chacune sous un nom ([ADR-0016](../adr/0016-curve-library.md)). Tapez un nom
+puis **Enregistrer** : les courbes **en vigueur** dans le profil actuel (CPU, paliers compris, et GPU) sont
+gardées, qu'elles viennent d'un preset (Frais+, Turbo…) ou de vos réglages. **Appliquer** les recharge dans le
+profil actif, qui passe en Personnalisé ; la corbeille supprime une courbe sans toucher à celle en vigueur. Un
+nom déjà pris est remplacé. En ligne de commande : `msictl curves`, `msictl curves save Nuit calme`,
+`msictl curves apply Nuit calme`, `msictl curves delete Nuit calme`.
+
 Le bouton **Rendre la main à l'EC** (courbes d'usine) n'apparaît que si le service fournit la méthode
 `RestoreFactory` (l'app le détecte par introspection).
 
 ### Presse-papiers
+
+**Tout effacer sauf épinglés** supprime d'un coup tout l'historique non épinglé (confirmation demandée) ; les
+éléments épinglés et tagués restent. Même chose dans la popup `Super+V` : `Maj+Suppr` ou le bouton **Effacer
+sauf épinglés** (deux appuis).
 
 **Ajouter un tag épingle l'élément** : il passe dans la base permanente et survit à la déconnexion. Vider
 ses tags ne le désépingle pas ; le désépingler le renvoie dans l'historique de session, effacé au logout.

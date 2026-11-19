@@ -113,6 +113,12 @@ export class ClipdClient extends EventEmitter {
         return reply.deepUnpack()[0];
     }
 
+    /** Deletes every unpinned clip. @returns {Promise<number>} deleted count */
+    async clearUnpinned() {
+        const reply = await this._call('ClearUnpinned', null, '(u)');
+        return reply.deepUnpack()[0];
+    }
+
     async setTags(id, tags) {
         const reply = await this._call('SetTags', new GLib.Variant('(tas)', [id, tags]), '(as)');
         return reply.deepUnpack()[0];

@@ -581,6 +581,51 @@ impl MsiCenter {
         Ok(floors_to_wire(&curve.raised_floors()))
     }
 
+    /// Names of the curves saved in the library, sorted (ADR-0016). No authorization needed.
+    #[zbus(out_args("names"))]
+    async fn saved_curves(&self) -> Result<Vec<String>, MsiError> {
+        let (names, _, _) = self.run(|c| c.saved_curves()).await?;
+        Ok(names)
+    }
+
+    /// Saves the curves in force in the selected profile under `name` (an entry of the same name is replaced)
+    /// and returns the library names. Nothing is written to the EC.
+    #[zbus(out_args("names"))]
+    async fn save_curves(
+        &self,
+        name: String,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> Result<Vec<String>, MsiError> {
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, _, _) = self.run(move |c| c.save_curves(&name)).await?;
+        res.map_err(Into::into)
+    }
+
+    /// Applies the saved curves `name` to the selected profile (fan profile `custom`), saves and applies it.
+    async fn apply_saved_curves(
+        &self,
+        name: String,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), MsiError> {
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, events, status) = self.run(move |c| c.apply_saved_curves(&name)).await?;
+        self.publish(&emitter, events, status).await;
+        res.map_err(Into::into)
+    }
+
+    /// Removes the saved curves `name` and returns the remaining names. The curves in force are not touched.
+    #[zbus(out_args("names"))]
+    async fn delete_saved_curves(
+        &self,
+        name: String,
+        #[zbus(header)] hdr: Header<'_>,
+    ) -> Result<Vec<String>, MsiError> {
+        self.authorize(&hdr, Action::SetFanCurve).await?;
+        let (res, _, _) = self.run(move |c| c.delete_saved_curves(&name)).await?;
+        res.map_err(Into::into)
+    }
+
     /// Owner's Cooler Boost choice. Turning it off fails with `InvalidArgument` while S4 forces it.
     async fn set_cooler_boost(
         &self,

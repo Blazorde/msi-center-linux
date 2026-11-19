@@ -55,11 +55,13 @@ refroidit. Le **palier montant** (nombre de seuils `up ≤ T`) est le plus bas d
 | **Silencieux** (Éco) | 0 % | 52 | 88 | 30 % | 100 % | 2,5 | 52 60 67 75 83 85 | 4 °C |
 | **Progressif** (Balanced) | 0 % | 48 | 85 | 30 % | 100 % | 2,2 | 48 56 64 71 79 85 | 4 °C |
 | **Agressif** (Gaming) | 30 % | 40 | 74 | 40 % | 100 % | 1,4 | 40 47 54 61 68 74 | 3 °C |
+| **Frais** (–) | 35 % | 60 | 78 | 45 % | 100 % | 1,0 | 55 60 65 70 74 78 | 3 °C |
+| **Frais+** (–) | 40 % | 50 | 75 | 50 % | 100 % | 1,0 | 50 55 60 65 70 75 | 3 °C |
 
 Tables générées (testées dans `table::tests::presets_generate_the_documented_tables`). **Un seul palier relevé
 par S2** : Silencieux palier 6 (entré à 85 °C), courbe 86 % → **100 %** (plancher 100 % dès 85 °C), car sa
 courbe n'atteint 100 % qu'à `T1` = 88 °C. Le relèvement est signalé (`raised`), comme tout relèvement S2.
-Progressif et Agressif : aucun palier relevé.
+Progressif, Agressif, Frais et Frais+ : aucun palier relevé.
 
 | Palier | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|---|
@@ -69,6 +71,10 @@ Progressif et Agressif : aucun palier relevé.
 | Progressif monte ≥ / redescend < °C | – | 48 / 44 | 56 / 52 | 64 / 60 | 71 / 67 | 79 / 75 | 85 / 81 |
 | Agressif vitesse % | 30 | 40 | 47 | 57 | 71 | 86 | 100 |
 | Agressif monte ≥ / redescend < °C | – | 40 / 37 | 47 / 44 | 54 / 51 | 61 / 58 | 68 / 65 | 74 / 71 |
+| Frais vitesse % | 35 | 45 | 45 | 60 | 76 | 88 | 100 |
+| Frais monte ≥ / redescend < °C | – | 55 / 52 | 60 / 57 | 65 / 62 | 70 / 67 | 74 / 71 | 78 / 75 |
+| Frais+ vitesse % | 40 | 50 | 60 | 70 | 80 | 90 | 100 |
+| Frais+ monte ≥ / redescend < °C | – | 50 / 47 | 55 / 52 | 60 / 57 | 65 / 62 | 70 / 67 | 75 / 72 |
 | *Usine CPU (rappel)* | *0* | *36* | *40* | *50* | *62* | *80* | *96* |
 | *Usine monte ≥ / redescend < °C* | – | *57 / 53* | *62 / 57* | *70 / 65* | *77 / 73* | *83 / 80* | *90 / 87* |
 
@@ -90,7 +96,13 @@ Justification :
 - **Progressif** : arrêté sous 48 °C (s'arrête sous 44), ≈ 36 % à 60 °C (niveau de l'usine au repos), 52 % à
   70 °C, 81 % à 80 °C, 100 % à 85 °C.
 - **Agressif** : jamais arrêté (30 %), réagit tôt, 100 % dès 74 °C ; hystérésis 3 °C pour redescendre vite.
-- Toutes les tables générées sont à **100 % dès 85 °C** (S2) — par la courbe pour Progressif et Agressif,
+- **Frais** (2026-11-19, « une courbe qui évite de dépasser les 80 degrés ») : jamais arrêté (35 %), discret
+  jusqu'à 60 °C (45 %), puis montée **linéaire et raide** (`k` 1,0) : ≈ 70 % à 70 °C, **100 % dès 78 °C**.
+  Plus calme que Agressif en usage léger, mais plafonne avant 80 °C. Les ventilos seuls ne garantissent pas
+  < 80 °C sous charge lourde : c'est le rôle des limites de puissance (ADR-0014).
+- **Frais+** (2026-11-19, « rends frais plus costaud entre 55 et 70 ») : jamais arrêté (40 %), linéaire de
+  50 % à 50 °C à **100 % dès 75 °C** : ≈ 60 % à 55 °C, 84 % à 67 °C, 90 % à 70 °C (Frais : 45 / 66 / 76 %).
+- Toutes les tables générées sont à **100 % dès 85 °C** (S2) — par la courbe pour Progressif, Agressif, Frais et Frais+,
   par relèvement signalé pour Silencieux —, alors que la table d'usine plafonne à 96 % à 90 °C.
 - Les mêmes presets s'appliquent aux deux ventilos (CPU et GPU). Le **GPU** reçoit la table ci-dessus telle
   quelle. Le **CPU** est piloté en hybride (section suivante) : l'EC ignore les seuils CPU écrits.
@@ -214,10 +226,12 @@ après la veille. Le shift mode et le dGPU restent ceux du profil de performance
 | **Auto** | `auto` | **courbe d'usine MSI**, gérée par le contrôleur (EC) | – |
 | **Équilibré** | `balanced` | preset Progressif | Équilibré |
 | **Turbo** | `turbo` | preset Agressif (monte tôt et fort, 100 % dès 74 °C, redescend) | Gaming |
+| **Frais** | `cool` | preset Frais (discret jusqu'à 60 °C, 100 % dès 78 °C : reste sous 80 °C) | – |
+| **Frais+** | `cool-plus` | preset Frais+ (plus fort dès 50 °C, 100 % dès 75 °C) | – |
 | **Personnalisé** | `custom` | courbe du propriétaire, une par ventilo et par profil de performance | – |
 
 - **Turbo n'est pas Cooler Boost** : Cooler Boost (ventilos à fond) reste un interrupteur séparé.
-- **Silencieux / Équilibré / Turbo / Personnalisé** : comportement décrit ci-dessus (GPU : table complète écrite ;
+- **Silencieux / Équilibré / Turbo / Frais / Frais+ / Personnalisé** : comportement décrit ci-dessus (GPU : table complète écrite ;
   CPU : pilotage hybride ADR-0010 avec la courbe du profil de ventilation). S1–S9 inchangés.
 - **Personnalisé** : la courbe saisie est validée telle quelle (S3, rejet sans rien écrire), la table générée
   applique les planchers S2 avec relèvements **signalés** (`raised`), comme toute courbe. Un ventilo jamais
@@ -241,7 +255,7 @@ après la veille. Le shift mode et le dGPU restent ceux du profil de performance
 | S1 | Seuils de montée et de descente strictement croissants, `down[i] < up[i]` avec un écart ≥ 2 °C, vitesses croissantes ou égales | `msi-core` + noyau (sauf l'écart de 2 °C) |
 | S2 | Vitesse du **palier montant** ≥ **30 %** dès 60 °C, ≥ **50 %** dès 75 °C, **100 %** dès 85 °C (planchers, quelle que soit la courbe). Table générée depuis les paramètres : paliers relevés **explicitement et signalés** (`SafetyReport`). Table saisie palier par palier : **rejetée** | `msi-core` |
 | S3 | Toute **entrée** hors bornes (paramètres de courbe, disposition, table brute) est **rejetée**, jamais « corrigée silencieusement » | `msi-core` + noyau |
-| S4 | CPU ou GPU ≥ **95 °C** sur **2 lectures consécutives** → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics). Capteur illisible → forcé immédiatement | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
+| S4 | CPU ou GPU ≥ **95 °C** sur **10 lectures consécutives** (~10 s), ou ≥ **100 °C** sur 2 → Cooler Boost forcé jusqu'au retour **des deux** sous 85 °C sur 2 lectures (hystérésis + filtre anti-pics, [ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)). Capteur illisible → forcé immédiatement. Un Cooler Boost non forcé est coupé après 30 s sous 75 °C | `msi-core` (machine à états) + `msi-daemon` (application, ~1 Hz) |
 | S5 | Arrêt du daemon (normal, signal, panic) → **tables d'usine réécrites** puis EC remis en fan mode `auto` (voir [Restitution à l'EC](#restitution-à-lec-tables-dusine)) | `msi-daemon` (`Controller::shutdown`, hook de panic) + `ExecStopPost=msi-daemon --restore-factory` |
 | S6 | Watchdog systemd (`WatchdogSec=15`) : `WATCHDOG=1` après chaque tick de 1 s réussi ; daemon figé → tué, redémarré, et S5 s'applique (`ExecStopPost`) | systemd + `msi-daemon` (`notify`) |
 | S7 | Après écriture, relecture de la table EC (et du fan mode / shift mode) ; divergence → tables d'usine + `auto` + `SafetyEvent`. Vaut aussi pour chaque écriture en direct des vitesses CPU (ADR-0010) | `msi-daemon` |
@@ -269,12 +283,21 @@ interdit de corriger). Résolution :
 
 ## Filtre anti-pics de S4
 
-La température instantanée de l'EC (`0x68`) a des pics isolés jusqu'à ~90 °C au repos. Chaque capteur est filtré
-sur ses **deux dernières lectures** (`supervisor::ThermalSupervisor`) : Cooler Boost n'est forcé que si les deux
-sont ≥ 95 °C (minimum glissant) et n'est relâché que si les deux sont < 85 °C (maximum glissant). Un pic isolé
-est ignoré, une vraie surchauffe est prise en compte une lecture (~1 s) plus tard. Une lecture en échec force
+La température instantanée de l'EC (`0x68`) a des pics isolés jusqu'à ~90 °C au repos, et le CPU monte à
+95–98 °C pendant 2 à 10 s sous PL2 (mesuré le 2026-11-19). Chaque capteur est filtré
+(`supervisor::ThermalSupervisor`, [ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)) : Cooler Boost
+n'est forcé que si les **10 dernières lectures** (~10 s) sont toutes ≥ 95 °C (minimum glissant), ou si les
+**2 dernières** sont ≥ **100 °C** (urgence) ; il n'est relâché que si les 2 dernières sont < 85 °C (maximum
+glissant). Un pic isolé et une rafale PL2 sont ignorés, une chaleur soutenue est prise en compte en ~10 s. Une lecture en échec force
 immédiatement, sans filtre. Après le démarrage ou le retour d'un capteur, une seule lecture ne suffit ni à forcer
 ni à relâcher.
+
+## Arrêt automatique de Cooler Boost
+
+Un Cooler Boost **non forcé par S4** (app, extension, touche Fn, firmware, ou trouvé allumé au démarrage du
+daemon) est coupé dès que le CPU (température filtrée, ADR-0010) et le GPU restent **sous 75 °C pendant 30 s**
+(`supervisor::BoostAutoOff`). Événement `boost_released`, détail `auto off: …`. Jamais pendant que S4 le force,
+ni si un capteur est illisible.
 
 ## S9 : ventilo arrêté sur puce chaude
 

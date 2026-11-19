@@ -7,6 +7,8 @@
 //! | Auto | `auto` | EC factory tables, fan mode `auto` (the firmware drives the fans) |
 //! | Équilibré | `balanced` | [`CurvePreset::Progressive`] |
 //! | Turbo | `turbo` | [`CurvePreset::Aggressive`] |
+//! | Frais | `cool` | [`CurvePreset::Cool`] |
+//! | Frais+ | `cool-plus` | [`CurvePreset::CoolPlus`] |
 //! | Personnalisé | `custom` | the owner's [`crate::curve::FanCurveSpec`] per fan (S1–S3 on input, S2 raises reported by [`crate::table::generate`]) |
 //!
 //! Each performance profile has a default fan profile ([`Profile::default_fan_profile`]): Éco → Silencieux,
@@ -18,7 +20,7 @@ use std::str::FromStr;
 use crate::curve::CurvePreset;
 use crate::profile::Profile;
 
-/// Fan profile. Parsed from / displayed as `silent`, `auto`, `balanced`, `turbo`, `custom`.
+/// Fan profile. Parsed from / displayed as `silent`, `auto`, `balanced`, `turbo`, `cool`, `cool-plus`, `custom`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FanProfile {
     /// Silencieux: off at idle, late and gentle rise.
@@ -29,6 +31,10 @@ pub enum FanProfile {
     Balanced,
     /// Turbo: rises early and hard, 100 % from 74 °C.
     Turbo,
+    /// Frais: quiet up to 60 °C, 100 % from 78 °C, keeps the CPU under 80 °C.
+    Cool,
+    /// Frais+: stronger than Frais from 50 °C, 100 % from 75 °C.
+    CoolPlus,
     /// Personnalisé: the owner's curve per fan.
     Custom,
 }
@@ -46,11 +52,13 @@ pub enum FanCurveSource {
 
 impl FanProfile {
     /// All fan profiles, in display order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Silent,
         Self::Auto,
         Self::Balanced,
         Self::Turbo,
+        Self::Cool,
+        Self::CoolPlus,
         Self::Custom,
     ];
 
@@ -62,6 +70,8 @@ impl FanProfile {
             Self::Auto => "auto",
             Self::Balanced => "balanced",
             Self::Turbo => "turbo",
+            Self::Cool => "cool",
+            Self::CoolPlus => "cool-plus",
             Self::Custom => "custom",
         }
     }
@@ -74,6 +84,8 @@ impl FanProfile {
             Self::Auto => "Auto",
             Self::Balanced => "Équilibré",
             Self::Turbo => "Turbo",
+            Self::Cool => "Frais",
+            Self::CoolPlus => "Frais+",
             Self::Custom => "Personnalisé",
         }
     }
@@ -86,6 +98,8 @@ impl FanProfile {
             Self::Auto => "Courbe d'usine MSI gérée par le contrôleur",
             Self::Balanced => "Démarrage doux, 100\u{202f}% dès 85\u{202f}°C",
             Self::Turbo => "Réagit tôt et fort, 100\u{202f}% dès 74\u{202f}°C",
+            Self::Cool => "Sous 80\u{202f}°C : 100\u{202f}% dès 78\u{202f}°C",
+            Self::CoolPlus => "Plus fort dès 50\u{202f}°C, 100\u{202f}% dès 75\u{202f}°C",
             Self::Custom => "Votre courbe, planchers de sécurité inclus",
         }
     }
@@ -98,6 +112,8 @@ impl FanProfile {
             Self::Auto => FanCurveSource::Factory,
             Self::Balanced => FanCurveSource::Preset(CurvePreset::Progressive),
             Self::Turbo => FanCurveSource::Preset(CurvePreset::Aggressive),
+            Self::Cool => FanCurveSource::Preset(CurvePreset::Cool),
+            Self::CoolPlus => FanCurveSource::Preset(CurvePreset::CoolPlus),
             Self::Custom => FanCurveSource::Custom,
         }
     }
@@ -132,7 +148,7 @@ impl fmt::Display for FanProfile {
 
 /// The string is not a fan profile id.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unknown fan profile {input:?}, expected silent, auto, balanced, turbo or custom")]
+#[error("unknown fan profile {input:?}, expected silent, auto, balanced, turbo, cool, cool-plus or custom")]
 pub struct ParseFanProfileError {
     /// The rejected input.
     pub input: String,
@@ -158,7 +174,18 @@ mod tests {
     #[test]
     fn ids_round_trip_and_are_stable() {
         let ids: Vec<&str> = FanProfile::ALL.iter().map(|p| p.as_str()).collect();
-        assert_eq!(ids, ["silent", "auto", "balanced", "turbo", "custom"]);
+        assert_eq!(
+            ids,
+            [
+                "silent",
+                "auto",
+                "balanced",
+                "turbo",
+                "cool",
+                "cool-plus",
+                "custom"
+            ]
+        );
         for p in FanProfile::ALL {
             assert_eq!(p.to_string().parse::<FanProfile>(), Ok(p));
         }
@@ -181,7 +208,15 @@ mod tests {
         let labels: Vec<&str> = FanProfile::ALL.iter().map(|p| p.label()).collect();
         assert_eq!(
             labels,
-            ["Silencieux", "Auto", "Équilibré", "Turbo", "Personnalisé"]
+            [
+                "Silencieux",
+                "Auto",
+                "Équilibré",
+                "Turbo",
+                "Frais",
+                "Frais+",
+                "Personnalisé"
+            ]
         );
         for p in FanProfile::ALL {
             assert_ne!(p.description(), "", "{p}");
@@ -194,6 +229,8 @@ mod tests {
         assert_eq!(FanProfile::Balanced.preset(), Some(CurvePreset::Progressive));
         // Turbo is the Aggressive curve (owner decision 2026-10-26), not Cooler Boost.
         assert_eq!(FanProfile::Turbo.preset(), Some(CurvePreset::Aggressive));
+        assert_eq!(FanProfile::Cool.preset(), Some(CurvePreset::Cool));
+        assert_eq!(FanProfile::CoolPlus.preset(), Some(CurvePreset::CoolPlus));
         assert_eq!(FanProfile::Auto.source(), FanCurveSource::Factory);
         assert_eq!(FanProfile::Custom.source(), FanCurveSource::Custom);
         assert_eq!(FanProfile::Auto.preset(), None);

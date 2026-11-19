@@ -232,6 +232,12 @@ class MsiIndicator extends PanelMenu.Button {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+        // Curve library (ADR-0016): one entry per saved curve, filled when the menu opens. Hidden when empty or
+        // with an older daemon.
+        this._curvesItem = new PopupMenu.PopupSubMenuMenuItem('Mes courbes');
+        this._curvesItem.visible = false;
+        this.menu.addMenuItem(this._curvesItem);
+
         this._boostItem = new PopupMenu.PopupSwitchMenuItem('Cooler Boost', false);
         this._boostItem.connect('toggled', (_i, on) => this._run(() => this._daemon.setCoolerBoost(on)));
         this.menu.addMenuItem(this._boostItem);
@@ -279,6 +285,7 @@ class MsiIndicator extends PanelMenu.Button {
         this.menu.connectObject('open-state-changed', (_m, open) => {
             if (open) {
                 this._sync();
+                this._syncSavedCurves();
                 this._spark.setSeries(this._cpuHistory, this._tempHistory);
                 this._focusCurrentPill();
             }
@@ -593,6 +600,19 @@ class MsiIndicator extends PanelMenu.Button {
     }
 
     // ── Actions ────────────────────────────────────────────────────────────
+
+    async _syncSavedCurves() {
+        let names = [];
+        try {
+            names = await this._daemon.savedCurves();
+        } catch {
+            // Absent daemon or one without the library: the entry stays hidden.
+        }
+        this._curvesItem.menu.removeAll();
+        for (const name of names)
+            this._curvesItem.menu.addAction(name, () => this._run(() => this._daemon.applySavedCurves(name)));
+        this._curvesItem.visible = names.length > 0;
+    }
 
     async _run(fn) {
         try {

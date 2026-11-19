@@ -329,6 +329,19 @@ impl StagesEditor {
         self.after_edit();
     }
 
+    /// Writes the value of a stage field into the draft with `set` whenever the owner edits it.
+    fn bind_field(self: &Rc<Self>, field: &gtk::SpinButton, index: usize, set: fn(&mut Draft, usize, u8)) {
+        let w = Rc::downgrade(self);
+        field.connect_value_changed(move |s| {
+            if let Some(p) = w.upgrade()
+                && !p.syncing.get()
+            {
+                set(&mut p.state.borrow_mut().draft, index, value_of(s));
+                p.after_edit();
+            }
+        });
+    }
+
     /// One row per stage. Rebuilt only when stages are added or removed, so typing in a field keeps focus.
     fn rebuild_rows(self: &Rc<Self>) {
         while let Some(c) = self.list.first_child() {
@@ -354,33 +367,9 @@ impl StagesEditor {
                 &format!("Palier {n}, température de retombée"),
             );
 
-            let w = Rc::downgrade(self);
-            up.connect_value_changed(move |s| {
-                if let Some(p) = w.upgrade()
-                    && !p.syncing.get()
-                {
-                    p.state.borrow_mut().draft.set_up(i, value_of(s));
-                    p.after_edit();
-                }
-            });
-            let w = Rc::downgrade(self);
-            speed.connect_value_changed(move |s| {
-                if let Some(p) = w.upgrade()
-                    && !p.syncing.get()
-                {
-                    p.state.borrow_mut().draft.set_speed(i, value_of(s));
-                    p.after_edit();
-                }
-            });
-            let w = Rc::downgrade(self);
-            down.connect_value_changed(move |s| {
-                if let Some(p) = w.upgrade()
-                    && !p.syncing.get()
-                {
-                    p.state.borrow_mut().draft.set_down(i, value_of(s));
-                    p.after_edit();
-                }
-            });
+            self.bind_field(&up, i, Draft::set_up);
+            self.bind_field(&speed, i, Draft::set_speed);
+            self.bind_field(&down, i, Draft::set_down);
 
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             row.set_margin_top(8);

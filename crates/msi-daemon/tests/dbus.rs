@@ -11,6 +11,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use msi_core::curve::CurvePreset;
 use msi_core::ec::FanMode;
+use msi_core::supervisor::FORCE_WINDOW;
 use msi_core::table::generate;
 use msi_daemon::client::MsiCenter1Proxy;
 use msi_daemon::controller::Controller;
@@ -276,8 +277,10 @@ async fn s4_tick_forces_cooler_boost_and_emits_signals() {
     let mut telemetry = p.receive_telemetry().await.unwrap();
     let mut events = p.receive_safety_event().await.unwrap();
     h.ec.state().cpu_temp = Some(97);
-    tick(&h, 1).await;
-    tick(&h, 2).await;
+    // S4 forces after FORCE_WINDOW readings at ≥ 95 °C (sustained heat, not a PL2 burst).
+    for n in 1..=FORCE_WINDOW as u64 {
+        tick(&h, n).await;
+    }
     let ev = tokio::time::timeout(Duration::from_secs(5), events.next())
         .await
         .unwrap()
@@ -342,6 +345,12 @@ async fn introspection_matches_documented_signatures() {
         r#"<arg name="stages" type="a(yyy)" direction="in"/>"#,
         r#"<method name="ResetCpuStages">"#,
         r#"<method name="PreviewCpuStages">"#,
+        r#"<method name="SavedCurves">"#,
+        r#"<arg name="names" type="as" direction="out"/>"#,
+        r#"<method name="SaveCurves">"#,
+        r#"<arg name="name" type="s" direction="in"/>"#,
+        r#"<method name="ApplySavedCurves">"#,
+        r#"<method name="DeleteSavedCurves">"#,
         r#"<property name="FanProfile" type="s" access="read"/>"#,
         r#"<property name="DefaultFanProfile" type="s" access="read"/>"#,
         r#"<arg name="holders" type="a(us)" direction="out"/>"#,
@@ -368,7 +377,7 @@ async fn introspection_matches_documented_signatures() {
     }
     let start = xml.find(r#"<interface name="org.blazorde.MsiCenter1">"#).unwrap();
     let iface = &xml[start..start + xml[start..].find("</interface>").unwrap()];
-    assert_eq!(iface.matches("<method ").count(), 16, "{iface}");
+    assert_eq!(iface.matches("<method ").count(), 20, "{iface}");
     assert_eq!(iface.matches("<signal ").count(), 2, "{iface}");
     assert_eq!(iface.matches("<property ").count(), 14, "{iface}");
 }
@@ -529,7 +538,7 @@ async fn staged_cpu_curve_round_trips_and_drives_the_cpu_live() {
 
     // Set: saved, custom fan profile, in force, and the CPU table keeps the factory thresholds.
     let floors = p.set_cpu_stages(0, &four_stages()).await.unwrap();
-    assert!(floors.is_empty());
+    assert!(floors.is_empty(), "{floors:?}");
     assert_eq!(p.fan_profile().await.unwrap(), "custom");
     let (idle, stages, _, saved, active, _) = p.cpu_stages().await.unwrap();
     assert_eq!((idle, stages, saved, active), (0, four_stages(), true, true));

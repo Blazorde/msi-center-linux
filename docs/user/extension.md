@@ -84,7 +84,7 @@ la métrique.
 ## Menu
 
 - **Profils** : les trois pastilles (voir ci-dessus), puis une rangée de cinq puces **Silence / Auto /
-  Équilibré / Turbo / Perso** : le profil de ventilation du profil actif (un clic = `SetFanProfile`, retenu par
+  Équilibré / Turbo / Frais / Frais+ / Perso** : le profil de ventilation du profil actif (un clic = `SetFanProfile`, retenu par
   profil ; allumage immédiat avec indicateur d'activité, retour en arrière et bandeau d'erreur si le daemon
   refuse ; `←` `→` pour naviguer). Le choix par défaut du profil a un fin trait. **Auto** = courbe d'usine MSI
   gérée par le contrôleur ; Turbo n'est pas Cooler Boost. Puis une ligne d'état : profil de ventilation,
@@ -93,7 +93,10 @@ la métrique.
   événements de sécurité (`SafetyEvent` : Cooler Boost forcé, retour en mode auto…), erreurs d'appel (polkit,
   `GpuBusy` avec la liste des processus qui tiennent le dGPU). Cliquer sur un bandeau le ferme.
 - **Mini-graphe** : CPU % (aire) et °C (pointillés) sur 60 s (désactivable).
-- **Cooler Boost** (`SetCoolerBoost`) : non désactivable quand la sécurité thermique le force (S4).
+- **Mes courbes** (`SavedCurves`, `ApplySavedCurves`) : sous-menu avec les courbes enregistrées dans l'app, un
+  clic applique (profil actif → Personnalisé) ; caché quand la bibliothèque est vide.
+- **Cooler Boost** (`SetCoolerBoost`) : non désactivable quand la sécurité thermique le force (S4) ; s'éteint
+  tout seul 30 s après que CPU et GPU sont repassés sous 75 °C.
 - **Profil auto secteur / batterie** (`SetAutoProfileOnPower`).
 - **Limite de charge** 50–100 % (`SetChargeLimit`), appliquée **au relâchement** du curseur (ou après une pause
   au clavier / à la molette). Masquée si non supportée (`ChargeLimit = 0`).
@@ -130,6 +133,7 @@ geste répété toute la journée).
 | `Ctrl+T` | Éditer les tags (séparés par des virgules ; taguer épingle) |
 | `Ctrl+Espace`, `Ctrl+clic` | Sélection multiple ; `Ctrl+A` tout sélectionner |
 | `Suppr` (recherche vide) / `Ctrl+Suppr` | Supprimer le clip courant ou la sélection |
+| `Maj+Suppr`, bouton **Effacer sauf épinglés** | Tout effacer **sauf les épinglés** (et tagués) : un premier appui arme le bouton (« Confirmer : tout effacer ? », 4 s), le second efface (`ClearUnpinned`) |
 | `Tab` | Aller aux filtres (tags, Tout / Épinglés) |
 | `Échap` / clic à côté | Fermer |
 

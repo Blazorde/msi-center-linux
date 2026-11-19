@@ -18,7 +18,7 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 |---|---|---|---|---|
 | `SetProfile` | `s profile` (`eco` · `balanced` · `gaming`) | – | `set-profile` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy` (écriture sysfs dGPU en échec), `Hardware` |
 | `SetAutoProfileOnPower` | `b enabled` | – | `set-profile` | idem |
-| `SetFanProfile` | `s fan_profile` (`silent` · `auto` · `balanced` · `turbo` · `custom`) | – | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
+| `SetFanProfile` | `s fan_profile` (`silent` · `auto` · `balanced` · `turbo` · `cool` · `cool-plus` · `custom`) | – | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback`, `GpuBusy`, `Hardware` |
 | `CustomFanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised` | – | `InvalidArgument` |
 | `FanCurve` | `s fan` (`cpu` · `gpu`) | `(yyyyydayy) spec, (ayayay) table, a(yyyyyy) raised, b custom` | – | `InvalidArgument` |
 | `SetFanCurve` | `s fan, (yyyyydayy) spec` | `(ayayay) table, a(yyyyyy) raised` | `set-fan-curve` | `InvalidArgument`, `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
@@ -28,6 +28,10 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 | `SetCpuStages` | `y idle, a(yyy) stages` | `a(yyy) floors` | `set-fan-curve` | `InvalidArgument` (règle violée, ou firmware sans pilotage en direct), `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
 | `ResetCpuStages` | – | – | `set-fan-curve` | `ReadOnly`, `SafetyFallback` |
 | `PreviewCpuStages` | `y idle, a(yyy) stages` | `a(yyy) floors` | – | `InvalidArgument` |
+| `SavedCurves` | – | `as names` (triés) | – | – |
+| `SaveCurves` | `s name` | `as names` | `set-fan-curve` | `InvalidArgument` (nom invalide, fan profile Auto) |
+| `ApplySavedCurves` | `s name` | – | `set-fan-curve` | `InvalidArgument` (nom inconnu, courbe invalide), `ReadOnly`, `SafetyFallback` (passe le profil en `custom`) |
+| `DeleteSavedCurves` | `s name` | `as names` | `set-fan-curve` | `InvalidArgument` (nom inconnu) |
 | `SetCoolerBoost` | `b enabled` | – | `set-fan-curve` | `InvalidArgument` (forcé par S4), `ReadOnly`, `SafetyFallback` |
 | `RestoreFactory` | – | – | `set-fan-curve` | `ReadOnly` (S8), `SafetyFallback` (une étape a échoué ; `auto` tenté quand même) |
 | `SetChargeLimit` | `y limit` (50–100) | – | `set-battery` | `InvalidArgument`, `ReadOnly`, `Hardware` |
@@ -65,7 +69,7 @@ appel ou à la boucle de 1 s).
 | Propriété | Type | Sens |
 |---|---|---|
 | `Profile` | `s` | Profil choisi |
-| `FanProfile` | `s` | Profil de ventilation du profil choisi : `silent` · `auto` · `balanced` · `turbo` · `custom` (ajouté le 2026-10-26) |
+| `FanProfile` | `s` | Profil de ventilation du profil choisi : `silent` · `auto` · `balanced` · `turbo` · `cool` · `cool-plus` · `custom` (ajouté le 2026-10-26) |
 | `DefaultFanProfile` | `s` | Profil de ventilation par défaut du profil choisi (`eco` → `silent`, `balanced` → `balanced`, `gaming` → `turbo`) |
 | `AutoProfileOnPower` | `b` | Profil automatique au branchement/débranchement secteur (secteur : `balanced`, batterie : `eco` par défaut) |
 | `OnAcPower` | `b` | Sur secteur (`false` aussi si inconnu) |
@@ -98,7 +102,7 @@ son contrôle polkit et ses erreurs typées.
   de performance a un profil de ventilation, par défaut `DefaultFanProfile` ; `SetFanProfile` choisit celui
   du **profil choisi**, le retient pour ce profil (persisté) et l'applique. `SetProfile` applique le profil de
   ventilation retenu du nouveau profil. Choisir le profil par défaut efface la préférence.
-  - `silent` / `balanced` / `turbo` : presets Silencieux / Progressif / Agressif (GPU : table complète ; CPU :
+  - `silent` / `balanced` / `turbo` / `cool` / `cool-plus` : presets Silencieux / Progressif / Agressif / Frais / Frais+ (GPU : table complète ; CPU :
     pilotage hybride avec cette courbe).
   - `custom` : la courbe personnalisée de chaque ventilo pour ce profil (`CustomFanCurve`) ; un ventilo jamais
     édité suit le preset du profil de ventilation par défaut.
@@ -157,7 +161,11 @@ son contrôle polkit et ses erreurs typées.
   - Le vecteur écrit dans l'EC est celui de l'ADR-0010 (`FanCurve("cpu")` le renvoie, `custom` vrai) ; la
     consigne suit les paliers avec les rampes +5 %/s / −1 %/s.
 - **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
-  au choix du propriétaire.
+  au choix du propriétaire. Un Cooler Boost non forcé s'éteint de lui-même après 30 s sous 75 °C (CPU et GPU) :
+  `SafetyEvent` `boost_released`, détail `auto off: …` ([ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)).
+- **Bibliothèque de courbes** ([ADR-0016](../adr/0016-curve-library.md)) : `SaveCurves` enregistre les courbes en
+  vigueur du profil choisi (CPU, paliers CPU s'ils pilotent le CPU, GPU) sans rien écrire dans l'EC ;
+  `ApplySavedCurves` les copie dans ses courbes personnalisées, le passe en `custom` et l'applique.
 - **Persistance** : profil, `AutoProfileOnPower`, limite de charge, profil de ventilation par profil
   (`[fan_profiles]`) et courbes personnalisées dans `/var/lib/msi-center/state.toml` (version 3 : ajoute les
   courbes à paliers `[staged.<profil>]`, un fichier version 2 se charge tel quel ; un fichier

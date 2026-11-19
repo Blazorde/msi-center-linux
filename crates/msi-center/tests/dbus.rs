@@ -15,6 +15,7 @@ use msi_center::dbus::{self, Clips, Daemon, DaemonEvent};
 use msi_center::errors::AppError;
 use msi_center::model::{Fan, Scope};
 use msi_core::curve::CurvePreset;
+use msi_core::supervisor::FORCE_WINDOW;
 use msi_daemon::controller::Controller;
 use msi_daemon::ec::{MemoryEc, MemoryState};
 use msi_daemon::fs::FsRoot;
@@ -326,8 +327,10 @@ async fn events_carry_telemetry_safety_and_status() {
     let mut events = h.daemon.events().await.unwrap();
     h.daemon.set_profile("balanced").await.unwrap();
     h.ec.state().cpu_temp = Some(97);
-    tick(&h, 1).await;
-    tick(&h, 2).await;
+    // S4 forces after FORCE_WINDOW readings at ≥ 95 °C (sustained heat, not a PL2 burst).
+    for n in 1..=FORCE_WINDOW as u64 {
+        tick(&h, n).await;
+    }
     let (mut telemetry, mut safety, mut status) = (None, None, None);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while telemetry.is_none() || safety.is_none() || status.is_none() {
@@ -431,4 +434,25 @@ async fn clipboard_manager_round_trip() {
             .map_err(|e| AppError::from_zbus(&e, msi_center::errors::Service::Clipd)),
         Err(AppError::Rejected(_))
     ));
+}
+
+#[tokio::test]
+async fn curve_library_round_trip() {
+    let h = daemon().await;
+    let d = &h.daemon;
+    d.set_profile("balanced").await.unwrap();
+    d.set_fan_profile(msi_core::fan_profile::FanProfile::CoolPlus)
+        .await
+        .unwrap();
+    assert_eq!(d.saved_curves().await.unwrap(), Vec::<String>::new());
+    assert_eq!(d.save_curves("Frais maison").await.unwrap(), ["Frais maison"]);
+    assert_eq!(d.save_curves("Autre").await.unwrap(), ["Autre", "Frais maison"]);
+    d.set_profile("gaming").await.unwrap();
+    d.apply_saved_curves("Frais maison").await.unwrap();
+    assert_eq!(d.status().await.unwrap().fan_profile, "custom");
+    assert!(matches!(
+        d.apply_saved_curves("absent").await,
+        Err(AppError::InvalidArgument(_))
+    ));
+    assert_eq!(d.delete_saved_curves("Autre").await.unwrap(), ["Frais maison"]);
 }

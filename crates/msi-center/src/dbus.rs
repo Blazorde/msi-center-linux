@@ -61,6 +61,14 @@ pub trait MsiCenter1 {
     fn preview_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> zbus::Result<Vec<FloorWire>>;
     /// `SetCoolerBoost`.
     fn set_cooler_boost(&self, enabled: bool) -> zbus::Result<()>;
+    /// `SavedCurves` (ADR-0016).
+    fn saved_curves(&self) -> zbus::Result<Vec<String>>;
+    /// `SaveCurves` (ADR-0016): returns the library names.
+    fn save_curves(&self, name: &str) -> zbus::Result<Vec<String>>;
+    /// `ApplySavedCurves` (ADR-0016).
+    fn apply_saved_curves(&self, name: &str) -> zbus::Result<()>;
+    /// `DeleteSavedCurves` (ADR-0016): returns the remaining names.
+    fn delete_saved_curves(&self, name: &str) -> zbus::Result<Vec<String>>;
     /// `SetChargeLimit`.
     fn set_charge_limit(&self, limit: u8) -> zbus::Result<()>;
     /// `GpuHolders`.
@@ -332,6 +340,38 @@ impl Daemon {
     /// Mapped D-Bus errors.
     pub async fn set_cooler_boost(&self, enabled: bool) -> Result<()> {
         self.proxy.set_cooler_boost(enabled).await.map_err(|e| de(&e))
+    }
+
+    /// `SavedCurves`: names of the curve library (ADR-0016), sorted.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors.
+    pub async fn saved_curves(&self) -> Result<Vec<String>> {
+        self.proxy.saved_curves().await.map_err(|e| de(&e))
+    }
+
+    /// `SaveCurves`: saves the curves in force under `name`; returns the library names.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors.
+    pub async fn save_curves(&self, name: &str) -> Result<Vec<String>> {
+        self.proxy.save_curves(name).await.map_err(|e| de(&e))
+    }
+
+    /// `ApplySavedCurves`.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors.
+    pub async fn apply_saved_curves(&self, name: &str) -> Result<()> {
+        self.proxy.apply_saved_curves(name).await.map_err(|e| de(&e))
+    }
+
+    /// `DeleteSavedCurves`: returns the remaining names.
+    ///
+    /// # Errors
+    /// Mapped D-Bus errors.
+    pub async fn delete_saved_curves(&self, name: &str) -> Result<Vec<String>> {
+        self.proxy.delete_saved_curves(name).await.map_err(|e| de(&e))
     }
 
     /// `SetChargeLimit`.

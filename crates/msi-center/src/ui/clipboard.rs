@@ -121,7 +121,7 @@ impl Clipboard {
             .build();
         select_toggle.update_property(&[gtk::accessible::Property::Label("Sélection multiple")]);
         let clear = gtk::Button::builder()
-            .label("Effacer l'historique")
+            .label("Tout effacer sauf épinglés")
             .tooltip_text("Supprime tous les éléments non épinglés")
             .css_classes(["destructive-action"])
             .build();
@@ -827,7 +827,7 @@ impl Clipboard {
 
     fn confirm_clear(&self, anchor: &gtk::Button) {
         let dialog = adw::AlertDialog::new(
-            Some("Effacer l'historique ?"),
+            Some("Tout effacer sauf les épinglés ?"),
             Some("Tous les éléments non épinglés sont supprimés. Les éléments épinglés (et tagués) restent."),
         );
         dialog.add_response("cancel", "Annuler");

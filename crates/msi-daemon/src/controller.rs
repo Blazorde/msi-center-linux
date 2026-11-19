@@ -43,18 +43,21 @@ use msi_core::curve::FanCurveSpec;
 use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
 use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::{CpuCurve, CpuDriver, TempFilter, hybrid_cpu_table_for};
+use msi_core::library::CurveName;
 use msi_core::power_limit::PowerLimits;
 use msi_core::profile::{GpuMode, Profile};
 use msi_core::staged::{FloorRaise, StagedCurve};
 use msi_core::stall::{FanSample, STALL_DURATION_MS, STALL_TEMP, StallDetector};
-use msi_core::supervisor::{BoostDecision, SensorReading, ThermalSupervisor};
+use msi_core::supervisor::{
+    BOOST_AUTO_OFF_MS, BOOST_AUTO_OFF_TEMP, BoostAutoOff, BoostDecision, SensorReading, ThermalSupervisor,
+};
 use msi_core::table::{GeneratedCurve, RaisedPoint, RawTables, StepCurve, TableWrite, generate, write_plan};
 
 use crate::ec::{EcBackend, Fan, restore_factory};
 use crate::gpu::{GpuError, GpuManager, GpuState, Holder, PowerControl};
 use crate::power::PowerSupply;
 use crate::rapl::Rapl;
-use crate::state::{Settings, StateStore};
+use crate::state::{SavedCurves, Settings, StateStore};
 use crate::telemetry::dgpu::{DgpuBackend, DgpuPolicy};
 use crate::telemetry::{Clock, Sample, Sampler};
 
@@ -261,6 +264,7 @@ pub struct Controller {
     cpu_pilot: CpuDriver,
     cpu_live: Option<GeneratedCurve>,
     supervisor: ThermalSupervisor,
+    boost_auto_off: BoostAutoOff,
     boost_forced: bool,
     user_boost: bool,
     last_ac: Option<bool>,
@@ -299,7 +303,6 @@ impl Controller {
             ),
             Ok(fw) => (fw, None),
         };
-        let user_boost = read_only.is_none() && ec.cooler_boost().unwrap_or(false);
         let factory = CONF_G2_5.factory_tables(&fw_version);
         (
             Self {
@@ -323,8 +326,10 @@ impl Controller {
                 cpu_pilot: CpuDriver::new(),
                 cpu_live: None,
                 supervisor: ThermalSupervisor::new(),
+                boost_auto_off: BoostAutoOff::new(),
                 boost_forced: false,
-                user_boost,
+                // A Cooler Boost found on at start is not a choice to keep: BoostAutoOff switches it off.
+                user_boost: false,
                 last_ac: None,
                 ticks: 0,
                 events: Vec::new(),
@@ -913,6 +918,103 @@ impl Controller {
         self.apply_profile(profile)
     }
 
+    /// Names of the curves saved in the library, sorted (ADR-0016).
+    #[must_use]
+    pub fn saved_curves(&self) -> Vec<String> {
+        self.settings
+            .library
+            .keys()
+            .map(|n| n.as_str().to_owned())
+            .collect()
+    }
+
+    /// Saves the curves in force in the selected profile under `name` (replacing an entry of the same name):
+    /// the CPU and GPU curves of its fan profile, plus its staged CPU curve when that is what drives the CPU.
+    /// Returns the library names. Nothing is written to the EC.
+    ///
+    /// # Errors
+    /// [`ControlError::InvalidArgument`] for an invalid name, or under the Auto fan profile (the firmware's curve
+    /// is not ours to save).
+    pub fn save_curves(&mut self, name: &str) -> Result<Vec<String>, ControlError> {
+        let name = CurveName::new(name).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        let profile = self.settings.profile;
+        if self.settings.fan_profile(profile) == FanProfile::Auto {
+            return Err(ControlError::InvalidArgument(
+                "the Auto fan profile is the MSI factory curve: pick another fan profile to save its curves"
+                    .into(),
+            ));
+        }
+        let saved = SavedCurves {
+            cpu: self.settings.curve(profile, Fan::Cpu),
+            gpu: self.settings.curve(profile, Fan::Gpu),
+            staged: self
+                .settings
+                .staged_curve(profile)
+                .filter(|_| self.settings.is_staged(profile))
+                .cloned(),
+        };
+        self.settings.library.insert(name, saved);
+        self.save();
+        Ok(self.saved_curves())
+    }
+
+    /// Applies the saved curves `name` to the selected profile: they become its custom curves (the staged CPU
+    /// curve too, or none), the profile switches to the `custom` fan profile, then is saved and applied. Every
+    /// curve is validated again before anything is changed.
+    ///
+    /// # Errors
+    /// [`ControlError::ReadOnly`]; [`ControlError::InvalidArgument`] for an unknown name, a curve that does not
+    /// validate, or a staged curve on a firmware without live CPU control; or as [`Self::apply_profile`].
+    pub fn apply_saved_curves(&mut self, name: &str) -> Result<(), ControlError> {
+        self.writable()?;
+        let key = CurveName::new(name).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        let saved = self
+            .settings
+            .library
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| ControlError::InvalidArgument(format!("no saved curves named {name:?}")))?;
+        for spec in [&saved.cpu, &saved.gpu] {
+            generate(spec).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
+        if saved.staged.is_some() && self.hybrid_base().is_none() {
+            return Err(ControlError::InvalidArgument(
+                "staged CPU curves need live CPU fan control, which this firmware does not support".into(),
+            ));
+        }
+        self.handed_back = false;
+        let profile = self.settings.profile;
+        self.settings.curves.insert((profile, Fan::Cpu), saved.cpu);
+        self.settings.curves.insert((profile, Fan::Gpu), saved.gpu);
+        match saved.staged {
+            Some(curve) => {
+                self.settings.staged.insert(profile, curve);
+            }
+            None => {
+                self.settings.staged.remove(&profile);
+            }
+        }
+        self.settings.set_fan_profile(profile, FanProfile::Custom);
+        self.save();
+        self.apply_profile(profile)
+    }
+
+    /// Removes the saved curves `name` from the library and returns the remaining names. The curves in force
+    /// are not touched.
+    ///
+    /// # Errors
+    /// [`ControlError::InvalidArgument`] for an unknown name.
+    pub fn delete_saved_curves(&mut self, name: &str) -> Result<Vec<String>, ControlError> {
+        let key = CurveName::new(name).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        if self.settings.library.remove(&key).is_none() {
+            return Err(ControlError::InvalidArgument(format!(
+                "no saved curves named {name:?}"
+            )));
+        }
+        self.save();
+        Ok(self.saved_curves())
+    }
+
     /// Sets the owner's Cooler Boost preference. Turning it off is refused while S4 forces it.
     ///
     /// # Errors
@@ -1010,6 +1112,16 @@ impl Controller {
                 .supervisor
                 .update(reading(&cpu_temp, false), reading(&gpu_temp, true));
             self.enforce_boost(decision, &readings);
+            let cpu_filtered = filtered.map_or(SensorReading::Failed, SensorReading::Celsius);
+            if self.boost_auto_off.update(
+                readings.cooler_boost == Some(true),
+                self.boost_forced,
+                cpu_filtered,
+                reading(&gpu_temp, true),
+                now_ms,
+            ) {
+                self.auto_off_boost(&readings);
+            }
             if self.applied {
                 self.check_stall(now, &readings);
             }
@@ -1118,6 +1230,24 @@ impl Controller {
             "S9 fan stall: {detail}; {restored}. Check the fan, then restart msi-daemon to take control again"
         ));
         self.event(EventKind::FanStalled, f64::from(temp), detail);
+    }
+
+    /// Switches off a Cooler Boost left on once CPU and GPU stayed cool ([`BoostAutoOff`]).
+    fn auto_off_boost(&mut self, r: &Readings) {
+        if let Err(e) = self.ec.set_cooler_boost(false) {
+            tracing::error!(error = %e, "cannot switch Cooler Boost off");
+            return;
+        }
+        self.user_boost = false;
+        let hottest = f64::from(r.cpu_temp.unwrap_or(0).max(r.gpu_temp.unwrap_or(0)));
+        self.event(
+            EventKind::BoostReleased,
+            hottest,
+            format!(
+                "auto off: below {BOOST_AUTO_OFF_TEMP} °C for {} s",
+                BOOST_AUTO_OFF_MS / 1000
+            ),
+        );
     }
 
     fn enforce_boost(&mut self, decision: BoostDecision, r: &Readings) {

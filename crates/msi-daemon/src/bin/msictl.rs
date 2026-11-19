@@ -18,7 +18,7 @@ use zbus::OwnedVariant;
 const USAGE: &str = "usage: msictl [--session] <command>
   status                         profile, fan mode, Cooler Boost, battery, dGPU, CPU power limits, firmware
   profile <eco|balanced|gaming>  apply a profile
-  fan [silent|auto|balanced|turbo|custom]
+  fan [silent|auto|balanced|turbo|cool|cool-plus|custom]
                                  show or set the fan profile of the current profile (remembered per profile;
                                  auto = MSI factory curve driven by the EC)
   factory                        hand the fans back to the EC (factory tables, fan mode auto)
@@ -30,6 +30,10 @@ const USAGE: &str = "usage: msictl [--session] <command>
   stages preview <idle%> <UP:DOWN:SPEED>...
                                  validate and show the safety floors without applying
   stages reset                   drop the staged curve (back to the exponential custom curve)
+  curves                         list the curves saved in the library
+  curves save <name...>          save the curves in force in the current profile under a name
+  curves apply <name...>         apply saved curves to the current profile (fan profile custom)
+  curves delete <name...>        delete saved curves
   charge-limit [50..100]         show or set the battery charge limit
   telemetry [--watch]            one telemetry sample, or one per second until Ctrl+C
   --session                      talk to a daemon on the session bus (development)";
@@ -48,6 +52,10 @@ enum Cmd {
         preview: bool,
     },
     StagesReset,
+    CurvesList,
+    CurvesSave(String),
+    CurvesApply(String),
+    CurvesDelete(String),
     ChargeLimit(Option<u8>),
     Telemetry {
         watch: bool,
@@ -122,6 +130,10 @@ fn parse(args: &[String]) -> Result<Cli, String> {
         ["stages", "reset"] => Cmd::StagesReset,
         ["stages", "set", idle, stages @ ..] => parse_stages_set(idle, stages, false)?,
         ["stages", "preview", idle, stages @ ..] => parse_stages_set(idle, stages, true)?,
+        ["curves"] => Cmd::CurvesList,
+        ["curves", "save", name @ ..] if !name.is_empty() => Cmd::CurvesSave(name.join(" ")),
+        ["curves", "apply", name @ ..] if !name.is_empty() => Cmd::CurvesApply(name.join(" ")),
+        ["curves", "delete", name @ ..] if !name.is_empty() => Cmd::CurvesDelete(name.join(" ")),
         ["charge-limit"] => Cmd::ChargeLimit(None),
         ["charge-limit", n] => Cmd::ChargeLimit(Some(
             n.parse()
@@ -400,6 +412,9 @@ async fn run(cli: Cli) -> zbus::Result<()> {
             }
         }
         Cmd::StagesShow => print!("{}", format_stages(&p.cpu_stages().await?)),
+        Cmd::CurvesList | Cmd::CurvesSave(_) | Cmd::CurvesApply(_) | Cmd::CurvesDelete(_) => {
+            curves(&p, cli.cmd).await?;
+        }
         Cmd::StagesSet {
             idle,
             stages,
@@ -438,6 +453,43 @@ async fn run(cli: Cli) -> zbus::Result<()> {
         }
     }
     Ok(())
+}
+
+/// `msictl curves …`: the curve library (ADR-0016).
+async fn curves(p: &MsiCenter1Proxy<'_>, cmd: Cmd) -> zbus::Result<()> {
+    match cmd {
+        Cmd::CurvesList => print!("{}", format_saved_curves(&p.saved_curves().await?)),
+        Cmd::CurvesSave(name) => {
+            let names = p.save_curves(&name).await?;
+            println!("curves of profile {} saved as {name:?}", p.profile().await?);
+            print!("{}", format_saved_curves(&names));
+        }
+        Cmd::CurvesApply(name) => {
+            p.apply_saved_curves(&name).await?;
+            println!(
+                "saved curves {name:?} applied to profile {} (fan profile custom)",
+                p.profile().await?
+            );
+        }
+        Cmd::CurvesDelete(name) => {
+            let names = p.delete_saved_curves(&name).await?;
+            println!("saved curves {name:?} deleted");
+            print!("{}", format_saved_curves(&names));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The library names, one per line, or a hint when it is empty.
+fn format_saved_curves(names: &[String]) -> String {
+    if names.is_empty() {
+        return "no saved curves (msictl curves save <name>)\n".to_owned();
+    }
+    names.iter().fold(String::new(), |mut out, n| {
+        let _ = writeln!(out, "  {n}");
+        out
+    })
 }
 
 fn main() -> ExitCode {
@@ -510,6 +562,16 @@ mod tests {
                 preview: true
             })
         );
+        assert_eq!(p(&["curves"]), Ok(Cmd::CurvesList));
+        assert_eq!(
+            p(&["curves", "save", "Nuit", "calme"]),
+            Ok(Cmd::CurvesSave("Nuit calme".into()))
+        );
+        assert_eq!(p(&["curves", "apply", "Jeu"]), Ok(Cmd::CurvesApply("Jeu".into())));
+        assert_eq!(
+            p(&["curves", "delete", "Jeu"]),
+            Ok(Cmd::CurvesDelete("Jeu".into()))
+        );
         assert_eq!(p(&["charge-limit"]), Ok(Cmd::ChargeLimit(None)));
         assert_eq!(p(&["charge-limit", "80"]), Ok(Cmd::ChargeLimit(Some(80))));
         assert_eq!(p(&["telemetry"]), Ok(Cmd::Telemetry { watch: false }));
@@ -535,6 +597,9 @@ mod tests {
             &["stages", "set", "20", "55:50:300"],
             &["stages", "set", "20", "a:b:c"],
             &["stages", "show", "cpu"],
+            &["curves", "save"],
+            &["curves", "apply"],
+            &["curves", "rename", "a"],
             &["reboot"],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
@@ -584,7 +649,7 @@ mod tests {
         );
         assert!(!out.contains("live:") && !out.contains("k 2"), "{out}");
         let list = format_fan_profiles("auto", "turbo");
-        assert_eq!(list.lines().count(), 5);
+        assert_eq!(list.lines().count(), FanProfile::ALL.len());
         assert!(list.contains("* auto"), "{list}");
         assert!(
             list.lines()

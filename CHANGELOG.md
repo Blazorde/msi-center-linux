@@ -4,6 +4,34 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-19
+
+### Fixed
+
+- **Cooler Boost ne reste plus collé** ([ADR-0015](docs/adr/0015-cooler-boost-spikes-and-auto-off.md)) : un
+  Cooler Boost non forcé par la sécurité (allumé à la main, par la touche Fn, par le firmware, ou trouvé allumé
+  au démarrage) s'éteint tout seul après 30 s sous 75 °C. Il faisait tourner les ventilos à fond (~8 000 tr/min)
+  en ignorant la courbe.
+- **Les rafales PL2 ne déclenchent plus Cooler Boost** : la sécurité S4 attend 10 s à ≥ 95 °C (ou 2 lectures à
+  ≥ 100 °C) au lieu de 2 lectures ; les pics de 95–98 °C de quelques secondes sont ignorés.
+
+### Added
+
+- **Presse-papiers : tout effacer sauf épinglés** dans la popup `Super+V` (bouton **Effacer sauf épinglés** ou
+  `Maj+Suppr`, deux appuis pour confirmer) ; le bouton de l'app s'appelle désormais « Tout effacer sauf épinglés ».
+- **Extension** : sous-menu « Mes courbes », test de fumée à jour (7 profils de ventilation, bibliothèque,
+  effacement sauf épinglés).
+- **Mes courbes** ([ADR-0016](docs/adr/0016-curve-library.md)) : enregistrez autant de courbes que vous voulez
+  sous un nom (photo des courbes en vigueur : CPU, paliers, GPU) et réappliquez-les dans n'importe quel profil.
+  App (carte « Mes courbes »), extension (sous-menu), `msictl curves`. D-Bus : `SavedCurves`, `SaveCurves`,
+  `ApplySavedCurves`, `DeleteSavedCurves` (ajout compatible) ; `state.toml` version 4.
+- **Profil de ventilation Frais+** (`cool-plus`) : plus costaud que Frais entre 55 et 70 °C (≈ 60 % à 55 °C,
+  84 % à 67 °C, 90 % à 70 °C), 100 % dès 75 °C. App, extension et `msictl fan cool-plus`.
+- **Profil de ventilation Frais** (`cool`) : discret jusqu'à 60 °C, puis montée raide jusqu'à **100 % dès
+  78 °C** pour garder le CPU sous 80 °C. Disponible dans l'app, l'extension et `msictl fan cool`.
+
+## [1.0.0] - 2026-10-28
+
 ### Added
 
 - **Limites de puissance CPU par profil** ([ADR-0014](docs/adr/0014-cpu-power-limits.md)) : le firmware laisse le
@@ -14,6 +42,11 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
   `CpuPowerLimits` (ajout compatible).
 - **Wiki GitHub** : la doc `docs/` est publiée sur le [wiki](https://github.com/Blazorde/msi-center-linux/wiki)
   par `scripts/wiki-sync.sh` (pages à plat, liens réécrits, captures, barre latérale ; `--dry-run` pour un aperçu).
+
+## [0.2.0] - 2026-10-28
+
+### Added
+
 - **Courbe à paliers du ventilo CPU** ([ADR-0013](docs/adr/0013-staged-cpu-fan-curve.md)) : autant de paliers
   que vous voulez (1 à 79), chacun avec **sa** température de montée, sa puissance et **sa** température de
   retombée, plus une puissance au repos. Le daemon pilote le ventilo CPU en direct (ADR-0010) : le plafond de

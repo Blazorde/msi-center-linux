@@ -16,6 +16,7 @@ use msi_center::stages::StagedState;
 use msi_core::fan_profile::FanProfile;
 
 use super::fanchart::FanChart;
+use super::library::CurveLibrary;
 use super::profiles::{FanProfileSwitch, Variant};
 use super::stages::StagesEditor;
 use super::widgets::{Ctx, Debounce, Gate, glass, hint, page_header, page_scroller, section_title};
@@ -94,6 +95,7 @@ pub struct Fans {
     origin: gtk::Label,
     chart: FanChart,
     staged: Rc<StagesEditor>,
+    library: Rc<CurveLibrary>,
     cells: Vec<[gtk::Label; 7]>,
     report: gtk::Revealer,
     report_list: gtk::Box,
@@ -409,6 +411,10 @@ impl Fans {
         let staged = StagesEditor::new(ctx, chart.clone());
         content.append(&staged.root);
 
+        // Curve library (ADR-0016): as many named curves as the owner wants.
+        let library = CurveLibrary::new(ctx);
+        content.append(&library.root);
+
         let boost = adw::SwitchRow::builder()
             .title("Cooler Boost")
             .subtitle("Ventilateurs au maximum, quelle que soit la courbe")
@@ -432,6 +438,7 @@ impl Fans {
             origin,
             chart,
             staged,
+            library,
             cells,
             report,
             report_list,
@@ -470,6 +477,12 @@ impl Fans {
         });
         let w = Rc::downgrade(self);
         self.staged.connect_changed(move || {
+            if let Some(p) = w.upgrade() {
+                p.load();
+            }
+        });
+        let w = Rc::downgrade(self);
+        self.library.connect_changed(move || {
             if let Some(p) = w.upgrade() {
                 p.load();
             }
@@ -535,6 +548,7 @@ impl Fans {
     /// The daemon answered: (re)load the curve.
     pub fn daemon_up(self: &Rc<Self>, restore_factory: bool) {
         self.restore.set_visible(restore_factory);
+        self.library.load();
         self.load();
     }
 
@@ -571,7 +585,7 @@ impl Fans {
                     s.custom = custom;
                     s.loaded = Some(c);
                     s.preview = None;
-                    s.staged = staged.clone();
+                    s.staged.clone_from(&staged);
                     s.error = None;
                     drop(s);
                     p.staged.set_state(staged, fan == Fan::Cpu);
@@ -766,6 +780,7 @@ impl Fans {
             .is_some_and(|old| old.profile != s.profile || old.fan_profile != s.fan_profile);
         self.state.borrow_mut().status = Some(s.clone());
         self.staged.set_read_only(s.read_only);
+        self.library.set_read_only(s.read_only);
         self.syncing.set(true);
         self.boost.set_active(s.cooler_boost);
         self.syncing.set(false);
@@ -889,24 +904,7 @@ impl Fans {
         self.revert.set_sensitive(dirty);
         self.reset.set_sensitive(!read_only && is_custom);
 
-        // Report.
-        while let Some(c) = self.report_list.first_child() {
-            self.report_list.remove(&c);
-        }
-        let shown = s.shown().cloned();
-        if let Some(g) = &shown {
-            for r in &g.raised {
-                self.report_list.append(
-                    &gtk::Label::builder()
-                        .label(format!("▲ {}", r.describe()))
-                        .xalign(0.0)
-                        .wrap(true)
-                        .build(),
-                );
-            }
-        }
-        self.report
-            .set_reveal_child(shown.as_ref().is_some_and(|g| !g.raised.is_empty()));
+        self.refresh_report(s.shown());
         let applied = s.loaded.as_ref().map(|l| l.generated.clone());
         let preview = if dirty { s.preview.clone() } else { None };
         // The exponential curve drawn: the one being edited, else the one in force (none under Auto).
@@ -941,6 +939,24 @@ impl Fans {
             "Modifiez un réglage : l'aperçu s'affiche en pointillés, sans rien écrire. « Appliquer en \
              Personnalisé » enregistre la courbe et passe ce profil en Personnalisé."
         });
+    }
+
+    /// Lists the steps raised by the safety floors (S2) of the table shown.
+    fn refresh_report(&self, shown: Option<&Generated>) {
+        while let Some(c) = self.report_list.first_child() {
+            self.report_list.remove(&c);
+        }
+        let raised = shown.map_or(&[][..], |g| &g.raised[..]);
+        for r in raised {
+            self.report_list.append(
+                &gtk::Label::builder()
+                    .label(format!("▲ {}", r.describe()))
+                    .xalign(0.0)
+                    .wrap(true)
+                    .build(),
+            );
+        }
+        self.report.set_reveal_child(!raised.is_empty());
     }
 
     fn refresh_table(&self) {

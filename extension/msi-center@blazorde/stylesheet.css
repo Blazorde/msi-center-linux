@@ -452,3 +452,6 @@
 .msi-clip-status { font-size: 0.8em; font-weight: 600; color: #F28C38; }
 .msi-light .msi-clip-status { color: #C0362C; }
 .msi-clip-hints { font-size: 0.72em; color: rgba(127, 127, 140, 0.95); }
+.msi-clip-footer .msi-clip-clear { font-size: 0.8em; padding: 4px 10px; color: #E0574B; }
+.msi-light .msi-clip-footer .msi-clip-clear { color: #C0362C; }
+.msi-clip-footer .msi-clip-clear:checked { color: #FFFFFF; }
