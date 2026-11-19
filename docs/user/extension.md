@@ -133,6 +133,7 @@ geste répété toute la journée).
 | `Ctrl+T` | Éditer les tags (séparés par des virgules ; taguer épingle) |
 | `Ctrl+Espace`, `Ctrl+clic` | Sélection multiple ; `Ctrl+A` tout sélectionner |
 | `Suppr` (recherche vide) / `Ctrl+Suppr` | Supprimer le clip courant ou la sélection |
+| `Maj+Suppr`, bouton **Effacer sauf épinglés** | Tout effacer **sauf les épinglés** (et tagués) : un premier appui arme le bouton (« Confirmer : tout effacer ? », 4 s), le second efface (`ClearUnpinned`) |
 | `Tab` | Aller aux filtres (tags, Tout / Épinglés) |
 | `Échap` / clic à côté | Fermer |
 

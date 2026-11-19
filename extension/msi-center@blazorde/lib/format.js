@@ -53,7 +53,7 @@ export const FAN_PROFILES = [
     {id: 'balanced', label: 'Équilibré', short: 'Équilibré', icon: 'weather-windy-symbolic'},
     {id: 'turbo', label: 'Turbo', short: 'Turbo', icon: 'weather-tornado-symbolic'},
     {id: 'cool', label: 'Frais', short: 'Frais', icon: 'weather-snow-symbolic'},
-    {id: 'cool-plus', label: 'Frais+', short: 'Frais+', icon: 'weather-freezing-rain-symbolic'},
+    {id: 'cool-plus', label: 'Frais+', short: 'Frais+', icon: 'weather-showers-symbolic'},
     {id: 'custom', label: 'Personnalisé', short: 'Perso', icon: 'document-edit-symbolic'},
 ];
 

@@ -145,6 +145,10 @@ Le bouton **Rendre la main à l'EC** (courbes d'usine) n'apparaît que si le ser
 
 ### Presse-papiers
 
+**Tout effacer sauf épinglés** supprime d'un coup tout l'historique non épinglé (confirmation demandée) ; les
+éléments épinglés et tagués restent. Même chose dans la popup `Super+V` : `Maj+Suppr` ou le bouton **Effacer
+sauf épinglés** (deux appuis).
+
 **Ajouter un tag épingle l'élément** : il passe dans la base permanente et survit à la déconnexion. Vider
 ses tags ne le désépingle pas ; le désépingler le renvoie dans l'historique de session, effacé au logout.
 

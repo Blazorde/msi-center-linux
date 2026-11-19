@@ -15,6 +15,10 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ### Added
 
+- **Presse-papiers : tout effacer sauf épinglés** dans la popup `Super+V` (bouton **Effacer sauf épinglés** ou
+  `Maj+Suppr`, deux appuis pour confirmer) ; le bouton de l'app s'appelle désormais « Tout effacer sauf épinglés ».
+- **Extension** : sous-menu « Mes courbes », test de fumée à jour (7 profils de ventilation, bibliothèque,
+  effacement sauf épinglés).
 - **Mes courbes** ([ADR-0016](docs/adr/0016-curve-library.md)) : enregistrez autant de courbes que vous voulez
   sous un nom (photo des courbes en vigueur : CPU, paliers, GPU) et réappliquez-les dans n'importe quel profil.
   App (carte « Mes courbes »), extension (sous-menu), `msictl curves`. D-Bus : `SavedCurves`, `SaveCurves`,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Super+V clipboard history popup. View over clipd: List / Get / Pin / Unpin / Delete / SetTags / Tags.
+// Super+V clipboard history popup. View over clipd: List / Get / Pin / Unpin / Delete / ClearUnpinned / SetTags / Tags.
 // Keyboard-first: focus stays in the search field, keys are intercepted in the capture phase.
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -20,6 +20,9 @@ const SEARCH_DEBOUNCE_MS = 120;
 // shortcut (many times a day) it only fades, fast. Closing is always quicker than opening, never ease-in.
 const OPEN_MS = 180;
 const KEY_OPEN_MS = 90;
+/** How long (ms) the "clear unpinned" button waits for its confirming second press. */
+const CLEAR_ARM_MS = 4000;
+const CLEAR_LABEL = 'Effacer sauf épinglés';
 const CLOSE_MS = 110;
 const ANCHOR_GAP = 6; // px between the top bar and the card
 const PASTE_DELAY_MS = 180; // let the previously focused window regain focus before Ctrl+V
@@ -47,6 +50,7 @@ export class ClipPopup extends EventEmitter {
         this._seq = 0;
         this._searchTimeout = 0;
         this._pasteTimeout = 0;
+        this._clearArmTimeout = 0;
         this._grab = null;
         this._root = null;
         this._clipd.connectObject('changed', () => {
@@ -166,8 +170,18 @@ export class ClipPopup extends EventEmitter {
         footer.add_child(new St.Label({
             style_class: 'msi-clip-hints',
             y_align: Clutter.ActorAlign.CENTER,
-            text: '↵ copier · ⇧↵ coller · Ctrl+P épingler · Ctrl+T tags · Ctrl+Espace sélection · Suppr supprimer · Échap',
+            text: '↵ copier · ⇧↵ coller · Ctrl+P épingler · Ctrl+T tags · Ctrl+Espace sélection · Suppr supprimer · ⇧Suppr tout sauf épinglés · Échap',
         }));
+        // Clear everything except pinned clips: first press arms (4 s), second press clears.
+        this._clearBtn = new St.Button({
+            label: CLEAR_LABEL,
+            style_class: 'msi-segment msi-clip-clear',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            accessible_name: 'Tout effacer sauf les éléments épinglés',
+        });
+        this._clearBtn.connect('clicked', () => this._clearUnpinned());
+        footer.add_child(this._clearBtn);
         this._card.add_child(footer);
 
         const keys = new Clutter.KeyController();
@@ -292,6 +306,7 @@ export class ClipPopup extends EventEmitter {
         });
         if (this._anchor)
             this._card.ease({scale_x: 0.97, scale_y: 0.97, translation_y: -4, duration: CLOSE_MS, mode: ease});
+        this._disarmClear();
         this.emit('open-state-changed', false);
     }
 
@@ -567,6 +582,10 @@ export class ClipPopup extends EventEmitter {
         case Clutter.KEY_KP_Delete:
             if (inTagEntry || (inSearch && this._search.text.length > 0 && !ctrl))
                 return Clutter.EVENT_PROPAGATE;
+            if (shift) {
+                this._clearUnpinned();
+                return Clutter.EVENT_STOP;
+            }
             this._delete(this._selected.size > 0 ? [...this._selected] : this._currentIds());
             return Clutter.EVENT_STOP;
         default:
@@ -696,6 +715,38 @@ export class ClipPopup extends EventEmitter {
         }
     }
 
+    /** First call arms the button (CLEAR_ARM_MS), the second one deletes every unpinned clip. */
+    async _clearUnpinned() {
+        if (!this._clearArmTimeout) {
+            this._clearBtn.label = 'Confirmer : tout effacer ?';
+            this._clearBtn.add_style_pseudo_class('checked');
+            this._clearArmTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, CLEAR_ARM_MS, () => {
+                this._clearArmTimeout = 0;
+                this._disarmClear();
+                return GLib.SOURCE_REMOVE;
+            });
+            return;
+        }
+        this._disarmClear();
+        try {
+            const n = await this._clipd.clearUnpinned();
+            this._selected.clear();
+            this._status.text = `${n} élément(s) effacé(s), épinglés conservés`;
+        } catch (e) {
+            this._status.text = `Effacement impossible : ${e.message}`;
+        }
+    }
+
+    _disarmClear() {
+        if (this._clearArmTimeout)
+            GLib.source_remove(this._clearArmTimeout);
+        this._clearArmTimeout = 0;
+        if (this._clearBtn) {
+            this._clearBtn.label = CLEAR_LABEL;
+            this._clearBtn.remove_style_pseudo_class('checked');
+        }
+    }
+
     _openTagEditor() {
         const clip = this._clips[this._index];
         if (!clip)
@@ -725,11 +776,11 @@ export class ClipPopup extends EventEmitter {
             Main.popModal(this._grab);
             this._grab = null;
         }
-        for (const id of [this._searchTimeout, this._pasteTimeout]) {
+        for (const id of [this._searchTimeout, this._pasteTimeout, this._clearArmTimeout]) {
             if (id)
                 GLib.source_remove(id);
         }
-        this._searchTimeout = this._pasteTimeout = 0;
+        this._searchTimeout = this._pasteTimeout = this._clearArmTimeout = 0;
         this._clipd.disconnectObject(this);
         this._anchor?.disconnectObject(this);
         this._anchor = null;
