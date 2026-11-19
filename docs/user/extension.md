@@ -84,7 +84,7 @@ la métrique.
 ## Menu
 
 - **Profils** : les trois pastilles (voir ci-dessus), puis une rangée de cinq puces **Silence / Auto /
-  Équilibré / Turbo / Frais / Perso** : le profil de ventilation du profil actif (un clic = `SetFanProfile`, retenu par
+  Équilibré / Turbo / Frais / Frais+ / Perso** : le profil de ventilation du profil actif (un clic = `SetFanProfile`, retenu par
   profil ; allumage immédiat avec indicateur d'activité, retour en arrière et bandeau d'erreur si le daemon
   refuse ; `←` `→` pour naviguer). Le choix par défaut du profil a un fin trait. **Auto** = courbe d'usine MSI
   gérée par le contrôleur ; Turbo n'est pas Cooler Boost. Puis une ligne d'état : profil de ventilation,

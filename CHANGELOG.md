@@ -15,6 +15,8 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) · Versions : 
 
 ### Added
 
+- **Profil de ventilation Frais+** (`cool-plus`) : plus costaud que Frais entre 55 et 70 °C (≈ 60 % à 55 °C,
+  84 % à 67 °C, 90 % à 70 °C), 100 % dès 75 °C. App, extension et `msictl fan cool-plus`.
 - **Profil de ventilation Frais** (`cool`) : discret jusqu'à 60 °C, puis montée raide jusqu'à **100 % dès
   78 °C** pour garder le CPU sous 80 °C. Disponible dans l'app, l'extension et `msictl fan cool`.
 - **Limites de puissance CPU par profil** ([ADR-0014](docs/adr/0014-cpu-power-limits.md)) : le firmware laisse le

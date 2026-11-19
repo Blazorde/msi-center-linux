@@ -56,11 +56,12 @@ refroidit. Le **palier montant** (nombre de seuils `up ≤ T`) est le plus bas d
 | **Progressif** (Balanced) | 0 % | 48 | 85 | 30 % | 100 % | 2,2 | 48 56 64 71 79 85 | 4 °C |
 | **Agressif** (Gaming) | 30 % | 40 | 74 | 40 % | 100 % | 1,4 | 40 47 54 61 68 74 | 3 °C |
 | **Frais** (–) | 35 % | 60 | 78 | 45 % | 100 % | 1,0 | 55 60 65 70 74 78 | 3 °C |
+| **Frais+** (–) | 40 % | 50 | 75 | 50 % | 100 % | 1,0 | 50 55 60 65 70 75 | 3 °C |
 
 Tables générées (testées dans `table::tests::presets_generate_the_documented_tables`). **Un seul palier relevé
 par S2** : Silencieux palier 6 (entré à 85 °C), courbe 86 % → **100 %** (plancher 100 % dès 85 °C), car sa
 courbe n'atteint 100 % qu'à `T1` = 88 °C. Le relèvement est signalé (`raised`), comme tout relèvement S2.
-Progressif, Agressif et Frais : aucun palier relevé.
+Progressif, Agressif, Frais et Frais+ : aucun palier relevé.
 
 | Palier | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|---|
@@ -72,6 +73,8 @@ Progressif, Agressif et Frais : aucun palier relevé.
 | Agressif monte ≥ / redescend < °C | – | 40 / 37 | 47 / 44 | 54 / 51 | 61 / 58 | 68 / 65 | 74 / 71 |
 | Frais vitesse % | 35 | 45 | 45 | 60 | 76 | 88 | 100 |
 | Frais monte ≥ / redescend < °C | – | 55 / 52 | 60 / 57 | 65 / 62 | 70 / 67 | 74 / 71 | 78 / 75 |
+| Frais+ vitesse % | 40 | 50 | 60 | 70 | 80 | 90 | 100 |
+| Frais+ monte ≥ / redescend < °C | – | 50 / 47 | 55 / 52 | 60 / 57 | 65 / 62 | 70 / 67 | 75 / 72 |
 | *Usine CPU (rappel)* | *0* | *36* | *40* | *50* | *62* | *80* | *96* |
 | *Usine monte ≥ / redescend < °C* | – | *57 / 53* | *62 / 57* | *70 / 65* | *77 / 73* | *83 / 80* | *90 / 87* |
 
@@ -97,7 +100,9 @@ Justification :
   jusqu'à 60 °C (45 %), puis montée **linéaire et raide** (`k` 1,0) : ≈ 70 % à 70 °C, **100 % dès 78 °C**.
   Plus calme que Agressif en usage léger, mais plafonne avant 80 °C. Les ventilos seuls ne garantissent pas
   < 80 °C sous charge lourde : c'est le rôle des limites de puissance (ADR-0014).
-- Toutes les tables générées sont à **100 % dès 85 °C** (S2) — par la courbe pour Progressif, Agressif et Frais,
+- **Frais+** (2026-11-19, « rends frais plus costaud entre 55 et 70 ») : jamais arrêté (40 %), linéaire de
+  50 % à 50 °C à **100 % dès 75 °C** : ≈ 60 % à 55 °C, 84 % à 67 °C, 90 % à 70 °C (Frais : 45 / 66 / 76 %).
+- Toutes les tables générées sont à **100 % dès 85 °C** (S2) — par la courbe pour Progressif, Agressif, Frais et Frais+,
   par relèvement signalé pour Silencieux —, alors que la table d'usine plafonne à 96 % à 90 °C.
 - Les mêmes presets s'appliquent aux deux ventilos (CPU et GPU). Le **GPU** reçoit la table ci-dessus telle
   quelle. Le **CPU** est piloté en hybride (section suivante) : l'EC ignore les seuils CPU écrits.
@@ -222,10 +227,11 @@ après la veille. Le shift mode et le dGPU restent ceux du profil de performance
 | **Équilibré** | `balanced` | preset Progressif | Équilibré |
 | **Turbo** | `turbo` | preset Agressif (monte tôt et fort, 100 % dès 74 °C, redescend) | Gaming |
 | **Frais** | `cool` | preset Frais (discret jusqu'à 60 °C, 100 % dès 78 °C : reste sous 80 °C) | – |
+| **Frais+** | `cool-plus` | preset Frais+ (plus fort dès 50 °C, 100 % dès 75 °C) | – |
 | **Personnalisé** | `custom` | courbe du propriétaire, une par ventilo et par profil de performance | – |
 
 - **Turbo n'est pas Cooler Boost** : Cooler Boost (ventilos à fond) reste un interrupteur séparé.
-- **Silencieux / Équilibré / Turbo / Frais / Personnalisé** : comportement décrit ci-dessus (GPU : table complète écrite ;
+- **Silencieux / Équilibré / Turbo / Frais / Frais+ / Personnalisé** : comportement décrit ci-dessus (GPU : table complète écrite ;
   CPU : pilotage hybride ADR-0010 avec la courbe du profil de ventilation). S1–S9 inchangés.
 - **Personnalisé** : la courbe saisie est validée telle quelle (S3, rejet sans rien écrire), la table générée
   applique les planchers S2 avec relèvements **signalés** (`raised`), comme toute courbe. Un ventilo jamais
