@@ -625,7 +625,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(60, 20), (75, 20), (85, 20)]
         );
-        assert!(curve().raised_floors().is_empty());
+        assert!(
+            curve().raised_floors().is_empty(),
+            "{:?}",
+            curve().raised_floors()
+        );
     }
 
     #[test]

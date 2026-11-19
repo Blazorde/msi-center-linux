@@ -529,7 +529,7 @@ async fn staged_cpu_curve_round_trips_and_drives_the_cpu_live() {
 
     // Set: saved, custom fan profile, in force, and the CPU table keeps the factory thresholds.
     let floors = p.set_cpu_stages(0, &four_stages()).await.unwrap();
-    assert!(floors.is_empty());
+    assert!(floors.is_empty(), "{floors:?}");
     assert_eq!(p.fan_profile().await.unwrap(), "custom");
     let (idle, stages, _, saved, active, _) = p.cpu_stages().await.unwrap();
     assert_eq!((idle, stages, saved, active), (0, four_stages(), true, true));
