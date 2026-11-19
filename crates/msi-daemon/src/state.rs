@@ -10,6 +10,9 @@
 //! Staged CPU curves (`[staged.<profile>]`, version 3, ADR-0013): one per performance profile, any number of
 //! stages. A version 2 file has none and loads unchanged; an older daemon reading a version 3 file ignores the
 //! table (the CPU then falls back to its exponential curve, which is always safe).
+//!
+//! Curve library (`[library."<name>"]`, version 4, ADR-0016): curves saved under a name by the owner, as many as
+//! wanted. An older daemon ignores the table.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -20,6 +23,7 @@ use msi_core::battery::ChargeLimit;
 use msi_core::curve::{FanCurveParams, FanCurveSpec};
 use msi_core::fan_profile::{FanCurveSource, FanProfile};
 use msi_core::hybrid::CpuCurve;
+use msi_core::library::CurveName;
 use msi_core::profile::Profile;
 use msi_core::staged::{Stage, StagedCurve};
 use serde::{Deserialize, Serialize};
@@ -49,6 +53,19 @@ pub struct Settings {
     /// Staged CPU curve (fan profile `custom`) of one performance profile. When present it replaces the
     /// exponential custom curve of the CPU fan; the GPU keeps its own.
     pub staged: HashMap<Profile, StagedCurve>,
+    /// Curve library: snapshots saved under a name (ADR-0016).
+    pub library: BTreeMap<CurveName, SavedCurves>,
+}
+
+/// One entry of the curve library: the curves in force in a performance profile when it was saved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedCurves {
+    /// Exponential CPU curve.
+    pub cpu: FanCurveSpec,
+    /// GPU curve.
+    pub gpu: FanCurveSpec,
+    /// Staged CPU curve, which drives the CPU fan instead of `cpu` when present.
+    pub staged: Option<StagedCurve>,
 }
 
 impl Default for Settings {
@@ -62,6 +79,7 @@ impl Default for Settings {
             curves: HashMap::new(),
             fan_profiles: HashMap::new(),
             staged: HashMap::new(),
+            library: BTreeMap::new(),
         }
     }
 }
@@ -228,6 +246,36 @@ impl StagedRecord {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct LibraryRecord {
+    cpu: CurveRecord,
+    gpu: CurveRecord,
+    staged: Option<StagedRecord>,
+}
+
+impl LibraryRecord {
+    fn from_saved(saved: &SavedCurves) -> Self {
+        Self {
+            cpu: CurveRecord::from_spec(&saved.cpu),
+            gpu: CurveRecord::from_spec(&saved.gpu),
+            staged: saved.staged.as_ref().map(StagedRecord::from_curve),
+        }
+    }
+
+    fn to_saved(&self) -> Result<SavedCurves, String> {
+        Ok(SavedCurves {
+            cpu: self.cpu.to_spec().map_err(|e| format!("cpu: {e}"))?,
+            gpu: self.gpu.to_spec().map_err(|e| format!("gpu: {e}"))?,
+            staged: self
+                .staged
+                .as_ref()
+                .map(StagedRecord::to_curve)
+                .transpose()
+                .map_err(|e| format!("staged: {e}"))?,
+        })
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StateFile {
     #[serde(default)]
@@ -244,9 +292,12 @@ struct StateFile {
     /// Staged CPU curves, absent before version 3.
     #[serde(default)]
     staged: BTreeMap<String, StagedRecord>,
+    /// Curve library, absent before version 4.
+    #[serde(default)]
+    library: BTreeMap<String, LibraryRecord>,
 }
 
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 fn parse_profile(value: Option<&String>, key: &str, default: Profile, warnings: &mut Vec<String>) -> Profile {
     match value.map(|v| v.parse::<Profile>()) {
@@ -290,6 +341,7 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
         curves: HashMap::new(),
         fan_profiles: HashMap::new(),
         staged: HashMap::new(),
+        library: BTreeMap::new(),
     };
     if let Some(v) = file.charge_limit {
         match ChargeLimit::new(v) {
@@ -325,6 +377,21 @@ pub fn parse(text: &str) -> (Settings, Vec<String>) {
                 s.staged.insert(profile, curve);
             }
             Err(e) => warnings.push(format!("staged.{profile_name}: {e}")),
+        }
+    }
+    for (name, record) in &file.library {
+        let name = match CurveName::new(name) {
+            Ok(n) => n,
+            Err(e) => {
+                warnings.push(format!("library.{name:?}: {e}"));
+                continue;
+            }
+        };
+        match record.to_saved() {
+            Ok(saved) => {
+                s.library.insert(name, saved);
+            }
+            Err(e) => warnings.push(format!("library.{:?}: {e}", name.as_str())),
         }
     }
     if let Some(map) = &file.fan_profiles {
@@ -378,6 +445,11 @@ pub fn render(s: &Settings) -> Result<String, toml::ser::Error> {
             .staged
             .iter()
             .map(|(p, c)| (p.as_str().to_owned(), StagedRecord::from_curve(c)))
+            .collect(),
+        library: s
+            .library
+            .iter()
+            .map(|(n, c)| (n.as_str().to_owned(), LibraryRecord::from_saved(c)))
             .collect(),
     };
     toml::to_string(&file)
@@ -472,6 +544,7 @@ mod tests {
             curves: HashMap::new(),
             fan_profiles: HashMap::new(),
             staged: HashMap::new(),
+            library: BTreeMap::new(),
         };
         s.curves.insert((Profile::Eco, Fan::Gpu), custom());
         s.set_fan_profile(Profile::Eco, FanProfile::Custom);
@@ -674,7 +747,7 @@ mod tests {
         s.set_fan_profile(Profile::Gaming, FanProfile::Custom);
         store.save(&s).unwrap();
         let text = std::fs::read_to_string(store.path()).unwrap();
-        assert!(text.contains("version = 3"), "{text}");
+        assert!(text.contains("version = 4"), "{text}");
         let (loaded, w) = store.load();
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(loaded, s);
@@ -766,5 +839,41 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.profile_for_power(true), Profile::Balanced);
         assert_eq!(s.profile_for_power(false), Profile::Eco);
+    }
+
+    #[test]
+    fn curve_library_round_trips_and_drops_invalid_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StateStore::new(dir.path().join("state.toml"));
+        let mut s = Settings::default();
+        s.library.insert(
+            CurveName::new("Nuit calme").unwrap(),
+            SavedCurves {
+                cpu: CurvePreset::Silent.spec(),
+                gpu: CurvePreset::Progressive.spec(),
+                staged: Some(staged()),
+            },
+        );
+        s.library.insert(
+            CurveName::new("Jeu ❄").unwrap(),
+            SavedCurves {
+                cpu: CurvePreset::CoolPlus.spec(),
+                gpu: CurvePreset::Aggressive.spec(),
+                staged: None,
+            },
+        );
+        store.save(&s).unwrap();
+        let (loaded, w) = store.load();
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(loaded, s);
+
+        // An invalid curve or name is dropped with a warning, the rest is kept (S3).
+        let mut text = std::fs::read_to_string(store.path()).unwrap();
+        text = text.replacen("t1 = 88", "t1 = 18", 1);
+        text.push_str("\n[library.\"   \"]\ncpu = { idle = 0, t0 = 48, t1 = 85, min = 30, max = 100, k = 2.2, up = [48, 56, 64, 71, 79, 85], hysteresis = 4 }\ngpu = { idle = 0, t0 = 48, t1 = 85, min = 30, max = 100, k = 2.2, up = [48, 56, 64, 71, 79, 85], hysteresis = 4 }\n");
+        let (loaded, w) = parse(&text);
+        assert_eq!(w.len(), 2, "{w:?}");
+        let names: Vec<&str> = loaded.library.keys().map(CurveName::as_str).collect();
+        assert_eq!(names, ["Jeu ❄"]);
     }
 }

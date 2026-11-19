@@ -38,6 +38,14 @@ pub trait MsiCenter1 {
     /// See the interface documentation.
     fn preview_cpu_stages(&self, idle: u8, stages: &[StageWire]) -> zbus::Result<Vec<FloorWire>>;
     /// See the interface documentation.
+    fn saved_curves(&self) -> zbus::Result<Vec<String>>;
+    /// See the interface documentation.
+    fn save_curves(&self, name: &str) -> zbus::Result<Vec<String>>;
+    /// See the interface documentation.
+    fn apply_saved_curves(&self, name: &str) -> zbus::Result<()>;
+    /// See the interface documentation.
+    fn delete_saved_curves(&self, name: &str) -> zbus::Result<Vec<String>>;
+    /// See the interface documentation.
     fn set_cooler_boost(&self, enabled: bool) -> zbus::Result<()>;
     /// See the interface documentation.
     fn restore_factory(&self) -> zbus::Result<()>;

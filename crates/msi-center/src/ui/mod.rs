@@ -7,6 +7,7 @@ mod clipboard;
 mod fanchart;
 mod fans;
 mod home;
+mod library;
 mod perf;
 mod prefs;
 mod profiles;

@@ -16,6 +16,7 @@ use msi_center::stages::StagedState;
 use msi_core::fan_profile::FanProfile;
 
 use super::fanchart::FanChart;
+use super::library::CurveLibrary;
 use super::profiles::{FanProfileSwitch, Variant};
 use super::stages::StagesEditor;
 use super::widgets::{Ctx, Debounce, Gate, glass, hint, page_header, page_scroller, section_title};
@@ -94,6 +95,7 @@ pub struct Fans {
     origin: gtk::Label,
     chart: FanChart,
     staged: Rc<StagesEditor>,
+    library: Rc<CurveLibrary>,
     cells: Vec<[gtk::Label; 7]>,
     report: gtk::Revealer,
     report_list: gtk::Box,
@@ -409,6 +411,10 @@ impl Fans {
         let staged = StagesEditor::new(ctx, chart.clone());
         content.append(&staged.root);
 
+        // Curve library (ADR-0016): as many named curves as the owner wants.
+        let library = CurveLibrary::new(ctx);
+        content.append(&library.root);
+
         let boost = adw::SwitchRow::builder()
             .title("Cooler Boost")
             .subtitle("Ventilateurs au maximum, quelle que soit la courbe")
@@ -432,6 +438,7 @@ impl Fans {
             origin,
             chart,
             staged,
+            library,
             cells,
             report,
             report_list,
@@ -470,6 +477,12 @@ impl Fans {
         });
         let w = Rc::downgrade(self);
         self.staged.connect_changed(move || {
+            if let Some(p) = w.upgrade() {
+                p.load();
+            }
+        });
+        let w = Rc::downgrade(self);
+        self.library.connect_changed(move || {
             if let Some(p) = w.upgrade() {
                 p.load();
             }
@@ -535,6 +548,7 @@ impl Fans {
     /// The daemon answered: (re)load the curve.
     pub fn daemon_up(self: &Rc<Self>, restore_factory: bool) {
         self.restore.set_visible(restore_factory);
+        self.library.load();
         self.load();
     }
 
@@ -766,6 +780,7 @@ impl Fans {
             .is_some_and(|old| old.profile != s.profile || old.fan_profile != s.fan_profile);
         self.state.borrow_mut().status = Some(s.clone());
         self.staged.set_read_only(s.read_only);
+        self.library.set_read_only(s.read_only);
         self.syncing.set(true);
         self.boost.set_active(s.cooler_boost);
         self.syncing.set(false);

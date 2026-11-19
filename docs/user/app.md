@@ -131,6 +131,15 @@ pour le profil actif et le passe en Personnalisé ; **Supprimer la courbe à pal
 exponentielle. Le GPU garde ses 7 paliers. En ligne de commande : `msictl stages set 20 55:50:30 65:60:45
 75:70:70 85:80:100` (repos 20 %, puis `montée:retombée:puissance` par palier).
 
+### Mes courbes
+
+Autant de courbes que vous voulez, chacune sous un nom ([ADR-0016](../adr/0016-curve-library.md)). Tapez un nom
+puis **Enregistrer** : les courbes **en vigueur** dans le profil actuel (CPU, paliers compris, et GPU) sont
+gardées, qu'elles viennent d'un preset (Frais+, Turbo…) ou de vos réglages. **Appliquer** les recharge dans le
+profil actif, qui passe en Personnalisé ; la corbeille supprime une courbe sans toucher à celle en vigueur. Un
+nom déjà pris est remplacé. En ligne de commande : `msictl curves`, `msictl curves save Nuit calme`,
+`msictl curves apply Nuit calme`, `msictl curves delete Nuit calme`.
+
 Le bouton **Rendre la main à l'EC** (courbes d'usine) n'apparaît que si le service fournit la méthode
 `RestoreFactory` (l'app le détecte par introspection).
 

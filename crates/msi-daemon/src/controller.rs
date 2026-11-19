@@ -43,6 +43,7 @@ use msi_core::curve::FanCurveSpec;
 use msi_core::ec::{CONF_G2_5, FactoryTables, FanMode, ShiftMode};
 use msi_core::fan_profile::FanProfile;
 use msi_core::hybrid::{CpuCurve, CpuDriver, TempFilter, hybrid_cpu_table_for};
+use msi_core::library::CurveName;
 use msi_core::power_limit::PowerLimits;
 use msi_core::profile::{GpuMode, Profile};
 use msi_core::staged::{FloorRaise, StagedCurve};
@@ -56,7 +57,7 @@ use crate::ec::{EcBackend, Fan, restore_factory};
 use crate::gpu::{GpuError, GpuManager, GpuState, Holder, PowerControl};
 use crate::power::PowerSupply;
 use crate::rapl::Rapl;
-use crate::state::{Settings, StateStore};
+use crate::state::{SavedCurves, Settings, StateStore};
 use crate::telemetry::dgpu::{DgpuBackend, DgpuPolicy};
 use crate::telemetry::{Clock, Sample, Sampler};
 
@@ -915,6 +916,103 @@ impl Controller {
         }
         self.save();
         self.apply_profile(profile)
+    }
+
+    /// Names of the curves saved in the library, sorted (ADR-0016).
+    #[must_use]
+    pub fn saved_curves(&self) -> Vec<String> {
+        self.settings
+            .library
+            .keys()
+            .map(|n| n.as_str().to_owned())
+            .collect()
+    }
+
+    /// Saves the curves in force in the selected profile under `name` (replacing an entry of the same name):
+    /// the CPU and GPU curves of its fan profile, plus its staged CPU curve when that is what drives the CPU.
+    /// Returns the library names. Nothing is written to the EC.
+    ///
+    /// # Errors
+    /// [`ControlError::InvalidArgument`] for an invalid name, or under the Auto fan profile (the firmware's curve
+    /// is not ours to save).
+    pub fn save_curves(&mut self, name: &str) -> Result<Vec<String>, ControlError> {
+        let name = CurveName::new(name).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        let profile = self.settings.profile;
+        if self.settings.fan_profile(profile) == FanProfile::Auto {
+            return Err(ControlError::InvalidArgument(
+                "the Auto fan profile is the MSI factory curve: pick another fan profile to save its curves"
+                    .into(),
+            ));
+        }
+        let saved = SavedCurves {
+            cpu: self.settings.curve(profile, Fan::Cpu),
+            gpu: self.settings.curve(profile, Fan::Gpu),
+            staged: self
+                .settings
+                .staged_curve(profile)
+                .filter(|_| self.settings.is_staged(profile))
+                .cloned(),
+        };
+        self.settings.library.insert(name, saved);
+        self.save();
+        Ok(self.saved_curves())
+    }
+
+    /// Applies the saved curves `name` to the selected profile: they become its custom curves (the staged CPU
+    /// curve too, or none), the profile switches to the `custom` fan profile, then is saved and applied. Every
+    /// curve is validated again before anything is changed.
+    ///
+    /// # Errors
+    /// [`ControlError::ReadOnly`]; [`ControlError::InvalidArgument`] for an unknown name, a curve that does not
+    /// validate, or a staged curve on a firmware without live CPU control; or as [`Self::apply_profile`].
+    pub fn apply_saved_curves(&mut self, name: &str) -> Result<(), ControlError> {
+        self.writable()?;
+        let key = CurveName::new(name).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        let saved = self
+            .settings
+            .library
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| ControlError::InvalidArgument(format!("no saved curves named {name:?}")))?;
+        for spec in [&saved.cpu, &saved.gpu] {
+            generate(spec).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        }
+        if saved.staged.is_some() && self.hybrid_base().is_none() {
+            return Err(ControlError::InvalidArgument(
+                "staged CPU curves need live CPU fan control, which this firmware does not support".into(),
+            ));
+        }
+        self.handed_back = false;
+        let profile = self.settings.profile;
+        self.settings.curves.insert((profile, Fan::Cpu), saved.cpu);
+        self.settings.curves.insert((profile, Fan::Gpu), saved.gpu);
+        match saved.staged {
+            Some(curve) => {
+                self.settings.staged.insert(profile, curve);
+            }
+            None => {
+                self.settings.staged.remove(&profile);
+            }
+        }
+        self.settings.set_fan_profile(profile, FanProfile::Custom);
+        self.save();
+        self.apply_profile(profile)
+    }
+
+    /// Removes the saved curves `name` from the library and returns the remaining names. The curves in force
+    /// are not touched.
+    ///
+    /// # Errors
+    /// [`ControlError::InvalidArgument`] for an unknown name.
+    pub fn delete_saved_curves(&mut self, name: &str) -> Result<Vec<String>, ControlError> {
+        let key = CurveName::new(name).map_err(|e| ControlError::InvalidArgument(e.to_string()))?;
+        if self.settings.library.remove(&key).is_none() {
+            return Err(ControlError::InvalidArgument(format!(
+                "no saved curves named {name:?}"
+            )));
+        }
+        self.save();
+        Ok(self.saved_curves())
     }
 
     /// Sets the owner's Cooler Boost preference. Turning it off is refused while S4 forces it.

@@ -28,6 +28,10 @@ Activation D-Bus système (`systemd/org.blazorde.MsiCenter1.system.service`). Po
 | `SetCpuStages` | `y idle, a(yyy) stages` | `a(yyy) floors` | `set-fan-curve` | `InvalidArgument` (règle violée, ou firmware sans pilotage en direct), `ReadOnly`, `SafetyFallback` (passe le profil en `custom`, voir Sémantique) |
 | `ResetCpuStages` | – | – | `set-fan-curve` | `ReadOnly`, `SafetyFallback` |
 | `PreviewCpuStages` | `y idle, a(yyy) stages` | `a(yyy) floors` | – | `InvalidArgument` |
+| `SavedCurves` | – | `as names` (triés) | – | – |
+| `SaveCurves` | `s name` | `as names` | `set-fan-curve` | `InvalidArgument` (nom invalide, fan profile Auto) |
+| `ApplySavedCurves` | `s name` | – | `set-fan-curve` | `InvalidArgument` (nom inconnu, courbe invalide), `ReadOnly`, `SafetyFallback` (passe le profil en `custom`) |
+| `DeleteSavedCurves` | `s name` | `as names` | `set-fan-curve` | `InvalidArgument` (nom inconnu) |
 | `SetCoolerBoost` | `b enabled` | – | `set-fan-curve` | `InvalidArgument` (forcé par S4), `ReadOnly`, `SafetyFallback` |
 | `RestoreFactory` | – | – | `set-fan-curve` | `ReadOnly` (S8), `SafetyFallback` (une étape a échoué ; `auto` tenté quand même) |
 | `SetChargeLimit` | `y limit` (50–100) | – | `set-battery` | `InvalidArgument`, `ReadOnly`, `Hardware` |
@@ -159,6 +163,9 @@ son contrôle polkit et ses erreurs typées.
 - **`SetCoolerBoost(false)`** pendant que S4 force le boost → `InvalidArgument`. Au relâchement, l'EC revient
   au choix du propriétaire. Un Cooler Boost non forcé s'éteint de lui-même après 30 s sous 75 °C (CPU et GPU) :
   `SafetyEvent` `boost_released`, détail `auto off: …` ([ADR-0015](../adr/0015-cooler-boost-spikes-and-auto-off.md)).
+- **Bibliothèque de courbes** ([ADR-0016](../adr/0016-curve-library.md)) : `SaveCurves` enregistre les courbes en
+  vigueur du profil choisi (CPU, paliers CPU s'ils pilotent le CPU, GPU) sans rien écrire dans l'EC ;
+  `ApplySavedCurves` les copie dans ses courbes personnalisées, le passe en `custom` et l'applique.
 - **Persistance** : profil, `AutoProfileOnPower`, limite de charge, profil de ventilation par profil
   (`[fan_profiles]`) et courbes personnalisées dans `/var/lib/msi-center/state.toml` (version 3 : ajoute les
   courbes à paliers `[staged.<profil>]`, un fichier version 2 se charge tel quel ; un fichier
