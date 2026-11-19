@@ -584,7 +584,7 @@ mod tests {
         );
         assert!(!out.contains("live:") && !out.contains("k 2"), "{out}");
         let list = format_fan_profiles("auto", "turbo");
-        assert_eq!(list.lines().count(), 5);
+        assert_eq!(list.lines().count(), FanProfile::ALL.len());
         assert!(list.contains("* auto"), "{list}");
         assert!(
             list.lines()
